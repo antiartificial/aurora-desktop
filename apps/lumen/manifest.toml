@@ -21,7 +21,10 @@ access = "write"
 
 [types]
 opens = ["image/png", "image/jpeg"]
-creates = ["image/png", "image/jpeg", "image/avif"]
+# image/avif was declared here but Lumen cannot produce it: there is no
+# pure-Go AVIF encoder. A manifest must describe what the app actually
+# does, so avif is removed rather than left as an unmet claim.
+creates = ["image/png", "image/jpeg"]
 
 [[verb]]
 name = "resize@v1"
@@ -56,7 +59,7 @@ payload = { source = "path", output = "path", format = "string" }
 key = "default_quality"
 type = "int"
 default = 90
-description = "JPEG and AVIF export quality"
+description = "JPEG export quality"
 
 [[replicant]]
 name = "recent_exports"
