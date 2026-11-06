@@ -18,6 +18,8 @@ libc = "0.2.191"
 toml = "0.9"
 toml_edit = "0.25"
 cosmic-text = "0.19.0"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 # Pinned to the commit of the clone at ~/.cache/aurora/smithay (harness/nested-up

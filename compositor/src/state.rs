@@ -22,7 +22,7 @@ use smithay::{
         output::OutputManagerState,
         text_input::TextInputManagerState,
         xwayland_shell::XWaylandShellState,
-        selection::data_device::DataDeviceState,
+        selection::{data_device::DataDeviceState, ext_data_control::DataControlState, primary_selection::PrimarySelectionState},
         shell::xdg::XdgShellState,
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -47,6 +47,10 @@ pub struct Aurora {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Aurora>,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub data_control_state: DataControlState,
+    /// The bridge to the host's clipboard, when there is one (see `crate::clipboard`).
+    pub host_clip: Option<crate::clipboard::HostClipboard>,
     pub popups: PopupManager,
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, once `--xwayland` started it.
@@ -116,6 +120,11 @@ impl Aurora {
 
         // Data device is responsible for clipboard and drag-and-drop
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        // Middle-click paste, and the focus-less interface clipboard managers (and the host
+        // bridge's tests) use. Every client of this user may use data control, as with the
+        // other privileged globals here.
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let data_control_state = DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -159,6 +168,9 @@ impl Aurora {
             output_manager_state,
             seat_state,
             data_device_state,
+            primary_selection_state,
+            data_control_state,
+            host_clip: None,
             popups,
             xwayland_shell_state,
             x: None,

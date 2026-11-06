@@ -3,6 +3,7 @@
 mod handlers;
 
 mod capture;
+mod clipboard;
 mod drm;
 mod fx;
 mod grabs;
@@ -115,6 +116,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (None, None) => crate::winit::init_winit(&mut event_loop, &mut state)?,
     }
 
+    // The host clipboard bridge. Before WAYLAND_DISPLAY is repointed at Aurora's own socket below,
+    // and only with a window on a host: headless and DRM have none, and in a user's session
+    // WAYLAND_DISPLAY still names their real compositor.
+    let clip = if args.no_host_clipboard {
+        clipboard::Choice::Disabled
+    } else if let Some(d) = args.host_clipboard_display.clone() {
+        clipboard::Choice::Display(d)
+    } else if args.headless.is_some() {
+        clipboard::Choice::NoHost("headless has no host")
+    } else if args.drm.is_some() {
+        clipboard::Choice::NoHost("--drm has no host compositor")
+    } else {
+        clipboard::Choice::Env
+    };
+    clipboard::start(&mut state, &event_loop.handle(), clip);
+
     // Set WAYLAND_DISPLAY to our socket name, so child processes connect to Aurora rather
     // than the host compositor
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
@@ -183,6 +200,10 @@ struct Args {
     xwayland: bool,
     /// `--state-file PATH`: remember where windows were and put them back after a restart.
     state_file: Option<std::path::PathBuf>,
+    /// `--no-host-clipboard`: do not bridge copy/paste to the host.
+    no_host_clipboard: bool,
+    /// `--host-clipboard-display NAME`: bridge to this host socket instead of `WAYLAND_DISPLAY` (test affordance: a second Aurora can stand in for the host).
+    host_clipboard_display: Option<std::ffi::OsString>,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -200,7 +221,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, drm: None, drm_timeout: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, no_host_clipboard: false, host_clipboard_display: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -217,6 +238,8 @@ fn parse_args() -> Args {
             "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
             "--xwayland" => args.xwayland = true,
+            "--no-host-clipboard" => args.no_host_clipboard = true,
+            "--host-clipboard-display" => args.host_clipboard_display = it.next().map(Into::into),
             "--legacy-scene" => args.legacy_scene = true,
             "--freeze-time" => args.freeze_time = true,
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
