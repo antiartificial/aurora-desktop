@@ -15,6 +15,7 @@ RUN=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/ik.XXXXXX"); chmod 700 "$RUN"    # AF_
 PIDS=(); PASS=0; FAIL=0
 cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && [ "$p" != "$$" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null
+  [ -n "${KEEP:-}" ] && [ -f "$W/browser.out" ] && cp "$W/browser.out" "$KEEP.browser.out"
   rm -rf "${W:?}" "${RUN:?}"
 }
 trap cleanup EXIT
@@ -61,9 +62,9 @@ caps=$(XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" --list 2>&1)
 case $caps in *"ext-image-copy-capture-v1"*) ok "compositor is up on $SOCK and advertises ext-image-copy-capture-v1";; *) bad "no capture protocol: $caps"; exit 1;; esac
 
 run_app() {  # name scale -> sets APP_PID; stdout to $W/<name>.out
-  local name=$1 scale=$2 bin=$3
+  local name=$1 scale=$2 bin=$3 quit_ms=${4:-20000}
   env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$SOCK" AURORA_UI_SCALE="$scale" AURORA_APPSERVER_DUMP="$W" HELLO_METRICS=1 \
-      HELLO_QUIT_AFTER_MS=20000 "$bin" >"$W/$name.out" 2>"$W/$name.err" & APP_PID=$!; PIDS+=($APP_PID)
+      HELLO_QUIT_AFTER_MS=$quit_ms "$bin" >"$W/$name.out" 2>"$W/$name.err" & APP_PID=$!; PIDS+=($APP_PID)
 }
 
 step "BeOS app on the compositor at output scale 1: capture and decode"
@@ -221,23 +222,32 @@ grep -q '^PROV state=1 ' "$W/b-nobus.out" && grep -q 'bus is not running' "$W/b-
 
 rm -f "$W/window-0.ppm"
 export AURORA_BIN="$W/bin/aurora" AURORA_SOCKET="$BUS" BROWSER_LOG=1 BROWSER_NO_TERMINAL=1 BROWSER_DIR="$W/fx"   # run_app is a function; it passes these on
-run_app browser 1 "$BUILD/iface_browser"; BR_PID=$APP_PID
+BR_T0=$SECONDS; run_app browser 1 "$BUILD/iface_browser" "${BR_QUIT_MS:-120000}"; BR_PID=$APP_PID
 unset AURORA_BIN AURORA_SOCKET BROWSER_LOG BROWSER_NO_TERMINAL BROWSER_DIR
 for _ in $(seq 50); do grep -q '^DIR ' "$W/browser.out" && break; sleep 0.1; done
 [ "$(grep -c '^DIR ' "$W/browser.out")" = 1 ] && grep -q "^DIR $W/fx (4 items)" "$W/browser.out" && ok "listing comes from readdir: $W/fx has 4 entries (the index knows 1 file)" || bad "unexpected listing: $(grep '^DIR' "$W/browser.out")"
 sleep 0.5
-bclick() { python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 60 $1" "click" >/dev/null 2>&1; sleep 1.2; }
+# Input is asynchronous end to end (test-input socket -> compositor -> wl_pointer -> app thread -> BWindow queue), and
+# the browser used to be driven with fixed sleeps. Every step now waits for the line the browser prints when the
+# step has taken effect (SEL on a selection, DIR on a listing, OPEN on a launch) and fails only after a generous budget.
+bcount() { grep -c -- "$1" "$W/browser.out"; }
+bwaitn() { # bwaitn PATTERN MIN-COUNT [seconds]: poll until the pattern has MIN-COUNT lines
+  local n=$(( ${3:-6} * 10 )); for _ in $(seq $n); do [ "$(bcount "$1")" -ge "$2" ] && return 0; sleep 0.1; done; return 1
+}
+# bclick Y NAME: click the list row at y, and wait until the browser reports that NAME was selected (SEL NAME count grows)
+bclick() { local before; before=$(bcount "^SEL $2\$"); python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 60 $1" "click" >/dev/null 2>&1; bwaitn "^SEL $2\$" $((before+1)) 6; }
 # The provenance pane is filled by a worker thread running `aurora query show`,
 # so its PROV/PANE lines appear asynchronously after the click. A bare grep
 # races them: it failed about 1 run in 4 on exactly the two plain.txt checks.
 # Wait for the line instead of sleeping longer, so a slow answer costs time
 # rather than a false failure.
-bgrep() { # bgrep PATTERN DESC [extra seconds]
+bgrep() { # bgrep PATTERN DESC [seconds]
   local pat=$1 desc=$2 n=$(( ${3:-6} * 10 ))
   for _ in $(seq $n); do grep -q "$pat" "$W/browser.out" && { ok "$desc"; return 0; }; sleep 0.1; done
   bad "$desc (no match for /$pat/ after ${3:-6}s)"; return 1
 }
-bclick 87      # item 2: made.png (rows are 21 px, list content starts at y=35; ../ and sub/ come first)
+bclick 87 made.png   # item 2: made.png (rows are 21 px, list content starts at y=35; ../ and sub/ come first)
+bwaitn "^PROV state=3 path=$W/fx/made.png" 1
 grep -q "^PROV state=3 path=$W/fx/made.png" "$W/browser.out" && ok "click on made.png: indexd knows it (state 3)" || bad "no state-3 answer for made.png: $(grep '^PROV' "$W/browser.out" | tr '\n' ' ')"
 for want in "PANE Made by org.aurora.magick resize@v1" "PANE   $W/fx/source.jpg" "PANE Domain: magick-1" "PANE Indexed writes: 1, last seen 2026-11-06T10:00:00"; do
   grep -qF -- "$want" "$W/browser.out" && ok "pane text: ${want#PANE }" || bad "pane lacks: $want"; done
@@ -245,23 +255,25 @@ XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/b1.png" >/dev/null 2>&1
 read -r nd d1 d2 d3 < <(python3 -I "$HERE/imgcheck.py" --diff "$W/b1.png" "$W/ref-b-made/window-0.ppm" 0 0)
 if [ "$nd" = 0 ]; then ok "the window the compositor shows after a mouse click equals a render in which the server clicked made.png itself (0 differing pixels)"
 else bad "window differs from the made.png render in $nd pixels: $d1 $d2 $d3"; fi
-bclick 108     # plain.txt
+bclick 108 plain.txt
 bgrep "^PROV state=2 path=$W/fx/plain.txt" "plain.txt: index knows nothing (state 2): the pane says so and that it is not a statement about the file"
 bgrep 'PANE The index knows nothing about this file.' "pane text for an unknown file is shown"
-bclick 129     # source.jpg
+bclick 129 source.jpg
+bwaitn "^PROV state=2 path=$W/fx/source.jpg" 1
 sed -n '/^PROV state=2 path=.*source.jpg/,/^PANE-END/p' "$W/browser.out" | grep -q "PANE   made.png" && ok "source.jpg: unknown as an output but listed as an input of made.png (used_in)" || bad "source.jpg pane lacks the used-in edge"
 # navigation: double click on a directory enters it; Alt+Up goes up and re-selects it; Enter enters it again
-python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 60 66" "click" "click" >/dev/null 2>&1; sleep 1
+python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 60 66" "click" "click" >/dev/null 2>&1; bwaitn "^DIR $W/fx/sub " 1
 grep -q "^DIR $W/fx/sub (1 items)" "$W/browser.out" && ok "double-click (two clicks through the compositor, 'clicks' = 2) entered sub/" || bad "double-click did not enter sub/: $(grep '^DIR' "$W/browser.out" | tr '\n' ' ')"
-python3 -I "$HERE/ti.py" "$RUN/ti" "down alt" "key Up" "up alt" >/dev/null 2>&1; sleep 0.8
+python3 -I "$HERE/ti.py" "$RUN/ti" "down alt" "key Up" "up alt" >/dev/null 2>&1; bwaitn "^DIR $W/fx (4 items)" 2
 [ "$(grep -c "^DIR $W/fx (4 items)" "$W/browser.out")" -ge 2 ] && ok "Alt+Up (a BWindow shortcut) went back up" || bad "Alt+Up did not go up"
-python3 -I "$HERE/ti.py" "$RUN/ti" "key Return" >/dev/null 2>&1; sleep 0.8
+python3 -I "$HERE/ti.py" "$RUN/ti" "key Return" >/dev/null 2>&1; bwaitn "^DIR $W/fx/sub " 2
 [ "$(grep -c "^DIR $W/fx/sub " "$W/browser.out")" -ge 2 ] && ok "Enter on the re-selected sub/ entered it again" || bad "Enter did not enter sub/"
-python3 -I "$HERE/ti.py" "$RUN/ti" "down alt" "key Up" "up alt" >/dev/null 2>&1; sleep 0.8
-bclick 87
-python3 -I "$HERE/ti.py" "$RUN/ti" "key Return" >/dev/null 2>&1; sleep 0.8
+python3 -I "$HERE/ti.py" "$RUN/ti" "down alt" "key Up" "up alt" >/dev/null 2>&1; bwaitn "^DIR $W/fx (4 items)" 3
+bclick 87 made.png
+python3 -I "$HERE/ti.py" "$RUN/ti" "key Return" >/dev/null 2>&1; bwaitn '^OPEN ' 1
 grep -q "^OPEN $W/bin/aurora open --socket $BUS $W/fx/made.png\$" "$W/browser.out" && ok "Enter on a file ran: aurora open --socket <bus> $W/fx/made.png (no verb chosen by the browser)" || bad "no OPEN line: $(grep '^OPEN' "$W/browser.out")"
 [ "$(cat "$W/open.args" 2>/dev/null)" = "open --socket $BUS $W/fx/made.png" ] && ok "the launcher process really received that argv (recorded by the stand-in)" || bad "launcher stand-in did not record the argv"
+echo "   (browser section took $((SECONDS-BR_T0))s)"
 kill "$BR_PID" 2>/dev/null; wait "$BR_PID" 2>/dev/null
 fi
 step "TEXT: BTextView (Haiku's TextView.cpp) - typing, backspace, caret, blinking, selection, through the compositor"

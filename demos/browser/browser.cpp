@@ -335,6 +335,7 @@ private:
 	{
 		if (i < 0 || i >= (int)fEntries.size() || fEntries[i].first.empty()) return;
 		const Entry& e = fMeta[i];
+		if (getenv("BROWSER_LOG")) { printf("SEL %s\n", e.name.c_str()); fflush(stdout); }	// lets a scripted run wait for the selection to land
 		std::vector<std::pair<bool, std::string> > l;
 		if (e.name == "..") { l.push_back(std::make_pair(true, "Parent directory")); fPane->Set(l); return; }
 		std::string full = Full(i);
