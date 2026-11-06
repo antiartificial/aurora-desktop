@@ -14,12 +14,14 @@ import (
 	"time"
 )
 
-// Grant is one capability recorded for a domain. Kind is "path" or "net".
+// Grant is one capability recorded for a domain. Kind is "path", "net" or
+// "device" (Device is then "gpu" or "wayland", see devices.go).
 type Grant struct {
-	Kind string `json:"kind"`
-	Path string `json:"path,omitempty"`
-	Host string `json:"host,omitempty"`
-	Mode string `json:"mode,omitempty"` // "ro" or "rw" for path grants
+	Kind   string `json:"kind"`
+	Device string `json:"device,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Mode   string `json:"mode,omitempty"` // "ro" or "rw" for path grants
 }
 
 // Limits are cgroup v2 resource budgets. Zero means unlimited.

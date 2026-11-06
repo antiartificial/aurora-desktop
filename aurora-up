@@ -171,6 +171,9 @@ COMPFLAGS=()
 if [ $COMPOSITOR = 1 ]; then
   waitfor "compositor socket" 150 grep -q '^aurora-compositor: socket wayland' "$RUN/compositor.log" || { tail -5 "$RUN/compositor.log"; exit 1; }
   WL=$(sed -n 's/^aurora-compositor: socket //p' "$RUN/compositor.log" | tail -1)
+  # Tell the adapter which socket is Aurora's, for a device:wayland grant (decision 0014).
+  # A file, not WAYLAND_DISPLAY: in a user's shell that names the host's compositor.
+  mkdir -p -m 700 "$XDG_RUNTIME_DIR/aurora" && printf '%s\n' "$WL" > "$XDG_RUNTIME_DIR/aurora/display"
   if [ $WINDOWS = 1 ] && [ -x "$EXAMPLES/testclient" ]; then
     export WAYLAND_DISPLAY=$WL
     start "scene: split window" "$RUN/win0.log" "$EXAMPLES/testclient" --size 400x500 --pattern split

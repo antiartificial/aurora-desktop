@@ -81,11 +81,15 @@ type Approval struct {
 	DomainMismatch bool   `json:"domain_mismatch,omitempty"`
 }
 
-// Grant is one filesystem grant given to the app's domain for one invoke.
+// Grant is one grant given to the app's domain for one invoke: a filesystem
+// path (Mode "ro" or "rw") or a device (Device set, Path "device:<class>",
+// Mode ModeUse; decision 0014).
 type Grant struct {
 	Path   string `json:"path"`
-	Mode   string `json:"mode"` // "ro" or "rw"
+	Mode   string `json:"mode"` // "ro" or "rw"; ModeUse for a device
 	Source string `json:"source"`
+	// Device is the device class ("gpu", "wayland") when this grant is a device grant.
+	Device string `json:"device,omitempty"`
 	// Cap is the id (cap:...) of the daemon-minted handle that named this
 	// grant for this invoke; empty when none was issued (see Record.CapNote).
 	Cap string `json:"cap,omitempty"`

@@ -76,10 +76,13 @@ What this buys that a linked framework cannot:
   The first kit built answers it.
 - **Streaming verbs.** Every verb today is request/response. Transcription and
   video are streams. The Media Kit phase answers it; nothing here decides it.
-- **GPU access from a domain.** A compute kit wants the GPU, and `devices =
-  ["gpu"]` is currently a manifest claim nothing enforces. Related to the
-  Wayland-socket problem in 0012: both are "a device a domain should get only
-  by grant".
+- **GPU access from a domain.** A compute kit wants the GPU. Decision 0014
+  makes `device:gpu` an enforced grant (the render node is in the namespace
+  only under a grant, minted and recorded like a path grant). It does not make
+  a compute kit work yet: on this machine the node is present but the domain's
+  uid cannot open it, and the grant is far wider than a path grant (little
+  isolation between GPU contexts, a kernel driver as attack surface). 0014
+  states both. Related to the Wayland-socket problem in 0012.
 - **Whether the Interface Kit should expose a bus surface too** for the parts
   that are not latency-bound (font enumeration, clipboard, system colours).
   Undecided.

@@ -23,7 +23,7 @@ Unknown keys are a parse error. The field names are this package's v0 choices: 0
 | 8 Replicants | `[[replicant]]` | `name`, `title` |
 | 9 Migrations | `[[migration]]` | `from`, `to`, `description` |
 
-Verb `capabilities` entries reference app-level requests as `path:<path>`, `net:<host>` or `device:<name>`. `input`, `output` and event `payload` map field names to a type: `string`, `int`, `float`, `bool`, `path`, `bytes`, or a MIME type or pattern, with an optional `?` suffix for optional.
+Verb `capabilities` entries reference app-level requests as `path:<path>`, `net:<host>` or `device:<name>`. `devices` is enforced for two classes, `gpu` (the DRM render nodes) and `wayland` (the compositor socket), and only for a verb that lists `device:<class>`; declaring one grants nothing, and any other class fails the invoke (decision 0014). `input`, `output` and event `payload` map field names to a type: `string`, `int`, `float`, `bool`, `path`, `bytes`, or a MIME type or pattern, with an optional `?` suffix for optional.
 
 **Additions beyond 0002's text** (needed to make the launcher query and the diff work): verb `accepts` (MIME patterns, `image/*` allowed; answers "which verbs accept this object?"), verb `capabilities` references, the `?` optional marker, `summary`/`description`/`title` strings, and event `payload`. Paths are treated as directories granted recursively.
 

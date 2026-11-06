@@ -38,6 +38,8 @@ The Haiku apps carry this risk now because they are demonstrations built from so
 
 ### The fix: make the Wayland socket a grantable capability
 
+*Amended: decision 0014 did the adapter, manifest and controller half of items 1 and 2 below (`device:wayland`, one socket bound alone, tested not to expose `approval.key` or `powerbox.key`; a client in a domain mapped a window on Aurora). Items 3 to 6 are not done and windowed apps still launch unsandboxed. The list below is the original statement of what was needed.*
+
 A GUI app can run as a domain once the compositor connection is something a domain can be granted instead of something a process inherits. That requires:
 
 1. **A capability kind in the manifest**, for example `device:wayland` or a new `display` kind, with `capDeclared` and the consent diff (`Diff`) treating it as a grant that needs fresh consent when added.
@@ -63,7 +65,7 @@ The reason there are two axes and not one richer taxonomy: **authority** and **i
 
 - **What the dock does with a windowed app that also has verbs.** The schema allows both. Whether a click launches the window, opens the verb picker, or offers both is a client decision not made here.
 - **How a windowed app is stopped.** The launcher gets a pid. Whether Aurora tracks it, restarts it, or reaps it on compositor exit is undecided.
-- **How an app says it needs the display.** Whether the Wayland grant is a `device:` class, a new capability kind, or implied by `windowed = true`. Implying it is attractive and makes `windowed` a security-relevant flag, which is the opposite of the presentation fields above.
+- **How an app says it needs the display.** (Partly answered by 0014: it is a `device:wayland` capability a verb lists, not implied by `windowed = true`. Whether `windowed` should imply it remains open, and implying it makes `windowed` a security-relevant flag, the opposite of the presentation fields above.)
 - **Per-app runtime pins.** The Haiku manifests declare no `[[runtime]]`: their dependencies are system libraries, not a pinned interpreter. Whether a native C++ app should pin something is open.
 - **Which apps deserve a domain first.** `iface_browser` does the most (it reads the filesystem and shells out) and is the strongest case for the capability work.
 - **Windowed verbs.** `haiku_ledger` serves bus verbs from a long-running `BApplication` with no window. Its manifest therefore declares verbs and no `exec`, and `registry.invoke@v1` cannot run them because there is no `run` script. Whether a "service app" deserves its own manifest marker is undecided.

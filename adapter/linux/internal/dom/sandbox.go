@@ -77,6 +77,8 @@ func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
 		a = append(a, "--bind", filepath.Join(s.Dir(m.Name), sd), "/domain/"+sd)
 	}
 	a = append(a, "--bind", SockDir(m.Name), "/run/aurora")
+	devArgs, devEnv := DeviceArgs(m)
+	a = append(a, devArgs...)
 	a = append(a, "--clearenv",
 		"--setenv", "PATH", "/usr/bin:/bin",
 		"--setenv", "HOME", "/domain/data",
@@ -88,7 +90,7 @@ func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
 		"--setenv", "AURORA_BUS_SOCKET", "/run/aurora/bus.sock",
 		"--setenv", "TERM", termOr(),
 		"--chdir", "/domain/data")
-	return a
+	return append(a, devEnv...)
 }
 
 func termOr() string {
@@ -124,6 +126,9 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 				fmt.Fprintf(stderr, "domain: warning: granted path %s is not accessible: %v\n", g.Path, err)
 			}
 		}
+	}
+	for _, w := range DeviceWarnings(m) {
+		fmt.Fprintf(stderr, "domain: warning: %s\n", w)
 	}
 	// --info-fd reports the sandbox init pid as soon as its namespaces exist;
 	// --block-fd holds the payload until we have recorded (and, with a bus,

@@ -38,6 +38,10 @@ type Runner interface {
 	Cgroup(name string) (string, error)
 	Grant(name, path, mode string) error // mode "ro" or "rw"
 	Revoke(name, path string) error
+	// GrantDevice puts a device class ("gpu", "wayland") into the domain's
+	// next run; RevokeDevice takes it out. See decision 0014.
+	GrantDevice(name, class string) error
+	RevokeDevice(name, class string) error
 	Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error)
 }
 
@@ -171,6 +175,14 @@ func (c CLI) Grant(name, path, mode string) error {
 }
 
 func (c CLI) Revoke(name, path string) error { return c.must("revoke", name, path) }
+
+func (c CLI) GrantDevice(name, class string) error {
+	return c.must("grant", name, "--device", class)
+}
+
+func (c CLI) RevokeDevice(name, class string) error {
+	return c.must("revoke", name, "--device", class)
+}
 
 func (c CLI) Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error) {
 	return c.do(ctx, stdin, append([]string{"run", name, "--"}, argv...)...)

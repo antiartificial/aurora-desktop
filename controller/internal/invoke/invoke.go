@@ -183,7 +183,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		Args   map[string]json.RawMessage `json:"args"`
 	}{input, output, args})
 
-	grants := iv.planGrants(app.Manifest, input, output)
+	grants := iv.planGrants(app.Manifest, verb, input, output)
 	redeem, e := iv.checkTickets(req, app.ID(), grants)
 	if e != nil {
 		return nil, e
