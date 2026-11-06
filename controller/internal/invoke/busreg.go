@@ -4,7 +4,7 @@ import "fmt"
 
 // DomainBus registers domains with the bus (see internal/busreg).
 type DomainBus interface {
-	AddDomain(identity, path string) error
+	AddDomain(identity, path, cgroup string) error
 	RemoveDomain(identity string) error
 }
 
@@ -31,7 +31,12 @@ func (iv *Invoker) domainIdentity(name string) (id string, attested bool) {
 	if iv.registered[name] == id {
 		return id, true
 	}
-	if err := iv.Bus.AddDomain(id, sock); err != nil {
+	cg, err := iv.Runner.Cgroup(name)
+	if err != nil {
+		iv.logf("WARNING: cannot read the cgroup of %s: %v; registering it WITHOUT one, so busd cannot attest it and the compositor will not verify it", name, err)
+		cg = ""
+	}
+	if err := iv.Bus.AddDomain(id, sock, cg); err != nil {
 		iv.logf("WARNING: bus refused or could not register %s (%s): %v; the app will not appear as its domain on the bus", id, sock, err)
 		return id, false
 	}

@@ -34,6 +34,8 @@ type Runner interface {
 	// Identity returns the domain's attested bus identity (`domain exec-id`)
 	// and the host path of its bus socket (`domain sockpath`).
 	Identity(name string) (id, sock string, err error)
+	// Cgroup returns the domain's cgroup in /proc/<pid>/cgroup form (`domain cgroup`).
+	Cgroup(name string) (string, error)
 	Grant(name, path, mode string) error // mode "ro" or "rw"
 	Revoke(name, path string) error
 	Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error)
@@ -149,6 +151,17 @@ func (c CLI) Identity(name string) (string, string, error) {
 		return "", "", err
 	}
 	return id, sock, nil
+}
+
+func (c CLI) Cgroup(name string) (string, error) {
+	res, err := c.do(context.Background(), nil, "cgroup", name)
+	if err != nil {
+		return "", err
+	}
+	if res.Exit != 0 {
+		return "", fmt.Errorf("domain cgroup %s: %s", name, strings.TrimSpace(string(res.Stderr)))
+	}
+	return strings.TrimSpace(string(res.Stdout)), nil
 }
 
 func (c CLI) Grant(name, path, mode string) error {

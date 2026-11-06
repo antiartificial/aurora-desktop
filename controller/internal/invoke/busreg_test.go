@@ -13,14 +13,16 @@ import (
 type fakeBus struct {
 	mu      sync.Mutex
 	adds    [][2]string
+	cgroups []string
 	removes []string
 	addErr  error
 }
 
-func (b *fakeBus) AddDomain(id, path string) error {
+func (b *fakeBus) AddDomain(id, path, cgroup string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.adds = append(b.adds, [2]string{id, path})
+	b.cgroups = append(b.cgroups, cgroup)
 	return b.addErr
 }
 func (b *fakeBus) RemoveDomain(id string) error {
@@ -115,3 +117,16 @@ func TestIdentityLookupFailureDoesNotBreakInvoke(t *testing.T) {
 }
 
 var _ domain.Runner = (*domain.Fake)(nil)
+
+func TestRegistersDomainWithItsCgroupSoBusdCanAttestIt(t *testing.T) {
+	iv, fk, dir, _, _ := setup(t)
+	fk.CgroupPath = "/user.slice/aurora-domains/d1"
+	fb := &fakeBus{}
+	iv.Bus = fb
+	if _, e := invokeDemo(t, iv, dir); e != nil {
+		t.Fatal(e)
+	}
+	if len(fb.cgroups) != 1 || fb.cgroups[0] != "/user.slice/aurora-domains/d1" {
+		t.Fatalf("registered with cgroups %q", fb.cgroups)
+	}
+}

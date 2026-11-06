@@ -19,9 +19,23 @@ import (
 // cgroup (SO_PEERCRED). What the answer proves to the controller: the peer on
 // the socket path it dialled said so. It is not a signature: whoever can
 // replace the socket file with their own listener can answer "allow".
+//
+// The controller checks the peer too (compositor_peer.go): SO_PEERCRED uid
+// must be the expected one and the peer must not be inside a domain cgroup,
+// else nothing is sent and Ask returns a *PeerError.
 type CompositorPrompt struct {
 	Socket      string
 	DialTimeout time.Duration // default 1s
+	// ExpectedUID is the uid the compositor must run as; nil means this
+	// process's own effective uid.
+	ExpectedUID *uint32
+	// DenyCgroupComponents refuses a peer whose cgroup path has one of these
+	// as a path component; nil means DefaultDenyCgroupComponent.
+	DenyCgroupComponents []string
+	// DenyCgroupPrefixes refuses a peer at or below one of these cgroup paths.
+	DenyCgroupPrefixes []string
+	// Logf, if set, records the credentials of each accepted peer.
+	Logf func(format string, args ...any)
 }
 
 // CompositorAnswer is the compositor's reply.
@@ -29,7 +43,12 @@ type CompositorAnswer struct {
 	Decision string `json:"decision"`
 	Key      string `json:"key"`
 	Reason   string `json:"reason"` // "key" or "timeout"
-	Error    string `json:"error"`
+	// DomainVerified is the compositor's own check of the claimed domain
+	// against busd: "true", "false" or "unknown" (empty from a compositor
+	// that predates the check, which is recorded as unknown).
+	DomainVerified     string `json:"domain_verified"`
+	DomainVerifyDetail string `json:"domain_verify_detail"`
+	Error              string `json:"error"`
 }
 
 type wireGrant struct {
@@ -39,16 +58,19 @@ type wireGrant struct {
 }
 
 type wireRequest struct {
-	V         int             `json:"v"`
-	Op        string          `json:"op"`
-	RequestID string          `json:"request_id"`
-	App       string          `json:"app"`
-	Domain    string          `json:"domain"`
-	Verb      string          `json:"verb"`
-	Effect    string          `json:"effect"`
-	Grants    []wireGrant     `json:"grants"`
-	Args      json.RawMessage `json:"args"`
-	TimeoutMS int64           `json:"timeout_ms"`
+	V         int    `json:"v"`
+	Op        string `json:"op"`
+	RequestID string `json:"request_id"`
+	App       string `json:"app"`
+	Domain    string `json:"domain"`
+	// DomainIdentity is the bus identity the controller says the domain has;
+	// the compositor checks this against busd.
+	DomainIdentity string          `json:"domain_identity"`
+	Verb           string          `json:"verb"`
+	Effect         string          `json:"effect"`
+	Grants         []wireGrant     `json:"grants"`
+	Args           json.RawMessage `json:"args"`
+	TimeoutMS      int64           `json:"timeout_ms"`
 }
 
 // Ask shows req and blocks for the answer. Any error means "the compositor
@@ -64,13 +86,17 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 		return nil, err
 	}
 	defer conn.Close()
-	domain := req.DomainName
-	if req.DomainAttested {
-		domain += " (attested)"
-	} else {
-		domain += " (not attested)"
+	peer, err := peerOf(conn)
+	if err != nil {
+		return nil, &PeerError{c.Socket, "cannot read peer credentials: " + err.Error()}
 	}
-	w := wireRequest{V: 1, Op: "approve", RequestID: req.RequestID, App: req.App, Domain: domain, Verb: req.Verb,
+	if err := c.checkPeer(peer); err != nil {
+		return nil, err
+	}
+	if c.Logf != nil {
+		c.Logf("compositor peer accepted: %s", peer)
+	}
+	w := wireRequest{V: 1, Op: "approve", RequestID: req.RequestID, App: req.App, Domain: req.DomainName, DomainIdentity: req.Domain, Verb: req.Verb,
 		Effect: string(req.Effect), Args: req.Args, TimeoutMS: wait.Milliseconds()}
 	for _, g := range req.Grants {
 		w.Grants = append(w.Grants, wireGrant{g.Path, g.Mode, g.Source})
@@ -118,5 +144,10 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 
 // compositorApproval turns an answer into the provenance record.
 func compositorApproval(id string, a *CompositorAnswer, at string) *prov.Approval {
-	return &prov.Approval{Required: true, Route: prov.RouteCompositor, Decision: Allow, RequestID: id, By: "compositor", Key: a.Key, At: at}
+	v := a.DomainVerified
+	if v != "true" && v != "false" {
+		v = "unknown"
+	}
+	return &prov.Approval{Required: true, Route: prov.RouteCompositor, Decision: Allow, RequestID: id, By: "compositor", Key: a.Key, At: at,
+		DomainVerified: v, DomainVerifyDetail: a.DomainVerifyDetail}
 }

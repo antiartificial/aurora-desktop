@@ -34,6 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.trusted.allow.uids = uids;
     }
     state.trusted.allow.deny_prefixes = args.deny_cgroups.clone();
+    state.trusted.bus_sock = args.bus_socket.clone();
+    match &args.bus_socket {
+        Some(p) => eprintln!("aurora-compositor: domain claims are checked against busd at {}", p.display()),
+        None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown)"),
+    }
     let tsock = args.trusted_socket.clone().unwrap_or_else(default_trusted_socket);
     match trusted::socket::listen(&event_loop.handle(), &tsock) {
         Ok(()) => println!(
@@ -90,6 +95,7 @@ struct Args {
     command: Option<String>,
     trusted_socket: Option<std::path::PathBuf>,
     trusted_uids: Option<Vec<u32>>,
+    bus_socket: Option<std::path::PathBuf>,
     deny_cgroups: Vec<String>,
     test_input: Option<std::path::PathBuf>,
     dump_overlay: Option<std::path::PathBuf>,
@@ -109,7 +115,7 @@ fn default_trusted_socket() -> std::path::PathBuf {
 
 fn parse_args() -> Args {
     let mut args = Args {
-        headless: None, command: None, trusted_socket: None, trusted_uids: None,
+        headless: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
     };
     let mut it = std::env::args().skip(1);
@@ -121,6 +127,7 @@ fn parse_args() -> Args {
                 let uid = it.next().and_then(|v| v.parse().ok()).expect("--trusted-uid wants a number");
                 args.trusted_uids.get_or_insert_with(Vec::new).push(uid);
             }
+            "--bus-socket" => args.bus_socket = it.next().map(Into::into),
             "--deny-cgroup" => args.deny_cgroups.extend(it.next()),
             "--test-input" => args.test_input = it.next().map(Into::into),
             "--theme" => args.theme = it.next().map(Into::into),

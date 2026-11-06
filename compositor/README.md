@@ -74,18 +74,28 @@ Decision 0003 reserved "a surface class only the compositor can draw". This is i
 
 **The request channel.** A Unix socket, not the Wayland socket: `--trusted-socket PATH` (default `$XDG_RUNTIME_DIR/aurora-trusted.sock`), mode 0600. One JSON line in, one out:
 
-    {"v":1,"op":"approve","request_id":"..","app":"..","domain":"..","verb":"..","effect":"destructive",
+    {"v":1,"op":"approve","request_id":"..","app":"..","domain":"<name>","domain_identity":"domain:<name>:<hex>","verb":"..","effect":"destructive",
      "grants":[{"path":"..","mode":"rw","source":"gesture"}],"args":{...},"timeout_ms":60000}
-    {"v":1,"request_id":"..","decision":"allow"|"deny","key":"a","reason":"key"|"timeout"}   or   {"v":1,"error":".."}
+    {"v":1,"request_id":"..","decision":"allow"|"deny","key":"a","reason":"key"|"timeout",
+     "domain_verified":"true"|"false"|"unknown","domain_verify_detail":".."}   or   {"v":1,"error":".."}
 
 The decision comes only from the keyboard, never from the socket: nothing on the socket can answer a prompt, including the requester. The reply goes only to the connection that asked.
 
 **What the socket authenticates.** On accept, before reading any byte, `SO_PEERCRED` gives the peer's uid and pid, and `/proc/<pid>/cgroup` its cgroup. A peer is refused unless its euid is allowlisted (default: the compositor's own; `--trusted-uid N`, repeatable, replaces it) **and** no component of its cgroup path is `aurora-domains` (the parent of every domain cgroup the adapter creates; the same `0::` cgroup-v2 reading the bus uses for attestation) and it is not at or below a `--deny-cgroup PATH`. Unreadable or non-v2 cgroup information refuses (fail closed). Tests: another uid is refused; a peer inside a denied cgroup (this test process's own, passed as `--deny-cgroup`) is refused; neither produces an overlay.
 
+**Domain verification** (`src/trusted/verify.rs`). The request carries the domain's display name and the bus identity the controller claims for it. Before drawing, the compositor asks busd itself: it connects to the bus session socket (`--bus-socket PATH`, default `$AURORA_BUS_SOCK`), sends `bus.inspect@v1` and looks the identity up in `domains`. The check runs on a thread with a 1.5 s deadline, so a slow or hung busd never stalls the compositor loop, and the prompt is drawn when it returns, never refused.
+- `domain_verified:"true"` (drawn as a cyan `VERIFIED` line): busd has a domain registered under exactly that identity, the identity's name part equals the displayed name, and busd holds a cgroup for it (the thing it attests connections against; without one the domain is registered but unattestable, which is `false`). The live connection count is shown for information and is **not** required: a domain with no connection open at that moment still verifies.
+- `"false"` (yellow banner `UNVERIFIED DOMAIN`, the name drawn as `CLAIMED "<name>" (NOT VERIFIED)`, busd's reason below it): busd answered and does not vouch for the identity (unknown, no cgroup, name and identity disagree, no identity sent).
+- `"unknown"` (same banner, "busd could not be asked"): no bus socket configured, busd unreachable, a bad reply, or the deadline passed. Never `true`.
+- **The ceiling.** `true` proves exactly this: a domain with that identity exists in busd and busd attests it. It does **not** prove the request came from that domain, nor that this invoke will run in it. Only the controller knows which domain an invoke runs in, and the compositor takes the controller's word for that association; the controller is just an allowlisted same-uid peer (below). A same-uid process can name a real, attested domain and get `VERIFIED`. What the check does close: inventing a domain, or a name and identity busd has never registered, now shows as an unverified claim.
+- Workaround: busd has no narrower read verb, so the compositor fetches the whole `bus.inspect@v1` listing (clients, services, handle ids, never tokens) and reads only `domains` and `clients[].domain`. Any session-socket peer can do the same, so this widens nothing.
+- The reply carries `domain_verified` and `domain_verify_detail` whether the human allows or denies; the controller records them in provenance.
+- Tests (`tests/verify.rs`, a fake busd speaking the real `bus.inspect@v1` wire shape; `src/trusted/verify.rs` unit tests for the decision): verified, unknown-to-busd, name/identity mismatch, unreachable bus, hung bus. Each reads the compositor's own dumped frame (banner pixels present or absent) and the reply. The real busd is exercised by `controller/demo-verified.sh`.
+
 **What it does not authenticate.**
 - Any same-uid process outside a domain cgroup passes. It cannot approve anything, but it can put up a prompt with any text it likes (a misleading verb or app name), spam the queue so real prompts wait or time out, and learn nothing from the reply to someone else's request. The controller is not distinguished from other same-uid processes: no executable or unit check. A distinct uid for the controller plus `--trusted-uid` would close that; not done.
-- The compositor does not know which domain asked or what the verb really is. It displays what an allowlisted peer sent. The decision-0003 dependency (the compositor saying truthfully which domain asked) is not met: the domain name is the controller's text.
-- The controller does not authenticate the compositor. Whoever binds the socket path before the compositor does (same uid) can receive requests and answer `allow`. The reply is not signed and not bound to what was displayed.
+- The compositor does not know what the verb really is, and it cannot tell which domain asked: it can only confirm that the domain the peer names exists and is attested (see "Domain verification"). The domain identity, like the verb, comes from an allowlisted peer.
+- The controller now checks the compositor's uid and that it is outside a domain cgroup (`controller/README.md`, "Approval"), but a same-uid host process that binds the socket path first still passes that check, can receive requests and answer `allow`. The reply is not signed and not bound to what was displayed.
 - The cgroup check relies on a domain's processes being unable to leave its cgroup, and on domains not holding the socket path. Neither was tested here; an app confined only by a mount namespace never sees `$XDG_RUNTIME_DIR`, which is the first line of defence.
 - A cooperating client learns a prompt exists: it receives `wl_keyboard.leave` when the overlay rises and `enter` when it falls. Not hiding that is the price of not leaving stuck keys.
 - Look-alikes are not prevented. A client can draw its own window that looks like this prompt. The real one differs only in that it is above everything, swallows keys and the client's focus is lost; the user has no secret or secure-attention key to tell them apart, and nothing in the compositor stops a client mimicking the layout.
@@ -121,7 +131,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 - No HiDPI: scale is fixed at 1.
 - No XWayland.
 - No client-domain binding: clients are not tied to domains or capabilities.
-- No secure attention key, no per-user secret on the prompt, no pointer interaction with it, no domain attribution by the compositor itself (see "Trusted path" for what exists and what it does not guarantee).
+- No secure attention key, no per-user secret on the prompt, no pointer interaction with it, no attribution of a request to a domain by the compositor (it can only verify that the named domain exists and is attested; see "Trusted path" for what exists and what it does not guarantee).
 - No dmabuf: no `linux-dmabuf`, so GL clients fall back to shm. Capture is
   shm only.
 - No cursor capture (`paint_cursors`), no toplevel capture source, no

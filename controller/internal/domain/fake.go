@@ -10,6 +10,8 @@ import (
 
 // Fake records every call, for tests. OnRun may produce side effects.
 type Fake struct {
+	// CgroupPath is what Cgroup reports for every domain.
+	CgroupPath  string
 	mu          sync.Mutex
 	Calls       []string
 	Unusable    error                                    // if set, Available returns it
@@ -41,6 +43,9 @@ func (f *Fake) Identity(n string) (string, string, error) {
 	}
 	return "domain:" + n + ":00112233aabbccdd", "/fake/run/" + n + "/bus.sock", nil
 }
+
+// Cgroup returns Fake.CgroupPath ("" = none, the domain registers unattested).
+func (f *Fake) Cgroup(n string) (string, error) { return f.CgroupPath, nil }
 func (f *Fake) Grant(n, p, m string) error {
 	f.rec("grant %s %s %s", n, p, m)
 	return f.GrantErr

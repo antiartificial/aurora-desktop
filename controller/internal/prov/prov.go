@@ -59,6 +59,14 @@ type Approval struct {
 	By        string `json:"by,omitempty"`  // bus identity that decided; "controllerd" for auto-approve; "compositor" for route compositor
 	Key       string `json:"key,omitempty"` // route compositor: the keystroke the compositor read
 	At        string `json:"at"`            // RFC3339Nano, when decided (or when the invoke was checked)
+	// DomainVerified, route compositor only: what the compositor itself found
+	// when it checked the domain identity it was shown against busd, at the
+	// time it drew the prompt. "true": busd has that domain registered with a
+	// cgroup it attests. "false": busd answered and does not vouch for it.
+	// "unknown": busd could not be asked. "true" proves the named domain
+	// exists and is attested. It does NOT prove this invoke ran in it.
+	DomainVerified     string `json:"domain_verified,omitempty"`
+	DomainVerifyDetail string `json:"domain_verify_detail,omitempty"`
 }
 
 // Grant is one filesystem grant given to the app's domain for one invoke.

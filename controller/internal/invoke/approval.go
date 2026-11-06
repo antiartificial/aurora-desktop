@@ -149,9 +149,11 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	req := ApprovalRequest{App: app.ID(), DomainName: dname, Verb: name, Effect: verb.Effect, Grants: grants, Args: argsJSON}
 	if id, _, err := iv.Runner.Identity(dname); err == nil {
 		req.Domain = id
-		iv.regMu.Lock()
-		req.DomainAttested = iv.registered[dname] == id
-		iv.regMu.Unlock()
+		// The domain exists, so make sure busd has it registered: the
+		// compositor will ask busd about this identity. (A domain that does
+		// not exist yet has no identity; the prompt then names none and shows
+		// as unverified, which is true.)
+		_, req.DomainAttested = iv.domainIdentity(dname)
 	}
 	if ap.AutoApprove {
 		id := newID()
@@ -167,6 +169,8 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 		case ctx.Err() != nil:
 			iv.publishDecided(req.RequestID, verdict{Deny, "compositor"}, "canceled", prov.RouteCompositor)
 			return nil, fail("approval_denied", "%s was not approved: the invoke was canceled while waiting", "request "+req.RequestID+"; nothing was run", name)
+		case isPeerErr(err):
+			iv.logf("WARNING: REFUSING THE COMPOSITOR ROUTE: %v. Nothing was sent to it. A same-uid impostor may be squatting the socket %s, or --compositor-uid is wrong; falling back to the bus route (approval.requested / approval.decide@v1)", err, ap.Compositor.Socket)
 		case err != nil:
 			iv.logf("compositor prompt unavailable (%v); falling back to the bus route (approval.requested / approval.decide@v1)", err)
 		case ans.Decision != Allow:
@@ -178,7 +182,7 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 			return nil, fail("approval_denied", "%s was denied by the compositor prompt (key %q)", "request "+req.RequestID+"; nothing was run", name, ans.Key)
 		default:
 			iv.publishDecided(req.RequestID, verdict{Allow, "compositor"}, "", prov.RouteCompositor)
-			iv.logf("approval %s: allowed at the compositor prompt (key %q)", req.RequestID, ans.Key)
+			iv.logf("approval %s: allowed at the compositor prompt (key %q; domain_verified=%s: %s)", req.RequestID, ans.Key, ans.DomainVerified, ans.DomainVerifyDetail)
 			return compositorApproval(req.RequestID, ans, now()), nil
 		}
 	}
@@ -216,6 +220,11 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	}
 	iv.logf("approval %s: allowed by %s", id, v.by)
 	return &prov.Approval{Required: true, Route: prov.RouteInteractive, Decision: Allow, RequestID: id, By: v.by, At: now()}, nil
+}
+
+func isPeerErr(err error) bool {
+	var pe *PeerError
+	return errors.As(err, &pe)
 }
 
 func (iv *Invoker) publishDecided(id string, v verdict, reason, route string) {

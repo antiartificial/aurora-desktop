@@ -18,32 +18,39 @@ type Client struct {
 	Timeout time.Duration // default 5s
 }
 
-func (b Client) call(verb string, identity, path string) error {
+func (b Client) call(verb string, identity, path, cgroup string) error {
 	t := b.Timeout
 	if t == 0 {
 		t = 5 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t)
 	defer cancel()
-	_, err := b.C.Control(ctx, verb, map[string]string{"identity": identity, "path": path})
+	_, err := b.C.Control(ctx, verb, map[string]string{"identity": identity, "path": path, "cgroup": cgroup})
 	return err
 }
 
-// AddDomain registers identity at the socket path. A domain busd already has
+// AddDomain registers identity at the socket path with the domain's cgroup
+// (`domain cgroup <name>`), which is what lets busd attest connections to it
+// and lets the compositor verify the domain. An empty cgroup registers it
+// unattestable. A domain busd already has
 // under that identity counts as success (a controller restart, or a second
 // controller); every other refusal is returned.
-func (b Client) AddDomain(identity, path string) error {
-	err := b.call("bus.domain.add@v1", identity, path)
+func (b Client) AddDomain(identity, path, cgroup string) error {
+	err := b.call("bus.domain.add@v1", identity, path, cgroup)
 	var re *client.RemoteError
-	if errors.As(err, &re) && strings.Contains(re.Message, "is already registered") {
-		return nil
+	if errors.As(err, &re) {
+		// With a cgroup, re-adding the same domain is reported by busd as an
+		// overlap with itself rather than as "already registered".
+		if strings.Contains(re.Message, "is already registered") || strings.Contains(re.Message, " of "+identity+":") {
+			return nil
+		}
 	}
 	return err
 }
 
 // RemoveDomain unregisters identity. A domain busd does not know is success.
 func (b Client) RemoveDomain(identity string) error {
-	err := b.call("bus.domain.remove@v1", identity, "")
+	err := b.call("bus.domain.remove@v1", identity, "", "")
 	var re *client.RemoteError
 	if errors.As(err, &re) && strings.Contains(re.Message, "is not registered") {
 		return nil

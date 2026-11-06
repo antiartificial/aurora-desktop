@@ -11,6 +11,7 @@ pub mod dump;
 mod font;
 pub mod socket;
 pub mod testinput;
+pub mod verify;
 
 use std::{collections::VecDeque, io::Write, os::unix::net::UnixStream, path::PathBuf, time::Instant};
 
@@ -29,7 +30,12 @@ use crate::Aurora;
 pub struct Request {
     pub request_id: String,
     pub app: String,
+    /// The requester's CLAIM of the domain's display name. Not verified.
     pub domain: String,
+    /// The requester's claim of the domain's bus identity; what is checked.
+    pub domain_identity: String,
+    /// What the compositor itself established about the claim (verify.rs).
+    pub verification: verify::Verification,
     pub verb: String,
     pub effect: String,
     pub grants: Vec<String>,
@@ -55,6 +61,8 @@ pub struct Trusted {
     pub dump_path: Option<PathBuf>,
     pub dumped: Option<u64>,
     pub allow: socket::Allowlist,
+    /// Bus session socket for domain verification; None means every claim is `unknown`.
+    pub bus_sock: Option<PathBuf>,
     /// Keys pressed while an overlay was up. Their releases are swallowed
     /// too, even after the overlay is gone, so a client never sees half a keystroke.
     swallowed: std::collections::HashSet<u32>,
@@ -77,9 +85,10 @@ fn decide(sym: xkb::Keysym) -> Option<(bool, String)> {
     }
 }
 
-fn reply(mut out: &UnixStream, request_id: &str, allow: bool, key: &str, reason: &str) {
+fn reply(mut out: &UnixStream, req: &Request, allow: bool, key: &str, reason: &str) {
     let body = serde_json::json!({
-        "v": 1, "request_id": request_id,
+        "v": 1, "request_id": req.request_id,
+        "domain_verified": req.verification.verdict.wire(), "domain_verify_detail": req.verification.detail,
         "decision": if allow { "allow" } else { "deny" }, "key": key, "reason": reason,
     });
     let _ = writeln!(out, "{body}");
@@ -116,7 +125,7 @@ impl Aurora {
         let Some(i) = self.trusted.queue.iter().position(|p| p.id == id) else { return };
         let p = self.trusted.queue.remove(i).unwrap();
         tracing::info!("trusted: approval {} -> {} (key {key:?}, {reason})", p.req.request_id, if allow { "allow" } else { "deny" });
-        reply(&p.out, &p.req.request_id, allow, key, reason);
+        reply(&p.out, &p.req, allow, key, reason);
         if !self.trusted.active() {
             let saved = self.trusted.saved_focus.take().filter(|s| s.is_alive());
             self.seat.get_keyboard().unwrap().set_focus(self, saved, SERIAL_COUNTER.next_serial());

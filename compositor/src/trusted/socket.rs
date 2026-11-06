@@ -1,17 +1,18 @@
 //! The privileged request channel: a Unix socket that is not the Wayland
 //! socket. One request per connection, one JSON line each way.
 //!
-//! request:  {"v":1,"op":"approve","request_id":"..","app":"..","domain":"..","verb":"..",
+//! request:  {"v":1,"op":"approve","request_id":"..","app":"..","domain":"..","domain_identity":"domain:<name>:<id>","verb":"..",
 //!            "effect":"destructive","grants":[{"path":"..","mode":"rw","source":"gesture"}],
 //!            "args":<any json>,"timeout_ms":60000}
-//! response: {"v":1,"request_id":"..","decision":"allow"|"deny","key":"a","reason":"key"|"timeout"}
+//! response: {"v":1,"request_id":"..","decision":"allow"|"deny","key":"a","reason":"key"|"timeout",
+//!            "domain_verified":"true"|"false"|"unknown","domain_verify_detail":".."}
 //!           or {"error":".."} when the peer or the request is refused.
 //!
 //! Who may connect is decided on the connection, from the kernel's
 //! SO_PEERCRED, before a byte is read. See `Allowlist` for what that checks.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     io::{ErrorKind, Read, Write},
     os::{fd::AsRawFd, unix::net::{UnixListener, UnixStream}},
     path::Path,
@@ -21,12 +22,13 @@ use std::{
 
 use serde::Deserialize;
 use smithay::reexports::calloop::{
-    Interest, LoopHandle, Mode, PostAction,
+    Interest,
+    channel, LoopHandle, Mode, PostAction,
     generic::Generic,
     timer::{TimeoutAction, Timer},
 };
 
-use super::{Request, draw::clean};
+use super::{Request, draw::clean, verify};
 use crate::Aurora;
 
 const MAX_LINE: usize = 64 * 1024;
@@ -113,6 +115,8 @@ struct Wire {
     #[serde(default)]
     domain: String,
     #[serde(default)]
+    domain_identity: String,
+    #[serde(default)]
     verb: String,
     #[serde(default)]
     effect: String,
@@ -152,6 +156,8 @@ fn parse(line: &[u8]) -> Result<(Request, Duration), String> {
         request_id: field(&w.request_id)?,
         app: field(&w.app)?,
         domain: field(&w.domain)?,
+        domain_identity: field(&w.domain_identity)?,
+        verification: super::verify::Verification::unchecked(),
         verb: field(&w.verb)?,
         effect: field(&w.effect)?,
         grants,
@@ -207,45 +213,66 @@ fn accept(h: &LoopHandle<'static, Aurora>, state: &mut Aurora, s: UnixStream) {
         return;
     }
     let Ok(read_half) = s.try_clone() else { return };
-    // `id` is set once the request is queued; the timer drops silent peers.
-    let id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
-    let silent = id.clone();
+    // `sent`: the request line arrived and is being verified. `id`: it is queued.
+    // `gone`: the peer hung up. All three live on the loop thread.
+    let sent = Rc::new(Cell::new(false));
+    let gone = Rc::new(Cell::new(false));
+    let id: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+    let silent = sent.clone();
     let victim = s.try_clone().ok();
     let _ = h.insert_source(Timer::from_duration(FIRST_LINE_WITHIN), move |_, _, _| {
-        if silent.borrow().is_none() {
+        if !silent.get() {
             if let Some(v) = &victim {
                 let _ = v.shutdown(std::net::Shutdown::Both);
             }
         }
         TimeoutAction::Drop
     });
+    let write_half = Rc::new(RefCell::new(Some(s)));
+    // The bus check blocks (up to 1.5s), so it runs on a thread and comes back
+    // here through a channel; the compositor loop never waits on busd.
+    let (tx, rx) = channel::channel::<(Request, Duration)>();
+    let (w2, id2, gone2) = (write_half.clone(), id.clone(), gone.clone());
+    let _ = h.insert_source(rx, move |ev, _, state| {
+        let channel::Event::Msg((req, timeout)) = ev else { return };
+        let Some(w) = w2.borrow_mut().take() else { return };
+        if gone2.get() {
+            return;
+        }
+        tracing::info!("trusted: request from uid {uid} pid {pid}; domain_verified={} ({})", req.verification.verdict.wire(), req.verification.detail);
+        id2.set(Some(state.trusted_enqueue(req, timeout, w)));
+    });
     let mut buf: Vec<u8> = Vec::new();
-    let mut write_half = Some(s);
     let _ = h.insert_source(Generic::new(read_half, Interest::READ, Mode::Level), move |_, r, state| {
         let mut chunk = [0u8; 4096];
         loop {
             match (&**r).read(&mut chunk) {
                 Ok(0) => {
-                    if let Some(i) = *id.borrow() {
+                    gone.set(true);
+                    if let Some(i) = id.get() {
                         state.trusted_withdraw(i);
                     }
                     return Ok(PostAction::Remove);
                 }
-                Ok(n) if id.borrow().is_none() => {
+                Ok(n) if !sent.get() => {
                     buf.extend_from_slice(&chunk[..n]);
                     if buf.len() > MAX_LINE {
-                        if let Some(w) = write_half.take() { refuse(&w, "request too large"); }
+                        if let Some(w) = write_half.borrow_mut().take() { refuse(&w, "request too large"); }
                         return Ok(PostAction::Remove);
                     }
                     if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-                        let w = write_half.take().unwrap();
                         match parse(&buf[..nl]) {
-                            Ok((req, timeout)) => {
-                                tracing::info!("trusted: request from uid {uid} pid {pid}");
-                                *id.borrow_mut() = Some(state.trusted_enqueue(req, timeout, w));
+                            Ok((mut req, timeout)) => {
+                                sent.set(true);
+                                let sock = state.trusted.bus_sock.clone();
+                                let tx = tx.clone();
+                                std::thread::spawn(move || {
+                                    req.verification = verify::check(sock.as_deref(), &req.domain, &req.domain_identity);
+                                    let _ = tx.send((req, timeout));
+                                });
                             }
                             Err(why) => {
-                                refuse(&w, &why);
+                                if let Some(w) = write_half.borrow_mut().take() { refuse(&w, &why); }
                                 return Ok(PostAction::Remove);
                             }
                         }

@@ -14,7 +14,7 @@ use smithay::{
 };
 
 use super::font::{GLYPHS, GLYPH_H, GLYPH_W};
-use super::{Pending, Trusted};
+use super::{Pending, Trusted, verify::Verdict};
 
 const PANEL: [u8; 4] = [24, 24, 32, 255];
 const BORDER: [u8; 4] = [255, 90, 20, 255];
@@ -22,6 +22,11 @@ const TEXT: [u8; 4] = [235, 235, 235, 255];
 const DIM: [u8; 4] = [150, 150, 160, 255];
 const WARN: [u8; 4] = [255, 90, 70, 255];
 const OK: [u8; 4] = [90, 220, 120, 255];
+/// Solid band behind the unverified-domain warning; no other element uses it.
+pub const BANNER: [u8; 4] = [255, 200, 0, 255];
+/// Text colour of a verified domain line; no other element uses it.
+pub const VERIFIED: [u8; 4] = [80, 200, 255, 255];
+const BANNER_H: usize = 22;
 
 pub struct Canvas {
     pub w: usize,
@@ -105,7 +110,18 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     let r = &p.req;
     let mut rows: Vec<(String, String, [u8; 4], bool)> = Vec::new(); // label, value, colour, keep_tail
     rows.push(("App".into(), r.app.clone(), TEXT, false));
-    rows.push(("Domain".into(), r.domain.clone(), TEXT, false));
+    let verified = r.verification.verdict == Verdict::Verified;
+    if verified {
+        rows.push(("Domain".into(), r.domain.clone(), TEXT, false));
+        rows.push(("".into(), format!("VERIFIED: {}", r.verification.detail), VERIFIED, false));
+        rows.push(("".into(), "Proves the domain exists, not that this request runs in it.".into(), DIM, false));
+    } else {
+        rows.push(("Domain".into(), format!("CLAIMED \"{}\" (NOT VERIFIED)", r.domain), WARN, false));
+        rows.push(("".into(), format!("busd: {}", r.verification.detail), WARN, false));
+    }
+    if !r.domain_identity.is_empty() {
+        rows.push(("Ident".into(), r.domain_identity.clone(), DIM, true));
+    }
     rows.push(("Verb".into(), r.verb.clone(), TEXT, false));
     rows.push(("Effect".into(), r.effect.to_uppercase(), WARN, false));
     if r.grants.is_empty() {
@@ -120,7 +136,8 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     for (i, l) in wrap(&r.args, vcols, 3).into_iter().enumerate() {
         rows.push((if i == 0 { "Args" } else { "" }.into(), l, TEXT, false));
     }
-    let h = 32 + 8 + 16 + 14 + rows.len() * (GLYPH_H + 2) + 14 + 32 + 10 + 16 + 30;
+    let banner = if verified { 0 } else { BANNER_H + 8 };
+    let h = banner + 32 + 8 + 16 + 14 + rows.len() * (GLYPH_H + 2) + 14 + 32 + 10 + 16 + 30;
     let mut c = Canvas::new(w, h, PANEL);
     c.rect(0, 0, w, 6, BORDER);
     c.rect(0, h - 6, w, 6, BORDER);
@@ -131,6 +148,15 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     y += 32 + 6;
     c.text(20, y, &fit("Drawn by the compositor itself, not by an app.", cols, false), 1, DIM);
     y += GLYPH_H + 14;
+    if !verified {
+        c.rect(14, y - 2, w - 28, BANNER_H, BANNER);
+        let msg = match r.verification.verdict {
+            Verdict::Unknown => "UNVERIFIED DOMAIN: busd could not be asked. The name is a claim.",
+            _ => "UNVERIFIED DOMAIN: busd does not vouch for it. The name is a claim.",
+        };
+        c.text(20, y + 3, &fit(msg, cols, false), 1, [20, 20, 20, 255]);
+        y += BANNER_H + 8;
+    }
     for (label, value, colour, tail) in rows {
         c.text(20, y, &label, 1, DIM);
         c.text(20 + 8 * GLYPH_W, y, &fit(&value, vcols, tail), 1, colour);

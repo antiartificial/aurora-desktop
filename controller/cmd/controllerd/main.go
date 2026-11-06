@@ -37,6 +37,7 @@ func main() {
 	autoApprove := fs.Bool("auto-approve", false, "TEST AFFORDANCE, defeats approval: allow every destructive/external invoke on a non-ambient grant without asking anyone (logged loudly each time)")
 	compSock := fs.String("compositor-socket", config.TrustedSocket(), "compositor trusted-path socket (env AURORA_TRUSTED_SOCK): approvals are drawn by the compositor when it answers here, else they fall back to the bus route")
 	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
+	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
@@ -79,7 +80,14 @@ func main() {
 
 	approver := &invoke.Approver{Timeout: *apprTimeout, AutoApprove: *autoApprove}
 	if !*noComp {
-		approver.Compositor = &invoke.CompositorPrompt{Socket: *compSock}
+		approver.Compositor = &invoke.CompositorPrompt{Socket: *compSock, Logf: log.Printf}
+		if *compUID >= 0 {
+			u := uint32(*compUID)
+			approver.Compositor.ExpectedUID = &u
+			log.Printf("compositor peer must be uid %d and outside any %s cgroup", u, invoke.DefaultDenyCgroupComponent)
+		} else {
+			log.Printf("compositor peer must be uid %d (this process) and outside any %s cgroup", os.Geteuid(), invoke.DefaultDenyCgroupComponent)
+		}
 		if _, err := os.Stat(*compSock); err != nil {
 			log.Printf("compositor trusted socket %s not present: approvals will use the bus route until it appears (each request tries the compositor first)", *compSock)
 		} else {
