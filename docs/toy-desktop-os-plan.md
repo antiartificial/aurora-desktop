@@ -351,40 +351,29 @@ Phase 1 sits off the spine on purpose: it hands Phase 4 a shader that has alread
 
 ## Ginux track (parallel)
 
-**Goal:** run the same userland on Ginux in QEMU, ending with GPU-accelerated glass, then swap in a Ginux kernel adapter. Pace: whenever kernel work sounds fun; never blocks a UX phase.
+**Goal:** prove the kernel adapter seam by running the same userland on a second kernel. Retargeted by decision 0005: upstream Ginux retired its bootable UEFI kernel and is now a userspace kernel that runs as an ordinary Linux process, so there is no QEMU and no GINUX.EFI in this track. Pace: whenever kernel work sounds fun; never blocks a UX phase.
 
-**G1. Go and the bus on Ginux**
+**G1. The bus inside a Ginux domain**
 
-- Run static Go binaries (`busd`, `bus`) in a domain. Log every unimplemented or partial syscall they hit, fix the gaps.
-- Exit: `bus send` and `bus sub` working between two Ginux domains.
+- Build Ginux with its own `make build`. The target is `x86_64-unknown-linux-gnu` and the binary is `ginux`; there is no EFI image on the current branch.
+- Run `busd` and a client inside a Ginux managed domain. Log every unimplemented or partial syscall they hit, and fix the gaps.
+- Exit: `bus send` and `bus sub` working between two Ginux domains, with no QEMU anywhere in the loop.
 
-**G2. Pixels on screen**
+**G2. Ginux as a kernel adapter backend**
 
-- virtio-gpu in 2D mode, plus the DRM/KMS ioctls for dumb buffers and modesetting.
-- `/dev/dri/card0` and the `/sys/dev/char/...` entries libdrm uses to find GPUs.
-- Exit: the compositor image boots in a domain with Smithay's software (Pixman) renderer and shows windows.
+- Implement contract 3 against Ginux's own domain contract: create and destroy, restrict, grant a capability, snapshot and roll back, suspend and resume, resource budget.
+- Compare it operation by operation against the Linux backend. The operations with no clean equivalent are the real finding, and they are what decision 0005's constraint is about: contract 3 must stay expressible by a kernel that owns the hardware, because bare metal is still a goal.
+- Exit: the Phase 6 and Phase 7 demos run unchanged with the Ginux backend selected.
 
-**G3. GPU acceleration with Venus**
+**G3. Syscall-trace diffing**
 
-- The virtio-gpu 3D ioctls: `GETPARAM`, `GET_CAPS`, `CONTEXT_INIT`, `RESOURCE_CREATE_BLOB`, `MAP`, `EXECBUFFER`, `WAIT`, transfers.
-- Generic DRM pieces: PRIME buffer sharing, syncobjs and sync\_file fences, correct cache attributes on mmap of host-visible memory.
-- Host: QEMU with `-device virtio-gpu-gl-pci,hostmem=8G,blob=true,venus=true` under KVM, Nvidia driver 570.86 or later.
-- Method: run the same Mesa on a Linux guest and on Ginux, log every ioctl on both, diff the traces.
-- Milestones: `vulkaninfo` lists the 4090 through Venus → `vkcube` spins → `glxgears` through Zink → the compositor with glass.
+- The same workload under the Linux adapter and the Ginux adapter, traced on both sides and diffed; the first differing line is the bug. Cheaper than originally planned, because both sides now run on the same host.
 
-**Abort condition.** If `vulkaninfo` does not list the 4090 through Venus within six working sessions, G3 stops and the Ginux track continues on the software path (Pixman, lavapipe) permanently. GPU acceleration then waits for bare metal. The track's value is G4 — proving the kernel adapter seam holds — and that does not depend on glass in a VM.
+**Deferred to the bare-metal route**
 
-**G4. Ginux kernel adapter**
+These were G2, G3, G5 and the "After that" list. Every one of them needs a kernel that owns the hardware, which a userspace kernel does not: pixels on screen via virtio-gpu and DRM/KMS; Venus GPU acceleration and its `vulkaninfo` to `vkcube` to Zink to glass chain; drivers as restartable server domains with a fence watchdog; the LinuxKPI shim; NVIDIA's open kernel module on bare metal; ARM64 and Apple Silicon via Asahi.
 
-- Implement contract 3 with native domains and capabilities, ZFS for snapshots once ported.
-- Exit: Phases 6–10's demos run unchanged on Ginux.
-
-**G5. Drivers as servers (later)**
-
-- Move the virtio-gpu driver into a userspace driver domain under the supervisor, with device reset and a TDR-style fence watchdog.
-- Exit: kill the GPU driver mid-frame; the compositor flickers and recovers.
-
-**After that:** the LinuxKPI shim and Nvidia's open kernel module for bare metal; ARM64 and Apple Silicon via Asahi's drivers.
+None is abandoned. The frozen UEFI kernel, preserved upstream at tag `bootable-kernel-final`, is the starting point when that work resumes. Decision 0005 records what preserving the route back requires.
 
 ## Later phases
 
@@ -472,8 +461,8 @@ Each question is tied to the phase that needs its answer.
 - [ ] Declassification: what the user actually does to mark a tainted value clean, and how that act is shown and recorded. (Phase 10)
 - [ ] contextdb boundary: where its schema ends and indexd begins. (Phase 9)
 - [ ] Native app format: WebAssembly components now, or after the Interface Kit settles? (Later)
-- [ ] Haiku compatibility: port libbe onto the bus as a native API, or skip? (Later)
-- [ ] Project name. The working tree is called aurora; the plan is not.
+- [ ] Haiku app support: ANSWERED by decision 0008. Source compatibility, not binary, in three stages; Stage A is the messaging core with the BeOS primitives reimplemented in userspace. Still open inside it: whether the kits come from upstream Haiku or the Vitruvian fork. Stage A is blocked on fd passing reaching the bus, which 0001 specifies and the bus lacks.
+- [ ] Project name. The repo, the launcher binary and the README all say Aurora now, so this is settled in practice but has never been decided on the record.
 
 ## References
 
