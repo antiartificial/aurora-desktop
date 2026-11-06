@@ -48,6 +48,8 @@ func (s *Server) control(c *conn, e proto.Envelope, clientID string) {
 		out, err = s.ctlDomain(c, e.Verb, e.Payload)
 	case "bus.domain.ns@v1":
 		out, err = s.ctlDomainNS(c, e.Payload)
+	case "bus.net.report@v1":
+		out, err = s.ctlNetReport(c, e.Payload)
 	default:
 		err = fmt.Errorf("unknown control verb %q", e.Verb)
 	}
