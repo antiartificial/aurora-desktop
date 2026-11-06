@@ -1,0 +1,12 @@
+[package]
+name = "theme-oracle"
+version = "0.1.0"
+edition = "2021"
+description = "Prints the sRGB bytes the COMPOSITOR derives from each [theme.colors] token, using the compositor's own theme.rs verbatim"
+license = "MIT"
+publish = false
+
+# The same versions as compositor/Cargo.toml, so the same toml and serde read the file the same way.
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.9"

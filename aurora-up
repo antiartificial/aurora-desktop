@@ -70,6 +70,8 @@ PIDS=() NAMES=()
 export XDG_RUNTIME_DIR=$RUN/xdg AURORA_DOMAINS_DIR=$RUN/domains AURORA_BUS_SOCK=$RUN/bus.sock
 export AURORA_TRUSTED_SOCK=$RUN/xdg/aurora-trusted.sock AURORA_DOMAIN_BIN=$BIN/domain AURORA_SUPERVISOR_SOCK=$RUN/supervisor.sock
 export AURORA_KITS_NS=up$$
+# Haiku apps (kits/interface) read the same theme copy the compositor hot-reloads, once at start: one file, two readers (docs: demos/theme-drift)
+export AURORA_THEME_DIR=$RUN/theme
 INPUT=$RUN/input.sock
 
 reap_children() {  # services the supervisor started, if it was SIGKILLed and could not stop them
@@ -202,7 +204,7 @@ command -v bwrap >/dev/null || ISO="NO: bwrap not installed"
 # ---------------------------------------------------------------- env file and banner
 {
   echo "export PATH=\"$BIN:\$PATH\""
-  for v in XDG_RUNTIME_DIR AURORA_DOMAINS_DIR AURORA_BUS_SOCK AURORA_TRUSTED_SOCK AURORA_DOMAIN_BIN AURORA_KITS_NS AURORA_SUPERVISOR_SOCK; do echo "export $v=\"${!v}\""; done
+  for v in XDG_RUNTIME_DIR AURORA_DOMAINS_DIR AURORA_BUS_SOCK AURORA_TRUSTED_SOCK AURORA_DOMAIN_BIN AURORA_KITS_NS AURORA_SUPERVISOR_SOCK AURORA_THEME_DIR; do echo "export $v=\"${!v}\""; done
   [ -n "$WL" ] && { echo "export AURORA_WAYLAND=\"$WL\""; echo "export AURORA_CAPTURE=\"$CAPTURE\""; }
   [ $TESTINPUT = 1 ] && [ $COMPOSITOR = 1 ] && echo "export AURORA_INPUT_SOCK=\"$INPUT\""
 } > "$RUN/env"
