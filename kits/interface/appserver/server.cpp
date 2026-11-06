@@ -57,6 +57,9 @@ namespace {
 std::recursive_mutex gMu;
 bool gTrace = false;
 int gUnhandled = 0, gUnhandledReply = 0;
+// The view that gets every pointer event until the button goes up: the one pressed on, or the one that called
+// SetMouseEventMask(B_POINTER_EVENTS) from its MouseDown (BMenuField does, so that it, not the menu bar inside it, sees the up).
+int32 gPtrGrab = B_NULL_TOKEN;
 double gScale = 1.0;
 uint32 gMods = 0;		// last modifier state seen on any window
 au_wl* gWl = NULL;
@@ -305,6 +308,13 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 			int32 token; link.Read<int32>(&token);
 			auto it = gBitmaps.find(token);
 			if (it != gBitmaps.end()) { delete_area(it->second.area); gBitmaps.erase(it); }
+			return;
+		}
+		case AS_SET_VIEW_CURSOR:
+		{
+			// Acknowledged, not shown: the cursor is the compositor's, and there is no protocol yet to pass a BCursor's bitmap on.
+			// BSplitView sets one (a resize cursor) as the pointer crosses its divider, and asks for the answer.
+			if (link.NeedsReply()) { reply.StartMessage(B_OK); reply.Flush(); }
 			return;
 		}
 		case AS_GET_SCREEN_FRAME:
@@ -714,6 +724,7 @@ BRect ToWindow(const SView* v, BRect r)
 
 void SetupClip(SWindow* w, SView* v)
 {
+	if (EffectivelyHidden(v)) { w->canvas.SetClip(DRect{0, 0, 0, 0}); return; }	// a view on a hidden tab page draws nothing (BAbstractSpinner repaints its focus ring when the window deactivates)
 	if (!w->inUpdate) w->directDraw = true;	// drawing outside an update (BTextView's caret): present it, see WindowThread
 	BRect vis = VisibleRect(v);
 	BRect c = vis;
@@ -1014,7 +1025,6 @@ void HandleInternal(SWindow* w, const Internal& e)
 			// Same fields app_server's EventDispatcher sends. The client's BWindow adds "where" and
 			// "be:view_where" itself from "screen_where".
 			static int buttons = 0;
-			static int32 grab = B_NULL_TOKEN;
 			static BPoint where;
 			if (e.kind == AU_EV_POINTER_MOVE)
 				where = BPoint(floorf(e.a / 256.0f), floorf(e.b / 256.0f));
@@ -1032,8 +1042,8 @@ void HandleInternal(SWindow* w, const Internal& e)
 					if (!c->hidden && VisibleRect(c).Contains(where)) { hit = c; found = true; break; }
 				}
 			}
-			if (e.kind == AU_EV_POINTER_BUTTON && e.b) grab = hit ? hit->token : B_NULL_TOKEN;
-			int32 token = grab != B_NULL_TOKEN ? grab : (hit ? hit->token : B_NULL_TOKEN);
+			if (e.kind == AU_EV_POINTER_BUTTON && e.b) gPtrGrab = hit ? hit->token : B_NULL_TOKEN;
+			int32 token = gPtrGrab != B_NULL_TOKEN ? gPtrGrab : (hit ? hit->token : B_NULL_TOKEN);
 			BMessage m(e.kind == AU_EV_POINTER_MOVE ? B_MOUSE_MOVED : (e.b ? B_MOUSE_DOWN : B_MOUSE_UP));
 			m.AddInt64("when", system_time());
 			m.AddPoint("screen_where", BPoint(where.x + w->frame.left, where.y + w->frame.top));
@@ -1050,7 +1060,7 @@ void HandleInternal(SWindow* w, const Internal& e)
 				m.AddInt32("clicks", w->clicks);
 			}
 			if (token != B_NULL_TOKEN) m.AddInt32("_view_token", token);
-			if (e.kind == AU_EV_POINTER_BUTTON && !e.b) grab = B_NULL_TOKEN;
+			if (e.kind == AU_EV_POINTER_BUTTON && !e.b) gPtrGrab = B_NULL_TOKEN;
 			BMessenger reply;
 			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
 			break;
@@ -1093,6 +1103,19 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			return;
 		case AS_ACTIVATE_WINDOW:
 		case AS_SET_LOOK: case AS_SET_FEEL: case AS_SET_FLAGS: case AS_SET_WORKSPACES:
+		case AS_GET_DECORATOR_SETTINGS:
+		{
+			// There is no decorator (the compositor draws the window's frame), so: no tab and no border. BAlert asks, to
+			// centre itself on the screen by its decorated frame.
+			BMessage settings;
+			settings.AddRect("tab frame", BRect(0, 0, 0, 0));
+			settings.AddFloat("border width", 0.0f);
+			ssize_t size = settings.FlattenedSize();
+			std::vector<char> buf(size);
+			if (settings.Flatten(buf.data(), size) != B_OK) { reply.StartMessage(B_ERROR); reply.Flush(); return; }
+			reply.StartMessage(B_OK); reply.Attach<int32>((int32)size); reply.Attach(buf.data(), size); reply.Flush();
+			return;
+		}
 		case AS_SET_SIZE_LIMITS:
 		{
 			// Needs a reply (BWindow::SetSizeLimits blocks on it): the limits as enforced, and the frame. BMenuWindow's
@@ -1191,7 +1214,13 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			reply.Flush();
 			return;
 		}
-		case AS_VIEW_SET_EVENT_MASK: case AS_VIEW_SET_MOUSE_EVENT_MASK: return;
+		case AS_VIEW_SET_EVENT_MASK: return;
+		case AS_VIEW_SET_MOUSE_EVENT_MASK:
+		{
+			uint32 mask = 0; link.Read<uint32>(&mask);
+			if ((mask & B_POINTER_EVENTS) && gPtrGrab != B_NULL_TOKEN) gPtrGrab = v->token;
+			return;
+		}
 		case AS_VIEW_GET_COORD:
 			reply.StartMessage(B_OK);
 			reply.Attach<BPoint>(v->frame.LeftTop());
