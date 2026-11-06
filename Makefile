@@ -27,6 +27,12 @@ help:
 build: ## build everything: the Go modules, the compositor, the Haiku kits
 	./aurora-up --build-only
 
+# The keys are generated and passed explicitly rather than left to each side's
+# default. The compositor runs with the HOST's XDG_RUNTIME_DIR (winit needs it
+# to find the host compositor to open a window in), but controllerd runs under
+# aurora-up with XDG_RUNTIME_DIR=$(RUN)/xdg -- so the two would derive
+# DIFFERENT default key paths and every compositor-routed approval would fail
+# its signature check. Naming them settles it. Decision 0011.
 desktop: build ## open the desktop in a window on this host, with the stack behind it
 	@set -u; \
 	if [ -f '$(RUN)/ready' ] && [ -S '$(RUN)/bus.sock' ]; then \
@@ -44,7 +50,15 @@ desktop: build ## open the desktop in a window on this host, with the stack behi
 	fi; \
 	trap '[ -n "$$up" ] && kill $$up 2>/dev/null' EXIT; \
 	[ -d '$(RUN)/theme' ] || cp -r contracts/theme '$(RUN)/theme'; \
+	mkdir -p '$(RUN)/xdg/aurora'; \
+	for k in approval powerbox; do \
+	  f='$(RUN)'/xdg/aurora/$$k.key; \
+	  [ -s "$$f" ] || { (umask 077; head -c 32 /dev/urandom > "$$f"); echo "make: generated $$f"; }; \
+	  chmod 600 "$$f"; \
+	done; \
 	echo "make: the desktop is a host window. Right-click it for the menu; close it to stop."; \
+	AURORA_APPROVAL_KEY='$(RUN)/xdg/aurora/approval.key' \
+	AURORA_POWERBOX_KEY='$(RUN)/xdg/aurora/powerbox.key' \
 	./$(COMP) $(XWAYLAND) \
 	  --bus-socket '$(RUN)/bus.sock' \
 	  --trusted-socket '$(RUN)/xdg/aurora-trusted.sock' \

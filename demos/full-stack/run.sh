@@ -32,6 +32,14 @@ step "build and bring the stack up" "aurora-up builds busd, domain, controllerd,
 ok "built (build/bin, compositor, capture, kits)"
 "$ROOT/aurora-up" --run "$RUN" --dump-overlay "$RUN/overlay.png" --approval-timeout 30s --no-build >"$RUN.up.log" 2>&1 & UPPID=$!; UP=1
 waitf "aurora-up ready" test -f "$RUN/ready"
+# Pin a static wallpaper for the whole run. Step 5 asserts that a client capture
+# is byte-identical before and during the approval overlay -- that is how it
+# proves the overlay is excluded and nothing else moved. The theme's default
+# background is "shader", which animates, so that assertion is unsatisfiable
+# against it: a capture a second later differed by 565877 of 1024000 pixels.
+# Freezing the wallpaper keeps the claim strict instead of loosening it.
+sed -i 's/^mode = "shader"/mode = "solid"/' "$RUN/theme/aurora-glass.toml"
+sleep 1   # the compositor hot-reloads the theme on mtime
 source "$RUN/env"
 sed -n '/== Aurora is up/,/logs/p' "$RUN.up.log" | sed 's/^/   | /'
 need "busd socket exists" test -S "$AURORA_BUS_SOCK"
