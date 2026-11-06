@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <atomic>
 #include "server.h"
+#include "aurora_theme.h"
 
 static int fails = 0, checks = 0;
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -58,11 +59,16 @@ int main()
 	aurora::Frame f; uint64_t btn = 0, lab = 0;
 	CHECK(waitFrame(&f, &btn, s, 20, 60, 140, 91), "no first frame");
 	lab = hashRegion(f, s, 20, 20, 230, 41);
-	// the button face is not the panel colour and not flat: it is a gradient with a frame
+	// The button has a frame and a face that is not the panel colour. Stock Haiku also draws the face as a gradient; Aurora's
+	// look is flat on purpose (aurora_controllook.h), so "not flat" is asked only of the look that promises it.
 	int distinct = 0; uint32_t last = 0; bool first = true;
-	for (int y = (int)(62 * s); y < (int)(88 * s); y++) { uint32_t v = f.argb[(size_t)y * f.width + (int)(30 * s)]; if (first || v != last) distinct++; last = v; first = false; }
-	printf("button column: %d distinct colours down its height (gradient)\n", distinct);
-	CHECK(distinct >= 4, "button face is flat (%d colours): gradient not drawn", distinct);
+	for (int y = (int)(60 * s); y < (int)(91 * s); y++) { uint32_t v = f.argb[(size_t)y * f.width + (int)(30 * s)]; if (first || v != last) distinct++; last = v; first = false; }
+	rgb_color panel = ui_color(B_PANEL_BACKGROUND_COLOR);
+	uint32_t face = f.argb[(size_t)(int)(75 * s) * f.width + (int)(30 * s)];
+	bool aurora = aurora::UseAuroraControlLook();
+	printf("button column: %d distinct colours down its height (%s look)\n", distinct, aurora ? "aurora" : "haiku");
+	CHECK(distinct >= (aurora ? 3 : 4), "button face is flat or frameless (%d colours)", distinct);
+	CHECK((face & 0xffffff) != (uint32_t)((panel.red << 16) | (panel.green << 8) | panel.blue), "button face is the panel colour: no button");
 
 	uint64_t before = btn;
 	aurora::inject_pointer(0, 80, 75, 1);			// press in the middle of the button

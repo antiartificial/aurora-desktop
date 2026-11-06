@@ -34,6 +34,8 @@
 #include <unistd.h>
 
 #include "server.h"
+#include "aurora_theme.h"
+#include "aurora_controllook.h"
 
 using namespace BPrivate;
 
@@ -114,7 +116,9 @@ BApplication::_InitData(const char* signature, bool initGUI, status_t* _error)
 
 	fServerLink = new BPrivate::PortLink(-1, -1);
 	fServerAllocator = NULL;
-	fServerReadOnlyMemory = NULL;	// ui_color() falls back to Haiku's compiled-in defaults
+	// ui_color() reads this table. Aurora fills it from the theme (aurora_theme.cpp); a colour the theme does not map is
+	// left unset, and ui_color() answers Haiku's compiled-in default for it.
+	fServerReadOnlyMemory = aurora::NewSystemColorTable();
 	fInitialWorkspace = 0;
 	fReadyToRunCalled = false;
 	fPulseRunner = NULL;
@@ -333,8 +337,13 @@ BApplication::_InitGUIContext()
 	/* The part of Haiku's _init_interface_kit_() that matters without a registrar, a clipboard, BBitmap
 	   menus and a palette: global fonts (from the server), the control look, the text width cache. */
 	_init_global_fonts_();
-	if (be_control_look == NULL)
-		be_control_look = new HaikuControlLook();
+	if (be_control_look == NULL) {
+		// [theme.controls] look = "aurora" | "haiku", or AURORA_CONTROL_LOOK: Aurora's look is a subclass of Haiku's.
+		if (aurora::UseAuroraControlLook())
+			be_control_look = new aurora::AuroraControlLook();
+		else
+			be_control_look = new HaikuControlLook();
+	}
 	BPrivate::gWidthBuffer = new BPrivate::WidthBuffer;
 	/* BBitmap keeps its server-shared areas here (clone_area of what AS_CREATE_BITMAP created). */
 	fServerAllocator = new (std::nothrow) BPrivate::ServerMemoryAllocator();

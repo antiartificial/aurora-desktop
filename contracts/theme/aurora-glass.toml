@@ -20,6 +20,63 @@
 name = "aurora-glass"
 version = 1
 
+# --- Toolkit: what Haiku apps (kits/interface) read ----------------------------------------------
+# Added 2026-11-06. The compositor ignores these two tables (unknown keys are ignored); the Interface
+# Kit's colour table and AuroraControlLook (kits/interface/aurora_theme.cpp) read them. Nothing here is
+# drawn by the compositor, and a Haiku app reads the file once, at start: it is not hot-reloaded.
+#
+# One rule turns an Oklab token into the sRGB bytes of an rgb_color, and it is the compositor's own
+# (compositor/src/fx/theme.rs oklab_to_u8), in 32-bit float: Ottosson's Oklab -> linear sRGB matrices,
+# each channel clamped to 0..1, the IEC 61966-2-1 encode, times 255, rounded to nearest; alpha 255.
+# So a token that is also a compositor token (background.top, below) gives identical bytes in both.
+# demos/theme-drift/run.sh pins this against the compositor's own source and its rendered pixels.
+#
+# The surfaces are a calm cool light: window glass is the one luminous material (window glass
+# tint, L 0.80), and a client panel on it has to read as part of it. Contrast floors (WCAG 2, the same
+# ones docs/visual-system.md section 8.2 sets for the shell): text on its surface >= 4.5:1, the focus
+# accent on panel and document >= 3:1 (non-text), control border and scroll thumb on panel >= 3:1.
+# kits/interface/tests/test_theme.cpp checks them against whatever is written here, so a re-tint cannot
+# silently break legibility.
+[theme.colors]
+panel = [0.94, -0.002, -0.007]          # B_PANEL_BACKGROUND_COLOR
+panel_text = [0.24, -0.002, -0.012]     # B_PANEL_TEXT, B_CONTROL_TEXT, B_MENU_ITEM_TEXT, B_MENU_SELECTED_ITEM_TEXT, B_NAVIGATION_PULSE
+menu = [0.96, -0.002, -0.007]           # B_MENU_BACKGROUND_COLOR
+menu_selected = [0.86, 0.02, -0.06]     # B_MENU_SELECTED_BACKGROUND_COLOR
+document = [0.99, 0.0, 0.0]             # B_DOCUMENT_BACKGROUND, B_LIST_BACKGROUND
+document_text = [0.22, 0.0, -0.008]    # B_DOCUMENT_TEXT, B_LIST_ITEM_TEXT, B_LIST_SELECTED_ITEM_TEXT
+control = [0.97, -0.002, -0.006]        # B_CONTROL_BACKGROUND_COLOR
+control_border = [0.62, -0.008, -0.025] # B_CONTROL_BORDER_COLOR
+control_highlight = [0.80, 0.03, -0.08] # B_CONTROL_HIGHLIGHT_COLOR
+control_mark = [0.40, 0.05, -0.14]      # B_CONTROL_MARK_COLOR (check marks, radio dots)
+accent = [0.52, 0.06, -0.17]            # B_KEYBOARD_NAVIGATION_COLOR (the focus ring), B_MENU_SELECTED_BORDER_COLOR
+list_selected = [0.84, 0.02, -0.07]     # B_LIST_SELECTED_BACKGROUND_COLOR
+scroll_thumb = [0.62, -0.008, -0.03]    # B_SCROLL_BAR_THUMB_COLOR
+tooltip = [0.985, 0.0, 0.0]             # B_TOOLTIP_BACKGROUND_COLOR (its text is panel_text)
+shine = [1.0, 0.0, 0.0]                 # B_SHINE_COLOR
+shadow = [0.0, 0.0, 0.0]                # B_SHADOW_COLOR
+link = [0.50, 0.05, -0.17]              # B_LINK_TEXT_COLOR
+link_hover = [0.58, 0.06, -0.16]        # B_LINK_HOVER_COLOR
+link_visited = [0.48, 0.07, -0.07]      # B_LINK_VISITED_COLOR
+link_active = [0.44, 0.05, -0.15]       # B_LINK_ACTIVE_COLOR
+status_bar = [0.62, 0.07, -0.17]        # B_STATUS_BAR_COLOR
+success = [0.72, -0.14, 0.10]           # B_SUCCESS_COLOR
+failure = [0.60, 0.19, 0.07]            # B_FAILURE_COLOR
+# B_DESKTOP_COLOR is background.top, the desktop's own token. The B_WINDOW_* tab and border colours
+# are not mapped: the compositor draws no window decorations (docs/visual-system.md, "What Aurora will not do").
+
+[theme.controls]
+# "aurora": AuroraControlLook (rounded, quiet, a two-pixel focus ring). "haiku": stock HaikuControlLook,
+# the way back and the comparison. The environment variable AURORA_CONTROL_LOOK=haiku|aurora overrides it.
+look = "aurora"
+# "aurora": ui_color() answers the [theme.colors] table above. "haiku": Haiku's own compiled-in greys, for a stock
+# comparison. AURORA_COLORS=haiku|aurora overrides it. Independent of `look`.
+colors = "aurora"
+# Corner radius as a fraction of a control's shorter side. 0.28 is the dock tile's rule
+# (docs/visual-system.md section 3.6: tile.corner_radius = 0.28 * tile_size), applied to controls, and
+# clamped to 2..8 px so a tall box is not a pill and a small one is not square. It deliberately stays
+# well under glass.corner_radius (12): a control inside a window is nested, so its radius is smaller.
+corner_ratio = 0.28
+
 [glass]
 enabled = true
 # Dual-Kawase sampling offset multiplier (1.0 = the textbook kernel). WINDOW glass

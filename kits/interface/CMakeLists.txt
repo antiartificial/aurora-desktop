@@ -47,9 +47,22 @@ target_compile_options(haiku_iface_real PRIVATE "SHELL:-include ${CMAKE_CURRENT_
 set_source_files_properties(${K}/app/ServerMemoryAllocator.cpp PROPERTIES COMPILE_DEFINITIONS HAIKU_TARGET_PLATFORM_LIBBE_TEST)
 
 # ---- the app_server analogue (ours, written fresh) --------------------------------------------------
-set(AS_SRC appserver/server.cpp appserver/canvas.cpp appserver/fonts.cpp applite.cpp)
+# The theme reader (ours): contracts/theme/aurora-glass.toml, embedded as it was at build time and read from disk at run
+# time. The embedded copy is the compositor's BUILTIN_THEME analogue: the defaults when no file is found.
+set(AURORA_THEME_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../../contracts/theme/aurora-glass.toml)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${AURORA_THEME_FILE})
+file(READ ${AURORA_THEME_FILE} AURORA_THEME_TEXT)
+set(AURORA_THEME_GEN ${CMAKE_CURRENT_BINARY_DIR}/gen_theme)
+file(MAKE_DIRECTORY ${AURORA_THEME_GEN})
+file(WRITE ${AURORA_THEME_GEN}/aurora_theme_builtin.inc "R\"AURORATOML(${AURORA_THEME_TEXT})AURORATOML\"\n")
+get_filename_component(AURORA_THEME_DIR_ABS ${CMAKE_CURRENT_SOURCE_DIR}/../../contracts/theme ABSOLUTE)
+set(AS_SRC appserver/server.cpp appserver/canvas.cpp appserver/fonts.cpp applite.cpp aurora_theme.cpp aurora_controllook.cpp)
+# theme.rs does its Oklab arithmetic as separate float multiplies and adds; a fused multiply-add would change bits.
+set_source_files_properties(aurora_theme.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off
+	COMPILE_DEFINITIONS AURORA_REPO_THEME_DIR="${AURORA_THEME_DIR_ABS}")
 add_library(aurora_appserver STATIC ${AS_SRC})
 target_include_directories(aurora_appserver PUBLIC appserver)
+target_include_directories(aurora_appserver PRIVATE ${AURORA_THEME_GEN})
 pkg_check_modules(HB REQUIRED IMPORTED_TARGET harfbuzz)
 target_link_libraries(aurora_appserver PUBLIC haiku_iface_real PkgConfig::FT2 PkgConfig::HB)
 
@@ -80,6 +93,10 @@ iface_exe(test_font tests/test_font.cpp)
 target_link_libraries(test_font PkgConfig::FT2)
 iface_exe(test_iface_window tests/test_window.cpp)
 iface_exe(test_controls tests/test_controls.cpp)
+iface_exe(test_theme tests/test_theme.cpp)
+foreach(tt test_controls test_theme)
+	target_include_directories(${tt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endforeach()
 iface_exe(test_widgets tests/test_widgets.cpp)
 iface_exe(iface_hello demo/hello.cpp)
 iface_exe(iface_controls demo/controls.cpp)
@@ -105,3 +122,14 @@ add_test(NAME iface_widgets COMMAND test_widgets)
 # The whole kitchen sink, every tab drawn (KS_REPORT walks them), no compositor: the server must have served every opcode.
 add_test(NAME iface_kitchensink COMMAND sh -c "AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 KS_REPORT=1 HELLO_QUIT_AFTER_MS=4000 $<TARGET_FILE:iface_kitchensink> | tee /dev/stderr | grep -q '^UNHANDLED 0 '")
 set_tests_properties(iface_font iface_controls iface_widgets iface_kitchensink PROPERTIES TIMEOUT 30)
+# Colours and the control look. The same rules run over the shipped palette, over a dark one written on the spot, and
+# with the stock Haiku look; test_controls also runs under the stock look, which is the way back.
+add_test(NAME iface_theme COMMAND test_theme)
+add_test(NAME iface_theme_custom_palette COMMAND test_theme custom)
+add_test(NAME iface_theme_haiku_look COMMAND test_theme)
+set_tests_properties(iface_theme_haiku_look PROPERTIES ENVIRONMENT "AURORA_CONTROL_LOOK=haiku")
+add_test(NAME iface_theme_haiku_colors COMMAND test_theme)
+set_tests_properties(iface_theme_haiku_colors PROPERTIES ENVIRONMENT "AURORA_COLORS=haiku")
+add_test(NAME iface_controls_haiku_look COMMAND test_controls)
+set_tests_properties(iface_controls_haiku_look PROPERTIES ENVIRONMENT "AURORA_CONTROL_LOOK=haiku")
+set_tests_properties(iface_theme iface_theme_custom_palette iface_theme_haiku_look iface_theme_haiku_colors iface_controls_haiku_look PROPERTIES TIMEOUT 30)
