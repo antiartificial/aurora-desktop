@@ -90,9 +90,15 @@ impl Aurora {
         self.shell.scale = scale;
         let windows: Vec<Window> = self.space.elements().cloned().collect();
         for w in &windows {
+            // X11 windows are not announced to: see the section on XWayland in the module docs.
+            if w.is_x11() {
+                continue;
+            }
             w.with_surfaces(|s, _| announce(s, scale));
-            for (popup, _) in smithay::desktop::PopupManager::popups_for_surface(w.toplevel().unwrap().wl_surface()) {
-                announce(popup.wl_surface(), scale);
+            if let Some(t) = w.toplevel() {
+                for (popup, _) in smithay::desktop::PopupManager::popups_for_surface(t.wl_surface()) {
+                    announce(popup.wl_surface(), scale);
+                }
             }
         }
     }

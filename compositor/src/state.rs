@@ -4,7 +4,7 @@ use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState},
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -18,7 +18,10 @@ use smithay::{
         viewporter::ViewporterState,
         image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState},
         image_copy_capture::{Frame, ImageCopyCaptureState, Session, SessionRef},
+        input_method::InputMethodManagerState,
         output::OutputManagerState,
+        text_input::TextInputManagerState,
+        xwayland_shell::XWaylandShellState,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
         shm::ShmState,
@@ -33,6 +36,7 @@ pub struct Aurora {
 
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
+    pub loop_handle: LoopHandle<'static, Aurora>,
 
     // Smithay State
     pub compositor_state: CompositorState,
@@ -44,6 +48,12 @@ pub struct Aurora {
     pub seat_state: SeatState<Aurora>,
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
+    pub xwayland_shell_state: XWaylandShellState,
+    /// Xwayland, once `--xwayland` started it.
+    pub x: Option<crate::xwayland::XState>,
+    /// Kept alive: they own the `text_input_v3` and `input_method_v2` globals.
+    pub text_input_state: TextInputManagerState,
+    pub input_method_state: InputMethodManagerState,
 
     pub image_capture_source_state: ImageCaptureSourceState,
     pub output_capture_source_state: OutputCaptureSourceState,
@@ -74,7 +84,7 @@ pub struct Aurora {
 }
 
 impl Aurora {
-    pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<'static, Self>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -90,6 +100,11 @@ impl Aurora {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         let popups = PopupManager::default();
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
+        let text_input_state = TextInputManagerState::new::<Self>(&dh);
+        // Any client of this user may be the input method (it sees every key while it holds the grab,
+        // as with virtual keyboards); there is no finer identity to filter on here.
+        let input_method_state = InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
 
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
 
@@ -131,6 +146,7 @@ impl Aurora {
 
             space,
             loop_signal,
+            loop_handle: event_loop.handle(),
             socket_name,
 
             compositor_state,
@@ -142,6 +158,10 @@ impl Aurora {
             seat_state,
             data_device_state,
             popups,
+            xwayland_shell_state,
+            x: None,
+            text_input_state,
+            input_method_state,
             image_capture_source_state,
             output_capture_source_state,
             image_copy_capture_state,

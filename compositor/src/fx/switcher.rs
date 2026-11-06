@@ -12,7 +12,6 @@ use smithay::{
     utils::IsAlive,
     input::keyboard::{FilterResult, Keycode, keysyms as k},
     utils::{Buffer as BufferCoords, Physical, Rectangle, SERIAL_COUNTER, Size, Transform},
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
 };
 
 use super::{Fx, Res, blur, draw_elements, make_tex, theme::{Layout, oklab_to_srgb}, wait, window_elements};
@@ -98,9 +97,7 @@ impl Aurora {
 
     pub fn focus_window(&mut self, w: &Window) {
         self.space.raise_element(w, true);
-        let surface: WlSurface = w.toplevel().unwrap().wl_surface().clone();
-        self.seat.get_keyboard().unwrap().set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
-        self.space.elements().for_each(|w| { w.toplevel().unwrap().send_pending_configure(); });
+        self.focus_and_activate(w);
     }
 }
 
