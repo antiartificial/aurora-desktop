@@ -138,12 +138,16 @@ func TestAppsAndVerbsShapes(t *testing.T) {
 	if strings.Join(lumen, ",") != "resize@v1,export@v1,histogram@v1" {
 		t.Fatalf("lumen verbs for image/png: %v", lumen)
 	}
+	// scale_video@v1 comes from apps/ffmpeg, which replaced a manifest-only
+	// placeholder whose verb was called transcode@v1. The point of this
+	// assertion is the filter, not the name: a video type must reach ffmpeg's
+	// verbs and must not reach lumen's image verbs.
 	raw, _ = e.call(t, "registry.verbs@v1", map[string]any{"accepts": "video/mp4"})
-	if strings.Contains(string(raw), "lumen") || !strings.Contains(string(raw), "transcode@v1") {
+	if strings.Contains(string(raw), "lumen") || !strings.Contains(string(raw), "scale_video@v1") {
 		t.Fatalf("video filter wrong: %s", raw)
 	}
 	all, _ := e.call(t, "registry.verbs@v1", map[string]any{})
-	if !strings.Contains(string(all), "transcode@v1") || !strings.Contains(string(all), "resize@v1") {
+	if !strings.Contains(string(all), "scale_video@v1") || !strings.Contains(string(all), "resize@v1") {
 		t.Fatalf("unfiltered list wrong: %s", all)
 	}
 }

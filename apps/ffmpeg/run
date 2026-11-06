@@ -1,0 +1,121 @@
+#!/bin/sh
+# Entrypoint for the controller: wraps the host's ffmpeg, which knows nothing
+# about Aurora. Protocol: run --verb NAME, request JSON on stdin
+#   {"input":F,"output":F,"args":{...}}
+# Result JSON on stdout, diagnostics on stderr, non-zero exit on failure.
+#
+# Inside the domain this script is the app image under /domain/data/app.
+# ffmpeg, ffprobe, jq, timeout and every shared library they load (152 for
+# ffmpeg) come from the domain's read-only /usr, which is the host's /usr.
+# ffmpeg needs no config or data directory outside /usr, so unlike magick
+# there is nothing to ship in the image.
+#
+# Limits. The domain enforces pids only (cpu/memory are NOT ENFORCED on this
+# host), so this script sets what it can itself, per run: an address-space
+# cap (ulimit -v), a CPU-seconds cap (ulimit -t), a cap on bytes written
+# (ulimit -f) and a wall-clock timeout. They are inherited by ffmpeg. They
+# bound one ffmpeg run; they are not a domain-level guarantee.
+set -eu
+[ "${1:-}" = "--verb" ] || { echo "usage: run --verb NAME < request.json" >&2; exit 2; }
+verb=$2
+for t in ffmpeg ffprobe jq timeout; do
+  command -v $t >/dev/null || { echo "$t: not found in the domain's /usr" >&2; exit 127; }
+done
+
+# Overridable only so tests can prove the limits bite; the controller passes no env.
+VMEM_KB=${FFMPEG_APP_VMEM_KB:-4194304}    # 4 GiB address space
+CPU_S=${FFMPEG_APP_CPU_S:-50}
+FSIZE_BLK=${FFMPEG_APP_FSIZE_BLK:-2097152} # 512-byte blocks: 1 GiB of output
+WALL_S=${FFMPEG_APP_WALL_S:-55}            # under controllerd's 60s default
+THREADS=${FFMPEG_APP_THREADS:-4}     # ffmpeg defaults to one thread per core; the domain pids limit counts threads
+thr="-threads $THREADS"
+ulimit -v "$VMEM_KB"; ulimit -t "$CPU_S"; ulimit -f "$FSIZE_BLK"
+
+req=$(cat)
+in=$(printf '%s' "$req" | jq -r '.input // empty')
+out=$(printf '%s' "$req" | jq -r '.output // empty')
+arg() { printf '%s' "$req" | jq -r --arg k "$1" '.args[$k] // empty'; }
+die() { echo "ffmpeg-app: $*" >&2; exit 1; }
+
+[ -n "$in" ] && [ -r "$in" ] || die "cannot read input '$in'"
+case $in in /*) ;; *) die "input must be an absolute path";; esac
+case $out in ''|/*) ;; *) die "output must be an absolute path";; esac
+
+isint() { case $1 in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
+isnum() { case $1 in ''|*[!0-9.]*|*.*.*|.) return 1;; esac; }
+
+# "file:" stops ffmpeg treating the path as a URL; the whitelist stops a crafted
+# playlist (hls, concat, ...) from reaching any other protocol. -nostdin keeps
+# it away from the request pipe.
+common="-nostdin -hide_banner -v error -protocol_whitelist file"
+ff() { timeout "$WALL_S" ffmpeg $common -filter_threads "$THREADS" -y "$@"; }
+
+# Describe what was written, from its bytes, via a separate ffprobe run.
+probe_json() {
+  raw=$(timeout "$WALL_S" ffprobe -v error -protocol_whitelist file -of json \
+    -show_entries format=format_name,duration:stream=codec_type,width,height,sample_rate,channels "file:$1") || return 1
+  printf '%s' "$raw" | jq -ce '{ok:true,
+          container:(.format.format_name // ""),
+          duration:((.format.duration // "0")|tonumber),
+          video_streams:([.streams[]|select(.codec_type=="video")]|length),
+          audio_streams:([.streams[]|select(.codec_type=="audio")]|length),
+          width:(([.streams[]|select(.codec_type=="video")|.width]|first) // 0),
+          height:(([.streams[]|select(.codec_type=="video")|.height]|first) // 0),
+          sample_rate:((([.streams[]|select(.codec_type=="audio")|.sample_rate]|first) // "0")|tonumber),
+          channels:(([.streams[]|select(.codec_type=="audio")|.channels]|first) // 0)}'
+}
+done_out() { r=$(probe_json "$out") || die "wrote $out but cannot read it back"; printf '%s' "$r" | jq -c --arg o "$out" '.output=$o'; }
+need_out() { [ -n "$out" ] || die "$verb needs an output"; }
+
+case $verb in
+  extract_audio@v1)
+    need_out
+    r=$(arg rate); c=$(arg channels); opts=
+    [ -n "$r" ] && { isint "$r" 8000 192000 || die "rate must be 8000..192000"; opts="$opts -ar $r"; }
+    [ -n "$c" ] && { isint "$c" 1 2 || die "channels must be 1 or 2"; opts="$opts -ac $c"; }
+    # shellcheck disable=SC2086
+    ff $thr -i "file:$in" -map 0:a:0 -vn -map_metadata -1 -c:a pcm_s16le $opts $thr -f wav "file:$out" || die "ffmpeg failed (exit $?; no audio stream?)"
+    done_out
+    ;;
+  transcode_audio@v1)
+    need_out
+    b=$(arg bitrate); bopt=
+    [ -n "$b" ] && { isint "$b" 16 512 || die "bitrate must be 16..512 (kbit/s)"; bopt="-b:a ${b}k"; }
+    case $(arg format | tr 'A-Z' 'a-z') in
+      wav) enc="-c:a pcm_s16le -f wav"; bopt=;;
+      mp3) enc="-c:a libmp3lame -f mp3";;
+      ogg|vorbis) enc="-c:a libvorbis -f ogg";;
+      flac) enc="-c:a flac -f flac"; bopt=;;
+      *) die "format must be one of wav mp3 ogg flac";;
+    esac
+    # shellcheck disable=SC2086
+    ff $thr -i "file:$in" -map 0:a:0 -vn -map_metadata -1 $enc $bopt $thr "file:$out" || die "ffmpeg failed (exit $?; no audio stream?)"
+    done_out
+    ;;
+  poster@v1)
+    need_out
+    at=$(arg at); w=$(arg width); vf=
+    [ -n "$at" ] && { isnum "$at" || die "at must be a number of seconds >= 0"; }
+    [ -n "$w" ] && { isint "$w" 2 8192 || die "width must be 2..8192"; vf="-vf scale=$w:-2"; }
+    case $(printf '%s' "${out##*.}" | tr 'A-Z' 'a-z') in
+      png) enc="-c:v png -f image2";;
+      jpg|jpeg) enc="-c:v mjpeg -pix_fmt yuvj420p -f image2";;
+      *) die "cannot tell the output format from '$out' (png, jpg)";;
+    esac
+    # shellcheck disable=SC2086
+    ff -ss "${at:-0}" $thr -i "file:$in" -map 0:v:0 -an -map_metadata -1 -frames:v 1 -update 1 $vf $enc $thr "file:$out" || die "ffmpeg failed (exit $?; no video stream?)"
+    [ -s "$out" ] || die "no frame at ${at:-0}s (past the end of the video?)"
+    done_out
+    ;;
+  scale_video@v1)
+    need_out
+    w=$(arg width); isint "$w" 2 4096 || die "width must be 2..4096"
+    ff $thr -i "file:$in" -map 0:v:0 -map '0:a:0?' -map_metadata -1 -vf "scale=$w:-2" -pix_fmt yuv420p \
+       -c:v mpeg4 -q:v 5 -c:a aac -b:a 96k -movflags +faststart $thr -f mp4 "file:$out" || die "ffmpeg failed (exit $?; no video stream?)"
+    done_out
+    ;;
+  probe@v1)
+    probe_json "$in" || die "not recognised media"
+    ;;
+  *) echo "unknown verb $verb" >&2; exit 2;;
+esac

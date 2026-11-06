@@ -1,47 +1,84 @@
-# ffmpeg: a wrapped CLI tool.
-#
-# Honest limit (decision 0002): for a wrapped CLI tool this manifest is only
-# enforceable because the tool is run inside a domain granted exactly its
-# declared inputs and outputs, not by the manifest itself. ffmpeg's real effect
-# class is "write wherever the arguments point"; nothing here can show
-# otherwise. A tool that reaches past the grants fails at the domain boundary.
-#
-# image_hash is a placeholder (0002 open question 6).
+# ffmpeg, wrapped. A real, pre-existing program that knows nothing about
+# Aurora; this manifest and `run` are the whole integration. Like magick, the
+# manifest is not enforced by the registry for a wrapped tool (0002): the
+# domain grants exactly the input (ro) and the one output file (rw), and `run`
+# pins ffmpeg itself to the containers and codecs claimed below (explicit -f
+# and -c, protocol whitelist "file", no stdin, address-space/CPU/file-size
+# rlimits and a wall-clock timeout set by run, since the domain's own
+# --memory/--cpu limits are not enforced on this host).
+# Every type claimed here is exercised by demo.sh and checked by mediacheck
+# (which parses WAV/MP3/Ogg/FLAC/MP4/PNG itself) rather than by ffmpeg.
+# Not claimed, because not exercised: aac/m4a, mkv, avi, mov, video encoders
+# other than mpeg4, subtitles, streaming protocols, hardware acceleration.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
 
 [app]
-id = "org.ffmpeg.ffmpeg"
-name = "ffmpeg"
-version = "7.1.0"
+id = "org.aurora.ffmpeg"
+name = "FFmpeg"
+version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
+[[runtime]]
+name = "ffmpeg"
+version = "9.0.1"
+
 [capabilities]
+
+[[capabilities.paths]]
+path = "~/Music"
+access = "write"
 
 [[capabilities.paths]]
 path = "~/Videos"
 access = "write"
 
 [[capabilities.paths]]
-path = "~/Music"
+path = "~/Pictures"
 access = "write"
 
 [types]
-opens = ["video/mp4", "video/webm", "video/x-matroska", "audio/mpeg", "audio/flac"]
-creates = ["video/mp4", "video/webm", "audio/mpeg", "image/jpeg"]
+opens = ["audio/wave", "audio/wav", "audio/mpeg", "audio/ogg", "application/ogg", "audio/flac", "video/mp4", "video/webm"]
+creates = ["audio/wav", "audio/mpeg", "audio/ogg", "audio/flac", "video/mp4", "image/png", "image/jpeg"]
 
 [[verb]]
-name = "transcode@v1"
-summary = "Re-encode audio or video into another container or codec"
+name = "extract_audio@v1"
+summary = "Decode the first audio stream to 16-bit PCM WAV, optionally resampled or downmixed"
 effect = "write"
-accepts = ["video/*", "audio/*"]
-capabilities = ["path:~/Videos", "path:~/Music"]
-input = { format = "string", video_codec = "string?", audio_codec = "string?" }
-output = { file = "path" }
+accepts = ["audio/wave", "audio/wav", "audio/mpeg", "audio/ogg", "application/ogg", "audio/flac", "video/mp4", "video/webm"]
+capabilities = ["path:~/Music"]
+input = { rate = "int?", channels = "int?" }
+output = { audio = "audio/wav" }
 
 [[verb]]
-name = "thumbnail@v1"
-summary = "Extract a still frame from a video"
+name = "transcode_audio@v1"
+summary = "Re-encode audio as wav, mp3, ogg (vorbis) or flac"
 effect = "write"
-accepts = ["video/*"]
+accepts = ["audio/wave", "audio/wav", "audio/mpeg", "audio/ogg", "application/ogg", "audio/flac", "video/mp4", "video/webm"]
+capabilities = ["path:~/Music"]
+input = { format = "string", bitrate = "int?" }
+output = { audio = "audio/*" }
+
+[[verb]]
+name = "poster@v1"
+summary = "Grab one frame of a video as a PNG or JPEG (format follows the output extension)"
+effect = "write"
+accepts = ["video/mp4", "video/webm"]
+capabilities = ["path:~/Pictures"]
+input = { at = "float?", width = "int?" }
+output = { image = "image/*" }
+
+[[verb]]
+name = "scale_video@v1"
+summary = "Re-encode a video as MP4 (mpeg4 + aac) at a given width, keeping aspect ratio"
+effect = "write"
+accepts = ["video/mp4", "video/webm"]
 capabilities = ["path:~/Videos"]
-input = { at_seconds = "float?" }
-output = { image = "image/jpeg" }
+input = { width = "int" }
+output = { video = "video/mp4" }
+
+[[verb]]
+name = "probe@v1"
+summary = "Report a media file's container, duration, stream counts, video size and audio format"
+effect = "read"
+accepts = ["audio/wave", "audio/wav", "audio/mpeg", "audio/ogg", "application/ogg", "audio/flac", "video/mp4", "video/webm"]
+output = { container = "string", duration = "float", video_streams = "int", audio_streams = "int", width = "int", height = "int", sample_rate = "int", channels = "int" }

@@ -2,6 +2,7 @@ go 1.27.1
 
 use (
 	./adapter/linux
+	./apps/ffmpeg
 	./apps/lumen
 	./apps/magick
 	./bus
