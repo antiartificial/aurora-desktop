@@ -63,3 +63,25 @@ func TestRealAppsLoad(t *testing.T) {
 		t.Fatal("lumen not loaded")
 	}
 }
+
+func TestUndeclaredVerbCapabilitySkipsApp(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "bad", strings.Replace(good, "%s", "bad", 1)+`
+[capabilities]
+[[capabilities.paths]]
+path = "~/Pictures"
+access = "read"
+
+[[verb]]
+name = "peek@v1"
+effect = "read"
+capabilities = ["path:~/Documents"]
+`)
+	reg, skipped := Load(root)
+	if len(reg.Apps()) != 0 || len(skipped) != 1 {
+		t.Fatalf("apps=%d skipped=%v", len(reg.Apps()), skipped)
+	}
+	if r := skipped[0].Reason; !strings.Contains(r, "path:~/Documents") || !strings.Contains(r, "not among the app's requested capabilities") {
+		t.Fatalf("reason: %s", r)
+	}
+}

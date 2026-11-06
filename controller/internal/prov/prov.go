@@ -13,6 +13,23 @@ const Attr = "user.aurora.provenance"
 // Topic is the bus topic a record is published on.
 const Topic = "provenance.created"
 
+// How a grant was authorised.
+const (
+	// SourceAmbient: covered by a capability the app's manifest declares
+	// (consent at install time).
+	SourceAmbient = "ambient"
+	// SourceGesture: not covered by the manifest; justified only by the
+	// caller's request for this one invocation (the powerbox model).
+	SourceGesture = "gesture"
+)
+
+// Grant is one filesystem grant given to the app's domain for one invoke.
+type Grant struct {
+	Path   string `json:"path"`
+	Mode   string `json:"mode"` // "ro" or "rw"
+	Source string `json:"source"`
+}
+
 // Record says where a file came from.
 type Record struct {
 	File     string          `json:"file"`
@@ -21,6 +38,7 @@ type Record struct {
 	Inputs   []string        `json:"inputs"`
 	Args     json.RawMessage `json:"args"`
 	Isolated bool            `json:"isolated"`
+	Grants   []Grant         `json:"grants"`
 	TS       string          `json:"ts"`
 }
 

@@ -74,5 +74,17 @@ step "isolation proof: the fixture app (org.aurora.demo) runs in a domain and re
 printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$W/pics/probe.png"
 $C invoke org.aurora.demo copy@v1 --input "$W/pics/probe.png" --output "$W/pics/probe-out.png" | grep -E '"isolated"|"log"'
 echo "(0 entries in /home means the domain cannot see the host's home; only the granted input and output dir exist)"
+step "grant sources: restart controllerd with --no-gesture-grants and HOME=$W/home (fixture declares ~/Pictures write)"
+kill "${PIDS[1]}" 2>/dev/null; wait "${PIDS[1]}" 2>/dev/null
+mkdir -p "$W/home/Pictures"; cp "$W/pics/probe.png" "$W/home/Pictures/in.png"
+HOME=$W/home "$W/bin/controllerd" --apps "$APPS" --domain-bin "$W/bin/domain" --no-gesture-grants "${EXEC[@]}" >"$W/controllerd2.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 50); do grep -q 'registered service' "$W/controllerd2.log" && break; sleep 0.1; done
+grep -- 'gesture' "$W/controllerd2.log"
+echo "-- input outside ~/Pictures (a gesture): must be refused"
+$C invoke org.aurora.demo copy@v1 --input "$W/pics/probe.png" --output "$W/pics/refused.png" 2>&1 | grep -E '"error"|"detail"|"code"|ok'
+ls "$W/pics/refused.png" 2>&1 | sed 's/^/   /'
+echo "-- input and output inside ~/Pictures (ambient): must succeed"
+$C invoke org.aurora.demo copy@v1 --input "$W/home/Pictures/in.png" --output "$W/home/Pictures/out.png" | grep -A12 '"grants"'
+
 echo
 echo "done; cleaning up"

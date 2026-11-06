@@ -1,5 +1,5 @@
 // Package invoke runs a verb: validates the request, grants a domain exactly
-// the declared input and output, runs the app, revokes, records provenance.
+// the requested input and output (classified ambient or gesture), runs the app, revokes, records provenance.
 package invoke
 
 import (
@@ -33,12 +33,16 @@ type Request struct {
 
 // Result is the success reply. Provenance is nil for verbs that write no file.
 type Result struct {
-	OK         bool            `json:"ok"`
-	Output     string          `json:"output,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	Isolated   bool            `json:"isolated"`
-	Log        string          `json:"log,omitempty"` // tail of the app's stderr
-	Provenance *prov.Record    `json:"provenance,omitempty"`
+	OK       bool            `json:"ok"`
+	Output   string          `json:"output,omitempty"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Isolated bool            `json:"isolated"`
+	Grants   []prov.Grant    `json:"grants"`
+	// NeedsApproval is set when an external or destructive verb ran on a
+	// gesture grant. There is no approval UI yet: this is a flag, not a gate.
+	NeedsApproval bool         `json:"needs_approval,omitempty"`
+	Log           string       `json:"log,omitempty"` // tail of the app's stderr
+	Provenance    *prov.Record `json:"provenance,omitempty"`
 }
 
 // Error is the failure reply: {"ok":false,"error":...,"detail":...}.
@@ -61,7 +65,11 @@ type Invoker struct {
 	Publish          func(topic string, payload []byte) error
 	Logf             func(format string, a ...any)
 	RequireIsolation bool
-	Timeout          time.Duration
+	// NoGestureGrants refuses any grant not covered by the manifest.
+	NoGestureGrants bool
+	// Home expands "~/" in manifest paths (default: the user's home).
+	Home    string
+	Timeout time.Duration
 	// SetProvenance writes the record onto the output file (default xattr).
 	SetProvenance func(path string, r prov.Record) error
 	// Execs overrides executable lookup: app id to host path.
@@ -144,6 +152,18 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		Args   map[string]json.RawMessage `json:"args"`
 	}{input, output, args})
 
+	grants := iv.planGrants(app.Manifest, input, outDir)
+	needsApproval := false
+	if g, ok := firstGesture(grants); ok {
+		if iv.NoGestureGrants {
+			return nil, fail("gesture_grant_refused", "%s would need a grant outside its manifest's declared capabilities", fmt.Sprintf("%s (%s) is not covered by any capabilities.paths of %s; --no-gesture-grants is set", g.Path, g.Mode, app.ID()), req.Verb)
+		}
+		if verb.Effect == manifest.EffectExternal || verb.Effect == manifest.EffectDestructive {
+			needsApproval = true
+			iv.logf("WARNING: NEEDS APPROVAL: %s verb %s of %s runs on gesture grant %s (%s), not covered by its manifest; no approval UI exists yet, proceeding", verb.Effect, req.Verb, app.ID(), g.Path, g.Mode)
+		}
+	}
+
 	l := iv.appLock(app.ID())
 	l.Lock()
 	defer l.Unlock()
@@ -153,14 +173,14 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		defer cancel()
 	}
 
-	res, isolated, e := iv.execute(ctx, app, exe, argv, stdin, input, outDir)
+	res, isolated, e := iv.execute(ctx, app, exe, argv, stdin, grants)
 	if e != nil {
 		return nil, e
 	}
 	if res.Exit != 0 {
 		return nil, fail("app_failed", "%s exited with status %d", tail(res.Stderr), req.Verb, res.Exit)
 	}
-	out := &Result{OK: true, Isolated: isolated, Log: tail(res.Stderr)}
+	out := &Result{OK: true, Isolated: isolated, Grants: grants, NeedsApproval: needsApproval, Log: tail(res.Stderr)}
 	if t := bytes.TrimSpace(res.Stdout); len(t) > 0 && json.Valid(t) {
 		out.Result = json.RawMessage(t)
 	}
@@ -171,7 +191,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
-		Args: argsJSON, Isolated: isolated, TS: iv.clock.Now().String()}
+		Args: argsJSON, Isolated: isolated, Grants: grants, TS: iv.clock.Now().String()}
 	set := iv.SetProvenance
 	if set == nil {
 		set = prov.Write

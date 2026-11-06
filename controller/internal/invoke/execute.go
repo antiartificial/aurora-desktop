@@ -7,13 +7,14 @@ import (
 
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/domain"
+	"github.com/antiartificial/aurora/controller/internal/prov"
 )
 
 // execute runs argv for app, inside its domain when domain tooling works.
-// Inside the domain the grants are exactly: input (ro) and the output's
-// directory (rw), revoked afterwards. Without domain tooling it runs the app
+// Inside the domain the grants are exactly the planned ones (input ro, the
+// output's directory rw, see planGrants), revoked afterwards. Without domain tooling it runs the app
 // directly on the host, says so loudly, and reports isolated=false.
-func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv []string, stdin []byte, input, outDir string) (domain.Result, bool, *Error) {
+func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv []string, stdin []byte, grants []prov.Grant) (domain.Result, bool, *Error) {
 	if err := iv.Runner.Available(); err != nil {
 		if iv.RequireIsolation {
 			return domain.Result{}, false, fail("isolation_unavailable", "domain tooling unavailable and isolation is required", err.Error())
@@ -37,21 +38,11 @@ func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv 
 			}
 		}
 	}()
-	grant := func(path, mode string) *Error {
-		if path == "" {
-			return nil
+	for _, g := range grants {
+		if err := iv.Runner.Grant(name, g.Path, g.Mode); err != nil {
+			return domain.Result{}, false, fail("domain_error", "grant %s (%s) to %s failed", err.Error(), g.Path, g.Mode, name)
 		}
-		if err := iv.Runner.Grant(name, path, mode); err != nil {
-			return fail("domain_error", "grant %s (%s) to %s failed", err.Error(), path, mode, name)
-		}
-		granted = append(granted, path)
-		return nil
-	}
-	if e := grant(input, "ro"); e != nil {
-		return domain.Result{}, false, e
-	}
-	if e := grant(outDir, "rw"); e != nil {
-		return domain.Result{}, false, e
+		granted = append(granted, g.Path)
 	}
 	res, err := iv.Runner.Run(ctx, name, append([]string{imgExe}, argv...), stdin)
 	if err != nil {

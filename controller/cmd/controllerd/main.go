@@ -28,6 +28,7 @@ func main() {
 	sock := fs.String("socket", config.BusSocket(), "bus socket (env AURORA_BUS_SOCK)")
 	dbin := fs.String("domain-bin", "", "path to the `domain` binary (env AURORA_DOMAIN_BIN; else PATH; else adapter/linux/out/domain)")
 	require := fs.Bool("require-isolation", false, "refuse to run verbs when domain tooling is unavailable instead of falling back")
+	noGesture := fs.Bool("no-gesture-grants", false, "refuse any grant not covered by the app manifest's capabilities.paths (default: gesture grants allowed)")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
 	fs.Func("exec", "app executable override, id=path (repeatable); for apps whose binary is built outside the app dir", func(v string) error {
@@ -50,6 +51,12 @@ func main() {
 		log.Printf("loaded %s %s (%d verbs) from %s", a.ID(), a.Manifest.App.Version, len(a.Manifest.Verbs), a.Dir)
 	}
 
+	if *noGesture {
+		log.Printf("--no-gesture-grants: invokes whose paths fall outside the manifest's declared capabilities will be refused")
+	} else {
+		log.Printf("gesture grants allowed: paths outside a manifest's declared capabilities are granted on request and recorded as source=gesture")
+	}
+
 	runner := domain.CLI{Bin: domain.Locate(*dbin, "")}
 	if err := runner.Available(); err != nil {
 		log.Printf("WARNING: domain tooling unavailable: %v", err)
@@ -67,7 +74,7 @@ func main() {
 	}
 	defer c.Close()
 	inv := &invoke.Invoker{
-		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, Execs: execs, Timeout: *timeout,
+		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, Execs: execs, Timeout: *timeout,
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)
 		},
