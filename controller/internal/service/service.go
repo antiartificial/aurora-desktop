@@ -8,6 +8,7 @@ import (
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/contracts/manifest"
+	"github.com/antiartificial/aurora/contracts/plumb"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/prov"
@@ -17,6 +18,9 @@ import (
 type Service struct {
 	Reg *apps.Registry
 	Inv *invoke.Invoker
+	// Rules is the plumb rule set for registry.plumb@v1; nil means the
+	// embedded default.
+	Rules *plumb.RuleSet
 }
 
 // Serve handles requests from c until it closes. Each runs in its own
@@ -63,6 +67,11 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 		}
 		if e = decode(req, &q); e == nil {
 			out = s.listVerbs(q.Accepts)
+		}
+	case "registry.plumb@v1":
+		var q plumb.Request
+		if e = decode(req, &q); e == nil {
+			out = s.plumb(q, req.From)
 		}
 	case "registry.describe@v1":
 		var q struct{ App, Verb string }
@@ -135,6 +144,10 @@ type verbInfo struct {
 	Effect  manifest.Effect `json:"effect"`
 	Accepts []string        `json:"accepts"`
 	Summary string          `json:"summary"`
+	// Default and Group are the manifest's, passed on unchanged. Group is
+	// presentation only; Effect is the authority signal.
+	Default bool   `json:"default,omitempty"`
+	Group   string `json:"group,omitempty"`
 }
 
 func (s *Service) listVerbs(accepts string) any {
@@ -149,10 +162,29 @@ func (s *Service) listVerbs(accepts string) any {
 			if acc == nil {
 				acc = []string{}
 			}
-			list = append(list, verbInfo{v.Name, a.ID(), v.Effect, acc, v.Summary})
+			list = append(list, verbInfo{v.Name, a.ID(), v.Effect, acc, v.Summary, v.Default, v.Group})
 		}
 	}
 	return map[string]any{"verbs": list}
+}
+
+// plumb serves registry.plumb@v1 {"selection":{"kind","value"},"limit"}: what
+// could be done with a selection. It lists verbs and runs none of them.
+// req.From, stamped by busd, decides how much of the filesystem the answer
+// may look at (see plumb.ViewerKind); nothing in the payload can widen that.
+func (s *Service) plumb(q plumb.Request, from string) plumb.Reply {
+	rules := s.Rules
+	if rules == nil {
+		rules = plumb.Default()
+	}
+	var verbs []plumb.Verb
+	for _, a := range s.Reg.Apps() {
+		for _, v := range a.Manifest.Verbs {
+			verbs = append(verbs, plumb.Verb{App: a.ID(), Name: v.Name, Summary: v.Summary,
+				Effect: string(v.Effect), Group: v.Group, Accepts: v.Accepts, Default: v.Default})
+		}
+	}
+	return plumb.ForViewer(rules, verbs, q, from)
 }
 
 func (s *Service) describe(appID, verb string) (any, *invoke.Error) {

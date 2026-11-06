@@ -17,6 +17,7 @@ import (
 
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
+	"github.com/antiartificial/aurora/contracts/plumb"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/busreg"
 	"github.com/antiartificial/aurora/controller/internal/capbus"
@@ -42,6 +43,7 @@ func main() {
 	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
 	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
+	plumbRules := fs.String("plumb-rules", "", "plumb rules file (default: the rules embedded from contracts/plumb/rules.toml); a file that does not validate stops startup")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
 	fs.Func("exec", "app executable override, id=path (repeatable); for apps whose binary is built outside the app dir", func(v string) error {
@@ -142,6 +144,12 @@ func main() {
 	log.Printf("registered service %q on %s", config.Service, *sock)
 
 	svc := &service.Service{Reg: reg, Inv: inv}
+	if *plumbRules != "" {
+		if svc.Rules, err = plumb.Load(*plumbRules); err != nil {
+			log.Fatalf("--plumb-rules: %v", err)
+		}
+		log.Printf("plumb rules: %d from %s", svc.Rules.Len(), *plumbRules)
+	}
 	go svc.Serve(c)
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
