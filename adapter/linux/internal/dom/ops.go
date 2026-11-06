@@ -237,15 +237,17 @@ func (s Store) grantPath(name, path, mode string, exact bool) (string, error) {
 	return p, s.Save(m)
 }
 
-// GrantNet records a network grant. Enforcement is coarse: any net grant
-// shares the host network namespace; the host name is only recorded.
+// GrantNet records a network grant for one host name or IP (grammar and
+// refusals: NormalizeHost). The domain keeps an empty network namespace; the
+// grant is enforced by the host-side proxy, by name (decision 0015).
 func (s Store) GrantNet(name, host string) error {
-	m, err := s.Load(name)
+	host, err := NormalizeHost(host)
 	if err != nil {
 		return err
 	}
-	if host == "" {
-		return fmt.Errorf("empty host")
+	m, err := s.Load(name)
+	if err != nil {
+		return err
 	}
 	for _, g := range m.Grants {
 		if g.Kind == "net" && g.Host == host {
@@ -304,7 +306,11 @@ func (s Store) Revoke(name, target string, net bool) error {
 		return err
 	}
 	key := target
-	if !net {
+	if net {
+		if h, err := NormalizeHost(target); err == nil {
+			key = h
+		}
+	} else {
 		if p, err := canon(target); err == nil {
 			key = p
 		}

@@ -165,13 +165,26 @@ func TestNoNetworkByDefault(t *testing.T) {
 	if code, _ := run(t, st, "n", "bash", "-c", probe); code == 0 {
 		t.Fatal("domain without net grant reached host loopback")
 	}
-	// coarse net grant: shares the host netns, so the same connect now works
+	// A net grant no longer shares the host network (0015): the same direct
+	// connect must still fail, and only the host-side proxy is a way out.
 	if err := st.GrantNet("n", "example.org"); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := run(t, st, "n", "bash", "-c", probe); code != 0 {
-		t.Fatalf("net-granted domain cannot connect: %s", out)
+	if code, _ := run(t, st, "n", "bash", "-c", probe); code == 0 {
+		t.Fatal("a net grant gave the domain the host network: a direct connect to loopback worked")
 	}
+	if _, err := st.Load("n"); err != nil || !HasNet(mustLoad(t, st, "n")) {
+		t.Fatalf("the grant was not recorded: %v", err)
+	}
+}
+
+func mustLoad(t *testing.T, st Store, n string) *Meta {
+	t.Helper()
+	m, err := st.Load(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 func TestSnapshotRollbackRestoresDeletedFile(t *testing.T) {
