@@ -26,7 +26,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 git = "https://github.com/Smithay/smithay.git"
 rev = "65aa86fa5236e41775c313408102a5d5c2d1e2ca"
 default-features = false
-features = ["backend_winit", "wayland_frontend", "desktop"]
+features = ["backend_winit", "wayland_frontend", "desktop", "backend_drm", "backend_gbm", "backend_libinput", "backend_udev", "backend_session_libseat"]
 
 [dev-dependencies]
 memmap2 = "0.9"

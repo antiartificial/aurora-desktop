@@ -3,6 +3,7 @@
 mod handlers;
 
 mod capture;
+mod drm;
 mod fx;
 mod grabs;
 mod headless;
@@ -22,13 +23,25 @@ pub use state::Aurora;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
+    let args = parse_args();
+    if args.drm.is_some() && args.headless.is_some() {
+        fail("--drm and --headless are mutually exclusive: --drm drives a real display and input devices, --headless has none");
+    }
+    if args.drm_timeout.is_some() && args.drm.is_none() {
+        fail("--drm-timeout only makes sense with --drm");
+    }
+    // Everything the DRM backend needs from the system is checked here, before
+    // sockets are opened or anything else starts.
+    let drm_prepared = match &args.drm {
+        Some(card) => Some(drm::prepare(card.as_deref()).unwrap_or_else(|e| fail(&e))),
+        None => None,
+    };
     let mut event_loop: EventLoop<Aurora> = EventLoop::try_new()?;
 
     let display: Display<Aurora> = Display::new()?;
 
     let mut state = Aurora::new(&mut event_loop, display);
 
-    let args = parse_args();
     if args.test_input.is_some() && args.headless.is_none() {
         return Err("--test-input is a test affordance that exists only with --headless (no input device); refusing".into());
     }
@@ -86,9 +99,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Open a Wayland/X11 window for our nested compositor
-    match args.headless {
-        Some((w, h)) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0))?,
-        None => crate::winit::init_winit(&mut event_loop, &mut state)?,
+    match (args.headless, drm_prepared) {
+        (Some((w, h)), _) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0))?,
+        (None, Some(p)) => crate::drm::init_drm(&mut event_loop, &mut state, p, args.scale, args.drm_timeout)
+            .unwrap_or_else(|e| fail(&e.to_string())),
+        (None, None) => crate::winit::init_winit(&mut event_loop, &mut state)?,
     }
 
     // Set WAYLAND_DISPLAY to our socket name, so child processes connect to Aurora rather
@@ -111,6 +126,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// A startup refusal: the message, plainly, and a failing exit. Not an `Error:
+/// "..."` Debug dump, which would escape the newlines in the advice.
+fn fail(msg: &str) -> ! {
+    eprintln!("aurora-compositor: {}", msg.trim_start_matches("aurora-compositor: "));
+    std::process::exit(1)
+}
+
 fn init_logging() {
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
         tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(env_filter).init();
@@ -122,6 +144,10 @@ fn init_logging() {
 struct Args {
     /// `--headless[=WxH]`: no host window; offscreen output of this size.
     headless: Option<(i32, i32)>,
+    /// `--drm[=CARD]`: DRM/KMS + libinput on a bare TTY. `Some(None)` picks the GPU.
+    drm: Option<Option<std::path::PathBuf>>,
+    /// `--drm-timeout SECS`: quit by itself, so a first run on hardware cannot strand you.
+    drm_timeout: Option<std::time::Duration>,
     command: Option<String>,
     trusted_socket: Option<std::path::PathBuf>,
     trusted_uids: Option<Vec<u32>>,
@@ -152,7 +178,7 @@ fn default_trusted_socket() -> std::path::PathBuf {
 
 fn parse_args() -> Args {
     let mut args = Args {
-        headless: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
+        headless: None, drm: None, drm_timeout: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None,
     };
@@ -175,6 +201,12 @@ fn parse_args() -> Args {
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
             "--aurora" => args.aurora_bin = it.next(),
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),
+            "--drm" => args.drm = Some(None),
+            s if s.starts_with("--drm=") => args.drm = Some(Some(s["--drm=".len()..].into())),
+            "--drm-timeout" => {
+                let secs: u64 = it.next().and_then(|v| v.parse().ok()).filter(|s| *s > 0).expect("--drm-timeout wants a number of seconds");
+                args.drm_timeout = Some(std::time::Duration::from_secs(secs));
+            }
             "--headless" => args.headless = Some((1280, 800)),
             s if s.starts_with("--headless=") => {
                 let dims = s["--headless=".len()..].split_once('x');
