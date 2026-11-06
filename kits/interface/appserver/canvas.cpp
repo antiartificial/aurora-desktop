@@ -62,6 +62,31 @@ void Canvas::FillRect(FRect r, Color c)
 	}
 }
 
+void Canvas::InvertRect(FRect r)
+{
+	DRect d = Intersect(ToDevice(r), fClip);
+	for (int y = d.y0; y < d.y1; y++)
+		for (int x = d.x0; x < d.x1; x++) { uint32_t& p = fPx[(size_t)y * fW + x]; p = 0xFF000000u | (~p & 0x00FFFFFFu); }
+}
+
+void Canvas::DrawImage(const uint32_t* argb, int sw, int sh, FRect src, FRect dst)
+{
+	DRect d = ToDevice(dst), v = Intersect(d, fClip);
+	int dw = d.x1 - d.x0, dh = d.y1 - d.y0;
+	if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+	float sx0 = src.l, sy0 = src.t, sW = src.r - src.l + 1, sH = src.b - src.t + 1;
+	for (int y = v.y0; y < v.y1; y++) {
+		int iy = (int)floorf(sy0 + (y - d.y0 + 0.5f) * sH / dh);
+		if (iy < 0 || iy >= sh) continue;
+		for (int x = v.x0; x < v.x1; x++) {
+			int ix = (int)floorf(sx0 + (x - d.x0 + 0.5f) * sW / dw);
+			if (ix < 0 || ix >= sw) continue;
+			uint32_t p = argb[(size_t)iy * sw + ix];
+			Blend(x, y, Color{(uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p, (uint8_t)(p >> 24)}, 255);
+		}
+	}
+}
+
 void Canvas::StrokeRect(FRect r, Color c, float pen)
 {
 	StrokeLine(r.l, r.t, r.r, r.t, c, pen);

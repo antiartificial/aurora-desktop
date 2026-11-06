@@ -18,6 +18,8 @@
 #include <LooperList.h>
 #include <Menu.h>
 #include <MenuWindow.h>
+#include <MenuPrivate.h>
+#include <ServerMemoryAllocator.h>
 #include <Messenger.h>
 #include <PortLink.h>
 #include <ServerProtocol.h>
@@ -334,6 +336,15 @@ BApplication::_InitGUIContext()
 	if (be_control_look == NULL)
 		be_control_look = new HaikuControlLook();
 	BPrivate::gWidthBuffer = new BPrivate::WidthBuffer;
+	/* BBitmap keeps its server-shared areas here (clone_area of what AS_CREATE_BITMAP created). */
+	fServerAllocator = new (std::nothrow) BPrivate::ServerMemoryAllocator();
+	if (fServerAllocator == NULL) return B_NO_MEMORY;
+	/* The modifier-key and submenu glyphs BMenu lays its items out with (B_CMAP8 BBitmaps: AS_CREATE_BITMAP). */
+	if (BPrivate::MenuPrivate::CreateBitmaps() != B_OK) return B_ERROR;
+	/* Menu look: the server answers AS_GET_MENU_INFO; set_menu_info() is what stores it in BMenu::sMenuInfo (a private
+	   static; _init_interface_kit_() does this with get_menu_info + the _menu_info_ptr_ alias). */
+	menu_info mi;
+	if (get_menu_info(&mi) == B_OK) set_menu_info(&mi);
 	return B_OK;
 }
 

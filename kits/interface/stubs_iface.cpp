@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
+#include <string.h>
+#include <stdint.h>
+#include <algorithm>
 
 extern "C" {
 /* REAL: absolute-time sleep on the monotonic clock (system_time() is CLOCK_MONOTONIC based). */
@@ -22,14 +25,42 @@ status_t snooze_until(bigtime_t time, int)
 }
 /* HOLLOW: our thread layer has no rename. BWindow renames its thread to "w>title"; the name is only cosmetic. */
 status_t rename_thread(thread_id, const char*) { return B_OK; }
-/* HOLLOW: thread-to-thread data passing, used by MenuBar's menu tracking. Menus are out of scope. */
-status_t send_data(thread_id, int32, const void*, size_t) { return B_ERROR; }
-int32 receive_data(thread_id*, void*, size_t) { return B_ERROR; }
-bool has_data(thread_id) { return false; }
+/* REAL: thread-to-thread data passing (BMenuBar hands its tracking thread the menu bar this way). One queue per
+   target thread; send_data copies and returns at once (as BeOS does for small buffers), receive_data blocks. */
+}
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <vector>
+namespace {
+struct Pkt { thread_id from; int32 code; std::vector<char> data; };
+std::mutex gDataMu; std::condition_variable gDataCv; std::map<thread_id, std::deque<Pkt>> gData;
+}
+extern "C" {
+status_t send_data(thread_id to, int32 code, const void* buf, size_t size)
+{
+	std::lock_guard<std::mutex> g(gDataMu);
+	Pkt p{find_thread(NULL), code, std::vector<char>((const char*)buf, (const char*)buf + (buf ? size : 0))};
+	gData[to].push_back(std::move(p));
+	gDataCv.notify_all();
+	return B_OK;
+}
+int32 receive_data(thread_id* sender, void* buf, size_t size)
+{
+	thread_id me = find_thread(NULL);
+	std::unique_lock<std::mutex> lk(gDataMu);
+	gDataCv.wait(lk, [&] { return !gData[me].empty(); });
+	Pkt p = std::move(gData[me].front()); gData[me].pop_front();
+	if (sender) *sender = p.from;
+	if (buf) memcpy(buf, p.data.data(), std::min(size, p.data.size()));
+	return p.code;
+}
+bool has_data(thread_id t) { std::lock_guard<std::mutex> g(gDataMu); auto it = gData.find(t); return it != gData.end() && !it->second.empty(); }
 }
 
-/* HOLLOW: no registrar. BMessageRunner (pulse, tooltips) and a few Window.cpp shortcuts ask it. */
-status_t BRoster::Private::SendTo(BMessage*, BMessage*, bool) { return B_ERROR; }
+/* REAL (a slice): BRoster::Private::SendTo is in registrar.cpp: it serves the message-runner requests, which
+   is what BMessageRunner (B_PULSE, the caret blink, tooltips, auto-scroll) sends. Everything else is refused. */
 status_t BRoster::Launch(const char*, BMessage*, team_id*) const { return B_ERROR; }
 void BRoster::GetAppList(const char*, BList*) const {}
 
@@ -49,3 +80,19 @@ HOLLOW(_ZNK12BAppFileInfo12GetSignatureEPc)
 HOLLOW(_ZN6BEntryD1Ev) HOLLOW(_ZN6BEntryD2Ev) HOLLOW(_ZN6BEntryC1Ev) HOLLOW(_ZNK6BEntry7GetPathEP5BPath)
 HOLLOW(_ZN6BEntry5SetToEPK9entry_refb)
 HOLLOW(_ZN5BFileD1Ev) HOLLOW(_ZN5BFileD2Ev) HOLLOW(_ZN5BFileC1EPKcj) HOLLOW(_ZNK5BNode9InitCheckEv)
+
+/* HOLLOW: no sound. BTextView beeps on refused edits (e.g. Backspace in an empty view); that is all `beep()` is for. */
+status_t beep() { return B_OK; }
+
+/* REAL: libroot's byte-swap helpers (arch/*.S in Haiku); BTextView flattens run arrays with them. */
+extern "C" float __swap_float(float f) { uint32_t v; memcpy(&v, &f, 4); v = __builtin_bswap32(v); memcpy(&f, &v, 4); return f; }
+extern "C" double __swap_double(double f) { uint64_t v; memcpy(&v, &f, 8); v = __builtin_bswap64(v); memcpy(&f, &v, 8); return f; }
+
+/* HOLLOW: no locale kit. BCatalog::GetString is the identity (English), which is what Haiku does with no catalog
+   loaded. Menu.cpp and TextView's context menu name BPrivate::gSystemCatalog for their labels. */
+#include <Catalog.h>
+#include <SystemCatalog.h>
+BCatalog::BCatalog() : fCatalogData(nullptr) {}
+BCatalog::~BCatalog() {}
+const char* BCatalog::GetString(const char* string, const char*, const char*) { return string; }
+namespace BPrivate { BCatalog gSystemCatalog; }

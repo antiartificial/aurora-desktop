@@ -13,7 +13,7 @@ set(I ${K}/interface)
 
 # ---- Haiku source compiled in place -------------------------------------------------------------
 set(IFACE_REAL
-	AbstractLayoutItem AbstractLayout AffineTransform Alignment Bitmap BMCPrivate Button ColorConversion
+	AbstractLayoutItem AbstractLayout AffineTransform GridLayout Alignment Bitmap BMCPrivate Button ColorConversion
 	ControlLook Control Deskbar Font GradientConic GradientDiamond GradientLinear Gradient
 	GradientRadialFocus GradientRadial GraphicsDefs GroupLayout HaikuControlLook Icon InterfaceDefs
 	LayoutContext LayoutItem Layout LayoutUtils MenuBar MenuField MenuItem MenuItemPrivate Menu MenuPrivate
@@ -30,7 +30,7 @@ set(SRC_APP ${K}/app/AppDefs.cpp ${K}/app/AppServerLink.cpp ${K}/app/Cursor.cpp 
 	${K}/app/LinkReceiver.cpp ${K}/app/LinkSender.cpp ${K}/app/MessageRunner.cpp ${K}/app/PortLink.cpp
 	${K}/app/ServerLink.cpp ${K}/app/ServerMemoryAllocator.cpp)
 set(SRC_SUPPORT ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
+	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/registrar.cpp ${CMAKE_CURRENT_SOURCE_DIR}/clipboard.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
 
 add_library(haiku_iface_real STATIC ${SRC_IFACE} ${SRC_LAYOUTER} ${SRC_TEXTVIEW} ${SRC_APP} ${SRC_SUPPORT})
 # Order: our shim syscalls.h first (Haiku's needs the kernel info-struct zoo), then haiku_app_real's include set.
@@ -81,6 +81,9 @@ iface_exe(iface_controls demo/controls.cpp)
 iface_exe(iface_keys demo/keys.cpp)
 iface_exe(iface_scroll demo/scroll.cpp)
 iface_exe(iface_list demo/list.cpp)
+iface_exe(iface_text demo/text.cpp)
+iface_exe(iface_menu demo/menu.cpp)
+iface_exe(iface_layout demo/layout.cpp)
 # The file browser lives with its README and fixtures in demos/browser; it is built here because only this tree knows the kit.
 iface_exe(iface_browser ${CMAKE_CURRENT_SOURCE_DIR}/../../demos/browser/browser.cpp)
 

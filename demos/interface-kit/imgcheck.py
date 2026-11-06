@@ -6,6 +6,9 @@ usage: python3 -I imgcheck.py CAPTURE.png FRAME.ppm METRICS.txt
        python3 -I imgcheck.py --scroll CAPTURE.png OX OY [EXPECTED]   (which scroll offset does the scroll demo show?)
        python3 -I imgcheck.py --band CAPTURE.png OX OY     (runs of non-white pixels down column 100 of the list demo's content)
        python3 -I imgcheck.py --diff CAPTURE.png FRAME.ppm OX OY   (prints: count of differing pixels, then each as x,y,got,want, max 8)
+       python3 -I imgcheck.py --text CAPTURE OX OY 'GEOM line'   (assert the glyphs of the text demo sit where BFont says; ok:/FAIL: lines)
+       python3 -I imgcheck.py --diffbox CAPTURE FRAME OX OY   (prints: n x0 y0 x1 y1 of the differing pixels)
+       python3 -I imgcheck.py --caret CAPTURE OX OY 'GEOM line'  (prints on|off|none: is the caret column fully black down the line?)
        python3 -I imgcheck.py --find CAPTURE.png FRAME.ppm [X Y]  (prints "x y" where FRAME appears verbatim, or "none";
                                                               with X Y only that position is tried)
 Prints one `ok:` or `FAIL:` line per assertion; the exit status is the number of failures.
@@ -90,6 +93,66 @@ if len(sys.argv) == 6 and sys.argv[1] == '--diff':
     d = [(x, y, tuple(crow[oy + y][3 * (ox + x):3 * (ox + x) + 3]), tuple(frow[y][3 * x:3 * x + 3])) for y in range(fh) for x in range(fw)
          if crow[oy + y][3 * (ox + x):3 * (ox + x) + 3] != frow[y][3 * x:3 * x + 3]]
     print(len(d), *['%d,%d,%s,%s' % (x, y, '/'.join(map(str, g)), '/'.join(map(str, w))) for x, y, g, w in d[:8]]); sys.exit(0)
+
+def parse_geom(line):
+    kv = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', line))
+    g = {k: float(kv[k]) for k in ('left', 'top', 'lineh', 'caret', 'size', 'asc', 'desc')}
+    g['n'] = int(kv['n']); g['sel'] = tuple(int(v) for v in kv['sel'].split(','))
+    g['pt'] = [float(v) for v in kv['pt'].split(',')]; g['fw'] = [float(v) for v in kv['fw'].split(',')]
+    return g
+
+if len(sys.argv) == 5 and sys.argv[1] == '--px':      # RGB of one pixel of a PPM frame: --px FRAME.ppm X Y
+    fw, fh, frow = read_ppm(sys.argv[2]); x, y = int(sys.argv[3]), int(sys.argv[4]); print(*frow[y][3 * x:3 * x + 3]); sys.exit(0)
+
+if len(sys.argv) == 6 and sys.argv[1] == '--diffbox':
+    # prints "n x0 y0 x1 y1": how many pixels differ between the capture window and the frame, and their bounding box (n=0: "0")
+    _, _, crow = read_png(sys.argv[2]); fw, fh, frow = read_ppm(sys.argv[3]); ox, oy = int(sys.argv[4]), int(sys.argv[5])
+    d = [(x, y) for y in range(fh) for x in range(fw) if crow[oy + y][3 * (ox + x):3 * (ox + x) + 3] != frow[y][3 * x:3 * x + 3]]
+    print(len(d), *((min(p[0] for p in d), min(p[1] for p in d), max(p[0] for p in d), max(p[1] for p in d)) if d else ())); sys.exit(0)
+
+if len(sys.argv) == 6 and sys.argv[1] == '--caret':
+    # The caret is InvertRect of a 1 px wide, line-high rect on white: a column of (0,0,0). "on" iff every pixel of it is.
+    _, _, crow = read_png(sys.argv[2]); ox, oy = int(sys.argv[3]), int(sys.argv[4]); g = parse_geom(sys.argv[5])
+    if g['sel'][0] != g['sel'][1]: print('none'); sys.exit(0)
+    x = int(g['caret']); y0 = int(g['top']); h = int(g['lineh'])
+    black = sum(1 for y in range(y0, y0 + h) if tuple(crow[oy + y][3 * (ox + x):3 * (ox + x) + 3]) == (0, 0, 0))
+    print('on' if black == h else 'off'); sys.exit(0)
+
+if len(sys.argv) == 6 and sys.argv[1] == '--text':
+    cw_, ch_, crow = read_png(sys.argv[2]); ox, oy = int(sys.argv[3]), int(sys.argv[4]); g = parse_geom(sys.argv[5])
+    fails = 0
+    def ok(c, msg):
+        global fails
+        print(('   ok: ' if c else '   FAIL: ') + msg)
+        if not c: fails += 1
+    text = re.search(r'text="([^"]*)"', sys.argv[5]); text = text.group(1) if text else None
+    left, top, lh, n, fw, pt = g['left'], g['top'], int(g['lineh']), g['n'], g['fw'], g['pt']
+    caretcol = int(g['caret']) if g['sel'][0] == g['sel'][1] else None
+    X0, X1 = int(left) - 3, int(fw[n]) + 12
+    ink = {}   # (x,y) -> luma, every pixel that is not the white view colour, caret column excluded
+    for y in range(int(top) - 2, int(top) + lh + 2):
+        for x in range(X0, X1 + 1):
+            if x == caretcol: continue
+            p = tuple(crow[oy + y][3 * (ox + x):3 * (ox + x) + 3])
+            if sum(255 - c for c in p) > 40: ink[(x, y)] = sum(p) / 3
+    xs = [p[0] for p in ink]; ys = [p[1] for p in ink]
+    ok(all(abs(pt[i] - fw[i]) <= 0.5 for i in range(n + 1)), f'BTextView.PointAt boundaries agree with BFont.StringWidth of each prefix to within 0.5 px (max delta {max(abs(pt[i] - fw[i]) for i in range(n + 1)):.2f})')
+    ok(n > 0 and len(ink) > 15 * max(1, len([c for c in (text or '') if c != ' '])) // 2, f'{len(ink)} ink pixels where the text is')
+    if not ink: print('   (no ink)'); sys.exit(1)
+    ok(min(xs) >= left - 1.5, f'ink starts at x={min(xs)}, at or right of the text origin {left:.1f}')
+    ok(fw[n] - 4 <= max(xs) <= fw[n] + 1.5, f'ink ends at x={max(xs)}; origin + BFont::StringWidth(text) = {fw[n]:.2f}')
+    ok(min(ys) >= top and max(ys) <= top + lh - 1, f'ink rows {min(ys)}..{max(ys)} lie inside the line {int(top)}..{int(top) + lh - 1}')
+    ok(len(set(ys)) >= 8, f'ink covers {len(set(ys))} distinct rows (a line of text, not a bar)')
+    ok(not any(x >= fw[n] + 2 for x in xs), 'nothing is drawn right of the end of the text (no stray glyphs)')
+    if text is not None and len(text) == n:
+        bad = []
+        for i, c in enumerate(text):
+            a, b = fw[i], fw[i + 1]
+            inside = [x for x in xs if a - 1.0 <= x <= b + 1.0]
+            if c != ' ' and not inside: bad.append(f'{c!r}@{i}: no ink in [{a:.1f},{b:.1f}]')
+            if c == ' ' and b - a > 4 and [x for x in xs if a + 1.5 <= x <= b - 1.5 - 0.0 and a + 1.5 < b - 1.5]: bad.append(f'space@{i}: ink in the gap')
+        ok(not bad, f'every glyph of "{text}" has ink inside its own BFont advance [fw_i-1, fw_i+1+1]' + (': ' + '; '.join(bad) if bad else ''))
+    sys.exit(fails)
 
 if len(sys.argv) >= 4 and sys.argv[1] == '--find':
     _, _, crow = read_png(sys.argv[2]); _, _, frow = read_ppm(sys.argv[3])

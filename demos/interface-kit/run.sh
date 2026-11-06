@@ -24,7 +24,7 @@ bad()  { FAIL=$((FAIL+1)); printf '   FAIL: %s\n' "$*" >&2; }
 need() { "$@" >/dev/null 2>&1 || { echo "FATAL: $*"; exit 2; }; }
 
 step "build the kit, the BeOS apps and the tests (CMake + Ninja in kits/)"
-(cd "$KITS" && cmake -S . -B build -G Ninja >"$W/cmake.log" 2>&1 && ninja -C build test_font test_iface_window test_controls iface_hello iface_controls iface_keys iface_scroll iface_list iface_browser >"$W/ninja.log" 2>&1) \
+(cd "$KITS" && cmake -S . -B build -G Ninja >"$W/cmake.log" 2>&1 && ninja -C build test_font test_iface_window test_controls iface_hello iface_controls iface_keys iface_scroll iface_list iface_text iface_menu iface_layout iface_browser >"$W/ninja.log" 2>&1) \
   || { tail -20 "$W/cmake.log" "$W/ninja.log"; echo "FATAL: build failed"; exit 2; }
 ok "built into $BUILD"
 [ -x "$COMP" ] || (cd "$ROOT/compositor" && cargo build --release >"$W/comp-build.log" 2>&1) || { tail "$W/comp-build.log"; echo "FATAL: compositor build"; exit 2; }
@@ -40,6 +40,12 @@ for scale in 1 1.45 2; do
 done
 [ "$(cat "$W/inv-1")" = "$(cat "$W/inv-1.45")" ] && [ "$(cat "$W/inv-1")" = "$(cat "$W/inv-2")" ] \
   && ok "metrics are scale-independent: $(cat "$W/inv-1")" || bad "BFont metrics differ between output scales 1, 1.45 and 2"
+# BTextView's layout is in layout units too: the GEOM line (caret x, every character boundary, BFont prefix widths) must not move with scale.
+for scale in 1 1.45 2; do
+  env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_UI_SCALE=$scale TEXT_PRESET="hi there" TEXT_SELECT=8,8 HELLO_METRICS=1 HELLO_QUIT_AFTER_MS=500 "$BUILD/iface_text" 2>&1 | grep '^GEOM' > "$W/tg-$scale"
+done
+[ -s "$W/tg-1" ] && [ "$(cat "$W/tg-1")" = "$(cat "$W/tg-1.45")" ] && [ "$(cat "$W/tg-1")" = "$(cat "$W/tg-2")" ] \
+  && ok "BTextView geometry is scale-independent (scale 1, 1.45, 2 print the same GEOM line)" || bad "BTextView GEOM differs between scales: $(cat "$W"/tg-1 "$W"/tg-1.45 "$W"/tg-2)"
 out=$("$BUILD/test_controls" 2>&1); rc=$?
 [ $rc = 0 ] && ok "test_controls: $(echo "$out" | tail -1)" || { bad "test_controls"; echo "$out" | grep FAIL; }
 
@@ -156,8 +162,9 @@ kill "$SCROLL_PID" 2>/dev/null; wait "$SCROLL_PID" 2>/dev/null
 
 step "LIST: BListView of 40 BStringItems in a BScrollView; selection by mouse click and keyboard through the compositor"
 # Decoded from the capture: the selection is the run of non-white pixels down one column of the list (item height is
-# measured, not assumed). The same window with LIST_PRESET=n (separate process, no input) must be pixel-identical.
-mkdir -p "$W/ref-list-3"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 LIST_PRESET=3 AURORA_APPSERVER_DUMP="$W/ref-list-3" HELLO_QUIT_AFTER_MS=700 "$BUILD/iface_list" >/dev/null 2>&1
+# measured, not assumed). The same window with the server clicking item 3 itself (AURORA_APPSERVER_CLICK, no compositor,
+# no keyboard) must be pixel-identical: a click makes BScrollView draw its focus frame around the bar, a preset does not.
+mkdir -p "$W/ref-list-3"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 AURORA_APPSERVER_CLICK=60,85 AURORA_APPSERVER_DUMP="$W/ref-list-3" HELLO_QUIT_AFTER_MS=1500 "$BUILD/iface_list" >/dev/null 2>&1
 run_app list 1 "$BUILD/iface_list"; LIST_PID=$APP_PID
 sleep 1.5
 list_band() { XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/$1.png" >/dev/null 2>&1; python3 -I "$HERE/imgcheck.py" --band "$W/$1.png" 0 0; }
@@ -169,13 +176,9 @@ python3 -I "$HERE/ti.py" "$RUN/ti" "key Down" "key Down" >/dev/null 2>&1; sleep 
 b=$(list_band l2); read -r t3 e3 _ <<<"$b"
 [ "$t3" = "$((t1 + 2 * h))" ] && [ "$((e3 - t3 + 1))" = "$h" ] && ok "Down, Down moved the highlight by exactly 2 items ($t1 -> $t3, item height $h)" || bad "highlight at $t3..$e3 after two Down keys (item 1 was $t1..$e1, height $h)"
 read -r nd d1 d2 _ < <(python3 -I "$HERE/imgcheck.py" --diff "$W/l2.png" "$W/ref-list-3/window-0.ppm" 0 0)
-# KNOWN, UNEXPLAINED: the 2 pixels at the focus ring's corners (233,11) and (233,172) are grey in the live window
-# and blue in the pre-focused render. Everything else (every label, the selection, the scroll bar) is identical.
-case "$nd:$d1:$d2" in
-  0:*) ok "the whole window equals a render in which the program itself selected item 3" ;;
-  2:233,11,*:233,172,*) ok "window equals the item-3 render except the 2 focus-ring corner pixels (233,11),(233,172) (known, unexplained; $d1 $d2)" ;;
-  *) bad "window differs from the item-3 render in $nd pixels: $d1 $d2" ;;
-esac
+# (An earlier version tolerated 2 focus-ring corner pixels as "unexplained". They were the first symptom of B_WINDOW_ACTIVATED
+# never reaching the focus view; with activation fixed and a click-driven reference the whole window is identical.)
+[ "$nd" = 0 ] && ok "the whole window equals a render in which the server itself clicked item 3 (focus frame, scroll bar and all)" || bad "window differs from the item-3 render in $nd pixels: $d1 $d2"
 python3 -I "$HERE/ti.py" "$RUN/ti" "key Down" "key Down" "key Down" "key Down" "key Down" "key Down" "key Down" "key Down" "key Down" "key Down" >/dev/null 2>&1; sleep 0.6
 b=$(list_band l3); read -r t13 e13 _ <<<"$b"
 [ "$(echo "$b" | tr -cd ';' | wc -c)" = 0 ] && [ -n "$t13" ] && [ "$e13" -le 159 ] && [ "$t13" -lt "$((13 * h))" ] \
@@ -211,7 +214,7 @@ for _ in $(seq 50); do grep -q 'serving "index"' "$W/indexd.log" && break; sleep
 grep -q 'serving "index"; .*1 entries already indexed' "$W/indexd.log" && ok "indexd is serving with 1 indexed entry (made.png)" || { cat "$W/indexd.log"; bad "indexd did not come up with the fixture entry"; }
 benv() { env AURORA_BIN="$W/bin/aurora" AURORA_SOCKET="$BUS" BROWSER_LOG=1 BROWSER_NO_TERMINAL=1 BROWSER_DIR="$W/fx" "$@"; }
 # references: same program, same real indexd, no compositor and no input: the entry is selected by the program itself
-mkdir -p "$W/ref-b-made"; benv env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 BROWSER_SELECT=made.png AURORA_APPSERVER_DUMP="$W/ref-b-made" HELLO_QUIT_AFTER_MS=2500 "$BUILD/iface_browser" >"$W/ref-b-made.out" 2>&1
+mkdir -p "$W/ref-b-made"; benv env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 AURORA_APPSERVER_CLICK=60,87 AURORA_APPSERVER_DUMP="$W/ref-b-made" HELLO_QUIT_AFTER_MS=2500 "$BUILD/iface_browser" >"$W/ref-b-made.out" 2>&1
 benv env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_SOCKET="$RUN/nobus.sock" BROWSER_SELECT=made.png HELLO_QUIT_AFTER_MS=2500 "$BUILD/iface_browser" >"$W/b-nobus.out" 2>&1
 grep -q '^PROV state=1 ' "$W/b-nobus.out" && grep -q 'bus is not running' "$W/b-nobus.out" \
   && ok "with no bus the pane says the index could not be asked (state 1, the launcher's own error shown), not 'knows nothing': $(grep -m1 'bus is not running' "$W/b-nobus.out" | sed 's/^PANE //')" || { cat "$W/b-nobus.out"; bad "no-bus case is not reported as 'could not be asked'"; }
@@ -240,8 +243,7 @@ for want in "PANE Made by org.aurora.magick resize@v1" "PANE   $W/fx/source.jpg"
   grep -qF -- "$want" "$W/browser.out" && ok "pane text: ${want#PANE }" || bad "pane lacks: $want"; done
 XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/b1.png" >/dev/null 2>&1
 read -r nd d1 d2 d3 < <(python3 -I "$HERE/imgcheck.py" --diff "$W/b1.png" "$W/ref-b-made/window-0.ppm" 0 0)
-# the 2 outer focus-ring corners of the list differ in the live window exactly as in the list demo (see there)
-if [ "$nd" -le 2 ]; then ok "the window the compositor shows after a mouse click equals the program's own render of made.png selected ($nd differing pixels: ${d1:-none} ${d2:-})"
+if [ "$nd" = 0 ]; then ok "the window the compositor shows after a mouse click equals a render in which the server clicked made.png itself (0 differing pixels)"
 else bad "window differs from the made.png render in $nd pixels: $d1 $d2 $d3"; fi
 bclick 108     # plain.txt
 bgrep "^PROV state=2 path=$W/fx/plain.txt" "plain.txt: index knows nothing (state 2): the pane says so and that it is not a statement about the file"
@@ -262,6 +264,151 @@ grep -q "^OPEN $W/bin/aurora open --socket $BUS $W/fx/made.png\$" "$W/browser.ou
 [ "$(cat "$W/open.args" 2>/dev/null)" = "open --socket $BUS $W/fx/made.png" ] && ok "the launcher process really received that argv (recorded by the stand-in)" || bad "launcher stand-in did not record the argv"
 kill "$BR_PID" 2>/dev/null; wait "$BR_PID" 2>/dev/null
 fi
+step "TEXT: BTextView (Haiku's TextView.cpp) - typing, backspace, caret, blinking, selection, through the compositor"
+# Typing goes through the compositor's --test-input and its xkb keymap. BackSpace/Home/End/Delete have no name in
+# --test-input (compositor/src/trusted/testinput.rs keycode()), so those arrive through aurora::inject_special_key:
+# the same internal event the wl_keyboard callback posts, so BWindow/BTextView see a real B_KEY_DOWN, but NOT via the
+# compositor or libxkbcommon. Expected pictures are rendered by separate processes with no compositor and no
+# keyboard (TEXT_PRESET/TEXT_SELECT). The caret is InvertRect and blinks, so a live capture may or may not contain
+# it: "equals the reference" means: zero differing pixels, or ONLY the caret column (x = BTextView's caret x, one
+# pixel wide, inside the line). Glyph positions are checked against BFont numbers the app prints (GEOM lines).
+trender() {  # name text select [activate]
+  mkdir -p "$W/rt-$1"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 TEXT_PRESET="$2" TEXT_SELECT="$3" ${4:+AURORA_APPSERVER_ACTIVE=1} \
+    AURORA_APPSERVER_DUMP="$W/rt-$1" HELLO_METRICS=1 HELLO_QUIT_AFTER_MS=900 "$BUILD/iface_text" >"$W/rt-$1.out" 2>&1
+}
+trender empty "" 0,0; trender typed "hi there" 8,8; trender back "hi ther" 7,7; trender mid "hi toher" 5,5
+trender sel "hi toher" 3,5 act; trender repl "hi xher" 4,4; trender home "hi xher" 0,0
+for r in empty typed back mid sel repl home; do [ -s "$W/rt-$r/window-0.ppm" ] || bad "reference render '$r' produced no frame"; done
+tgeom() { grep '^GEOM' "$1" | tail -1; }
+# classify a capture against a reference: prints  same | caret@X | DIFF n x0 y0 x1 y1   (caret-only differences allowed)
+tcmp() {  # capture ref-name geom-line
+  local g=$3 n x0 y0 x1 y1 cx top lh; read -r n x0 y0 x1 y1 < <(python3 -I "$HERE/imgcheck.py" --diffbox "$1" "$W/rt-$2/window-0.ppm" 0 0)
+  [ "$n" = 0 ] && { echo same; return; }
+  cx=$(echo "$g" | sed 's/.* caret=\([0-9]*\).*/\1/'); top=$(echo "$g" | sed 's/.* top=\([0-9]*\).*/\1/'); lh=$(echo "$g" | sed 's/.* lineh=\([0-9]*\).*/\1/')
+  if [ "$x0" = "$cx" ] && [ "$x1" = "$cx" ] && [ "$y0" -ge "$top" ] && [ "$y1" -le "$((top + lh - 1))" ]; then echo "caret@$cx"; else echo "DIFF $n $x0 $y0 $x1 $y1 (caret column is $cx)"; fi
+}
+TFIFO=$RUN/tfifo; mkfifo "$TFIFO"
+env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$SOCK" AURORA_UI_SCALE=1 AURORA_APPSERVER_DUMP="$W" HELLO_METRICS=1 HELLO_QUIT_AFTER_MS=90000 TEXT_CMD_FIFO="$TFIFO" \
+  "$BUILD/iface_text" >"$W/text.out" 2>"$W/text.err" & TEXT_PID=$!; PIDS+=($TEXT_PID)
+exec 7<>"$TFIFO"
+tgrep() { local pat=$1 desc=$2 n=$(( ${3:-6} * 10 )); for _ in $(seq $n); do grep -q "$pat" "$W/text.out" && { ok "$desc"; return 0; }; sleep 0.1; done; bad "$desc (no match for /$pat/ after ${3:-6}s)"; return 1; }
+tkeys() { for _ in $(seq 60); do [ "$(grep -c '^KEY ' "$W/text.out")" -ge "$1" ] && break; sleep 0.1; done; sleep 0.5; }
+tshot() { XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/$1.png" >/dev/null 2>&1; }
+# shoot until the caret is in its ON phase (it blinks), judging each capture against the reference; echoes the verdicts
+tuntil_on() {  # name ref geom
+  local v seen=; for i in 1 2 3 4 5 6; do tshot "$1-$i"; v=$(tcmp "$W/$1-$i.png" "$2" "$3"); seen="$seen $v"; cp "$W/$1-$i.png" "$W/$1.png"; case $v in caret@*|DIFF*) echo "$seen"; return;; esac; done; echo "$seen"
+}
+tstate() {  # name ref geom desc : the window equals the reference (caret column aside) AND the caret was seen on
+  local verdicts; verdicts=$(tuntil_on "$1" "$2" "$3")
+  case $verdicts in *DIFF*) bad "$4: differs from the reference: $verdicts";; *caret@*) ok "$4: equals the reference render, caret seen at its column ($verdicts )";; *) bad "$4: matches but the caret was never seen on:$verdicts";; esac
+}
+tgrep '^GEOM ' "iface_text started: BTextView constructed, fonts and the first GEOM line reported (BTextView had never run before)" 10
+for _ in $(seq 40); do [ -s "$W/window-0.ppm" ] && break; sleep 0.1; done
+sleep 0.6; g=$(tgeom "$W/text.out"); tshot t0; v=$(tcmp "$W/t0.png" empty "$g")
+case $v in same|caret@*) ok "before any key: the window is the empty reference ($v)";; *) bad "empty window differs from the reference: $v";; esac
+
+python3 -I "$HERE/ti.py" "$RUN/ti" "key h" "key i" "key space" "key t" "key h" "key e" "key r" "key e" >"$W/ti-t.log" 2>&1 \
+  && ok "compositor accepted 8 key commands: h i space t h e r e" || { cat "$W/ti-t.log"; bad "test-input refused a key"; }
+tkeys 8
+grep -q '^KEY text="hi there" len=8 sel=8,8' "$W/text.out" && ok "BTextView's own state after the 8 keys: text \"hi there\", caret at 8" || bad "BTextView state is not 'hi there' sel 8,8: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tstate t1 typed "$g" "typed window"
+python3 -I "$HERE/imgcheck.py" --text "$W/t1.png" 0 0 "$g" > "$W/t1.check"; cat "$W/t1.check"
+PASS=$((PASS + $(grep -c '^   ok:' "$W/t1.check"))); FAIL=$((FAIL + $(grep -c '^   FAIL:' "$W/t1.check")))
+v=$(tcmp "$W/t1.png" empty "$g"); case $v in DIFF*) ok "negative control: the typed window is NOT the empty render";; *) bad "typed window still looks empty ($v)";; esac
+v=$(tcmp "$W/t1.png" back "$g"); case $v in DIFF*) ok "negative control: it is NOT the 'hi ther' render either";; *) bad "typed window equals the 'hi ther' render ($v)";; esac
+
+# --- the caret blinks: B_PULSE (BWindow pulse rate 500 ms -> BMessageRunner -> our registrar slice) flips it
+on=0; off=0; for i in 1 2 3 4 5 6 7 8; do tshot "tb$i"; case $(python3 -I "$HERE/imgcheck.py" --caret "$W/tb$i.png" 0 0 "$g") in on) on=$((on+1));; off) off=$((off+1));; esac; done
+[ "$on" -ge 1 ] && [ "$off" -ge 1 ] && ok "caret blinks: of 8 captures the caret column was fully black in $on and absent in $off" || bad "caret did not blink: on in $on, off in $off of 8 captures"
+ints=$(grep -o '^PULSE t=[0-9]*' "$W/text.out" | sed 's/.*=//' | awk 'NR>1 { print $1-p } { p=$1 }' | sort -n | awk '{a[NR]=$1} END { print a[1], a[int((NR+1)/2)], a[NR], NR }')
+read -r pmin pmed pmax pn <<<"$ints"
+[ "${pn:-0}" -ge 8 ] && [ "$pmed" -ge 450 ] && [ "$pmed" -le 560 ] && ok "B_PULSE reaches the view every ${pmed} ms (min $pmin, max $pmax over $pn intervals): the 500 ms BWindow pulse, delivered by the message-runner service" || bad "pulse interval median ${pmed:-?} ms over ${pn:-0} intervals"
+
+# --- Backspace (injected; see the note above)
+echo "key BackSpace" >&7; tkeys 9
+grep -q '^INJECT key BackSpace ok' "$W/text.out" && ok "BackSpace was injected (aurora::inject_special_key)" || bad "BackSpace injection refused"
+grep -q '^KEY text="hi ther" len=7 sel=7,7' "$W/text.out" && ok "BTextView state after Backspace: \"hi ther\", exactly one character removed, caret at 7" || bad "state after Backspace: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tstate t2 back "$g" "after Backspace"
+python3 -I "$HERE/imgcheck.py" --text "$W/t2.png" 0 0 "$g" > "$W/t2.check"; cat "$W/t2.check"
+PASS=$((PASS + $(grep -c '^   ok:' "$W/t2.check"))); FAIL=$((FAIL + $(grep -c '^   FAIL:' "$W/t2.check")))
+v=$(tcmp "$W/t2.png" typed "$(tgeom "$W/rt-typed.out")"); case $v in DIFF*) ok "negative control: it is no longer the 'hi there' render";; *) bad "window still shows 'hi there' ($v)";; esac
+
+# --- caret movement and insertion in the middle: Left x3 (compositor), type 'o'
+python3 -I "$HERE/ti.py" "$RUN/ti" "key Left" "key Left" "key Left" "key o" >/dev/null 2>&1; tkeys 13
+grep -q '^KEY text="hi toher" len=8 sel=5,5' "$W/text.out" && ok "Left x3 then 'o': inserted in the middle, \"hi toher\", caret at 5" || bad "state after Left x3, o: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tstate t3 mid "$g" "mid-line insert (caret at PointAt(5), x=$(echo "$g" | sed 's/.* caret=\([0-9]*\).*/\1/'), not at the end of the text)"
+
+# --- selection: Shift+Left x2 selects "to"; the highlight is steady (no caret while a range is selected)
+python3 -I "$HERE/ti.py" "$RUN/ti" "down shift" "key Left" "key Left" "up shift" >/dev/null 2>&1; tkeys 15
+grep -q '^KEY text="hi toher" len=8 sel=3,5' "$W/text.out" && ok "Shift+Left x2 selected offsets 3..5 (\"to\")" || bad "selection state: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tshot t4; v=$(tcmp "$W/t4.png" sel "$g"); [ "$v" = same ] && ok "the selection highlight is pixel-identical to the render of preset selection 3..5 in an active window" || bad "selection window vs reference: $v"
+v=$(tcmp "$W/t4.png" mid "$g"); case $v in DIFF*) ok "negative control: it is not the unselected render (the highlight is real)";; *) bad "selection looks like the unselected window ($v)";; esac
+tshot t4b; v=$(tcmp "$W/t4b.png" sel "$g"); [ "$v" = same ] && ok "and it is the same on a second capture 0.6 s later (no caret blinks over a selection)" || bad "selection window changed between captures: $v"
+# --- typing replaces the selection
+python3 -I "$HERE/ti.py" "$RUN/ti" "key x" >/dev/null 2>&1; tkeys 16
+grep -q '^KEY text="hi xher" len=7 sel=4,4' "$W/text.out" && ok "typing 'x' over the selection replaced it: \"hi xher\"" || bad "after typing over a selection: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tstate t5 repl "$g" "replaced selection"
+# --- Home (injected)
+echo "key Home" >&7; tkeys 17
+grep -q '^KEY text="hi xher" len=7 sel=0,0' "$W/text.out" && ok "Home moved the caret to 0" || bad "after Home: $(grep '^KEY' "$W/text.out" | tail -1)"
+g=$(tgeom "$W/text.out"); tstate t6 home "$g" "caret at the start of the line"
+grep -q '^INJECT .* REFUSED' "$W/text.out" && bad "an injected key was refused"
+grep -q 'not handled' "$W/text.err" && bad "server reported unhandled opcodes: $(grep -m3 'not handled' "$W/text.err")"
+exec 7>&-; kill "$TEXT_PID" 2>/dev/null; wait "$TEXT_PID" 2>/dev/null
+
+step "MENUS: BMenuBar/BMenu/BMenuItem (Haiku's own). A menu is a separate window; here it is an xdg_popup of the main window"
+# Opened by a click through the compositor; the popup's pixels in the capture are compared with frames rendered by a
+# SEPARATE process with no compositor (its window 1, the BMenuWindow, dumped frame by frame). Selecting an item needs a
+# button held for longer than the menu's 16 ms polling, which --test-input cannot do (its `click` is press+release at
+# once), so selection is driven by the server's internal pointer events (a human-length 80 ms click), not the compositor.
+mrender() {  # dir script
+  mkdir -p "$1"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 AURORA_APPSERVER_DUMP="$1" AURORA_APPSERVER_DUMP_SEQ=1 AURORA_APPSERVER_TRACE=1 \
+    MENU_SCRIPT="$2" HELLO_QUIT_AFTER_MS=${3:-3500} "$BUILD/iface_menu" >"$1/out" 2>"$1/err"
+}
+mrender "$W/mr-open" "0:20,10:80"
+mrender "$W/mr-hover" "0:20,10:80;1:29,30:-1" 4500
+mexpect=$(grep -m1 'bar cached menu\]: SHOW' "$W/mr-open/err" | sed 's/.*frame \([0-9]*\),\([0-9]*\),.*/\1 \2/')
+env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$SOCK" AURORA_UI_SCALE=1 HELLO_QUIT_AFTER_MS=60000 "$BUILD/iface_menu" >"$W/menu.out" 2>"$W/menu.err" & MENU_PID=$!; PIDS+=($MENU_PID)
+for _ in $(seq 60); do grep -q '^BAR frame' "$W/menu.out" && break; sleep 0.1; done; sleep 0.8
+XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/mn0.png" >/dev/null 2>&1
+python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 20 10" "click" >/dev/null 2>&1; sleep 1.2
+XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/mn1.png" >/dev/null 2>&1
+mfind() {  # capture frame-glob : first frame of the sequence that appears verbatim in the capture -> "frame x y"
+  local f p; for f in $2; do p=$(python3 -I "$HERE/imgcheck.py" --find "$1" "$f"); [ "$p" != none ] && { echo "$(basename "$f") $p"; return; }; done; echo none
+}
+m=$(mfind "$W/mn1.png" "$W/mr-open/window-1-0*.ppm")
+set -- $m
+[ "$m" != none ] && ok "click on File through the compositor: the BMenu popup is in the capture, pixel-identical to the kit's own frame $1 (separate process, no compositor), at ($2,$3)" || bad "no frame of the reference menu window appears in the capture after the click"
+[ "$m" != none ] && [ "$2 $3" = "$mexpect" ] && ok "and at the screen position BMenu asked for (frame $mexpect, relative to the main window at 0,0): the xdg_popup was placed where BMenu said" || bad "popup at '${m#* }' but BMenu's menu frame was '$mexpect'"
+python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 30 52" >/dev/null 2>&1; sleep 1.0
+XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/mn2.png" >/dev/null 2>&1
+m2=$(mfind "$W/mn2.png" "$W/mr-hover/window-1-0*.ppm"); set -- $m2
+if [ "$m2" != none ]; then
+  b=$(python3 -I "$HERE/imgcheck.py" --diffbox "$W/mn2.png" "$W/mr-open/window-1-000.ppm" "$2" "$3")
+  ok "pointer moved over 'Open' through the compositor: the popup equals reference frame $1 (the item highlight), and differs from the plain menu in ${b%% *} pixels"
+else bad "after moving over Open, no reference frame of the hover state appears in the capture"; fi
+kill "$MENU_PID" 2>/dev/null; wait "$MENU_PID" 2>/dev/null
+mrender "$W/mr-sel" "0:20,10:80;1:29,30:80" 4500
+grep -q '^ITEM open Open' "$W/mr-sel/out" && ok "File, then a 80 ms click on Open: BMenuItem delivered its message to the window (ITEM open Open)" || bad "no ITEM for the click on Open: $(grep ITEM "$W/mr-sel/out")"
+mrender "$W/mr-fast" "0:20,10:80;1:29,30:1" 4500
+grep -q '^ITEM' "$W/mr-fast/out" && bad "a 1 ms click selected an item (expected: not seen by the 16 ms polling)" || ok "KNOWN LIMIT, shown on purpose: a 1 ms press+release (all --test-input can send) is NOT seen by BMenu's polling tracker, so no item is selected"
+grep -q 'not handled' "$W/mr-sel/err" && bad "menu run reported unhandled opcodes: $(grep -m3 'not handled' "$W/mr-sel/err")"
+
+step "LAYOUTS: BLayoutBuilder / BGroupLayout / BGridLayout (Haiku's own) size a window and place its children"
+for scale in 1 1.45 2; do
+  mkdir -p "$W/lay-$scale"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_UI_SCALE=$scale AURORA_APPSERVER_DUMP="$W/lay-$scale" LAYOUT_REPORT=1 HELLO_QUIT_AFTER_MS=1200 "$BUILD/iface_layout" >"$W/lay-$scale/out" 2>&1
+done
+[ "$(wc -l < "$W/lay-1/out")" = 8 ] && cmp -s "$W/lay-1/out" "$W/lay-1.45/out" && cmp -s "$W/lay-1/out" "$W/lay-2/out" \
+  && ok "layout results are identical at scale 1, 1.45 and 2 (layout units): $(head -1 "$W/lay-1/out")" || bad "layout differs between scales: $(cat "$W"/lay-*/out | tr '\n' ' ')"
+fr() { grep "^VIEW $1 " "$W/lay-1/out" | sed 's/.* //'; }
+IFS=, read -r al at ar ab <<<"$(fr a)"; IFS=, read -r bl bt br bb <<<"$(fr b)"; IFS=, read -r cl ct cr cb <<<"$(fr c)"
+ww=$(head -1 "$W/lay-1/out" | sed 's/WINDOW \([0-9]*\)x.*/\1/')
+[ "$ww" = "$((al + (cr - al) + al))" ] && ok "the window grew to the layout: width $ww = inset $al + the button row ($((cr - al)) units, BRect width) + inset $al" || bad "window width $ww does not equal inset + button row ($((cr - al)))"
+[ "$((bl - ar - 1))" = 6 ] && [ "$((cl - br - 1))" = 6 ] && [ "$at" = "$bt" ] && [ "$bt" = "$ct" ] && ok "buttons sit in one row with the 6 px spacing the builder asked for" || bad "button spacing is off: a $ar b $bl-$br c $cl"
+bg=$(python3 -I "$HERE/imgcheck.py" --px "$W/lay-1/window-0.ppm" "$((ar + 3))" "$((at + 12))")
+edge=$(python3 -I "$HERE/imgcheck.py" --px "$W/lay-1/window-0.ppm" "$al" "$((at + 12))")
+[ "$bg" != "$edge" ] && ok "pixels: the gap between Alpha and Beta is window background ($bg), Alpha's left edge column x=$al is its border ($edge)" || bad "no button border at x=$al"
+
 step "KEYMAP HOT RELOAD: the compositor's [input] layout changes while the app runs; the same physical key types a different letter"
 HR=$RUN/hr; mkdir -p "$HR/theme"; chmod 700 "$HR"
 printf '[input]\nlayout = "us"\nvariant = "dvorak"\n' > "$HR/theme/aurora-glass.toml"

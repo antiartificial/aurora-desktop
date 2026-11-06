@@ -24,6 +24,8 @@
 #include <Region.h>
 #include <Shape.h>
 #include <ServerProtocol.h>
+#include <Menu.h>
+#include <Palette.h>
 #include <ServerProtocolStructs.h>
 #include <View.h>
 #include <Window.h>
@@ -33,6 +35,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <algorithm>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -56,6 +60,8 @@ double gScale = 1.0;
 uint32 gMods = 0;		// last modifier state seen on any window
 au_wl* gWl = NULL;
 std::vector<struct SWindow*> gWindows;	// creation order, never shrinks (index = last_frame index)
+BPoint gPtr(0, 0);	// last pointer position in screen coordinates, from whichever of our surfaces got the event (menus poll it)
+int gPtrButtons = 0;
 const int32 kInternalEvent = 0x61755f01;	// our own opcode, never on the wire from a client
 
 Color ToColor(rgb_color c) { return Color{c.red, c.green, c.blue, c.alpha}; }
@@ -94,6 +100,16 @@ struct SView {
 	std::vector<DrawState> stack;
 };
 
+struct SBitmap {
+	area_id area = -1;
+	uint8* base = NULL;
+	BRect bounds;
+	color_space cs = B_NO_COLOR_SPACE;
+	int32 bpr = 0;
+};
+std::map<int32, SBitmap> gBitmaps;	// by token; the client clones `area` into its own mapping (same process, same memfd)
+int32 gNextBitmap = 1;
+
 struct SApp;
 
 struct SWindow {
@@ -105,7 +121,8 @@ struct SWindow {
 	int32 clientToken = -1;
 	BRect frame;
 	std::string title;
-	uint32 flags = 0;
+	uint32 flags = 0, feel = 0;
+	int popX = 0, popY = 0, popW = 0, popH = 0;	// geometry the live xdg_popup was created with
 	bool visible = false, updatesEnabled = true, updatePending = false, inUpdate = false;
 	std::map<int32, SView*> views;
 	SView* top = NULL;
@@ -117,10 +134,13 @@ struct SWindow {
 	bool haveLast = false;
 	bool quit = false;
 	bigtime_t lastClickTime = 0; BPoint lastClickWhere{0, 0}; int32 clicks = 0;
+	int buttons = 0;		// mouse buttons held (B_PRIMARY_MOUSE_BUTTON ...)
 	BPoint ptrWhere{0, 0};		// last pointer position in window coordinates
 	uint32 mods = 0;		// Haiku modifier bits currently held (what B_MODIFIERS_CHANGED reports)
 	uint8 keyStates[16] = {0};	// bitmap of Haiku key codes held, as the "states" field of key messages
 	bool active = false;
+	std::map<int32, BRect> updRect;	// per view token: the window-coordinate rect (bounding box of the dirty region) being repainted
+	bool directDraw = false;	// pixels changed outside BeginUpdate/EndUpdate and not yet presented
 };
 
 struct SApp {
@@ -130,6 +150,18 @@ struct SApp {
 	port_id looperPort = -1;
 	std::string sig;
 };
+
+// BMenuWindow's feel (WindowPrivate.h kMenuWindowFeel). Haiku draws these as their own screen-positioned windows; here
+// they are xdg_popups of the application's main window, since a Wayland client cannot place a toplevel.
+bool IsMenu(const SWindow* w) { return w->feel == 1025; }
+
+SWindow* PopupParent(SWindow* menu)
+{
+	SWindow* best = NULL;
+	for (SWindow* o : gWindows)
+		if (o != menu && o->app == menu->app && !IsMenu(o) && o->visible && o->wl && (!best || o->active)) best = o;
+	return best;
+}
 
 // ------------------------------------------------------------------------------------------------ view math
 
@@ -249,6 +281,72 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 	*handled = true;
 	text::Backend* b = TB();
 	switch (code) {
+		case AS_CREATE_BITMAP:
+		{
+			// BBitmap's server side, in process: an area the client then clones. Reply: token, flags, area, offset.
+			BRect bounds; color_space cs; uint32 flags; int32 bpr, screen;
+			link.Read<BRect>(&bounds); link.Read<color_space>(&cs); link.Read<uint32>(&flags); link.Read<int32>(&bpr); link.Read<int32>(&screen);
+			int32 h = bounds.IntegerHeight() + 1;
+			size_t size = (size_t)bpr * h;
+			void* addr = NULL;
+			area_id a = size ? create_area("bitmap", &addr, B_ANY_ADDRESS, size, B_NO_LOCK, B_READ_AREA | B_WRITE_AREA) : B_BAD_VALUE;
+			if (a < 0) { reply.StartMessage(a < 0 ? a : B_NO_MEMORY); reply.Flush(); return; }
+			SBitmap bm; bm.area = a; bm.base = (uint8*)addr; bm.bounds = bounds; bm.cs = cs; bm.bpr = bpr;
+			int32 token = gNextBitmap++;
+			gBitmaps[token] = bm;
+			reply.StartMessage(B_OK);
+			reply.Attach<int32>(token); reply.Attach<uint8>(0); reply.Attach<area_id>(a); reply.Attach<int32>(0);
+			reply.Flush();
+			return;
+		}
+		case AS_DELETE_BITMAP:
+		{
+			int32 token; link.Read<int32>(&token);
+			auto it = gBitmaps.find(token);
+			if (it != gBitmaps.end()) { delete_area(it->second.area); gBitmaps.erase(it); }
+			return;
+		}
+		case AS_GET_SCREEN_FRAME:
+		{
+			// The output's logical size (wl_output.mode / scale); 1280x800 with no compositor. One screen, id 0.
+			int sw = 1280, sh = 800;
+			if (gWl) au_wl_output_size(gWl, &sw, &sh);
+			reply.StartMessage(B_OK);
+			reply.Attach<BRect>(BRect(0, 0, sw - 1, sh - 1));
+			reply.Flush();
+			return;
+		}
+		case AS_GET_SCREEN_ID_FROM_WINDOW:
+		{
+			reply.StartMessage(B_OK);
+			reply.Attach<int32>(0);
+			reply.Flush();
+			return;
+		}
+		case AS_GET_MENU_INFO:
+		{
+			// What Haiku's app_server answers by default: the plain font, a panel-coloured menu, click to open.
+			static menu_info mi; static bool init = false;
+			if (!init) {
+				init = true; memset(&mi, 0, sizeof(mi));
+				text::FontKey k; float size = 12; b->SystemFont("plain", &k, &size);
+				std::string fam, sty; uint16 face = 0; b->FamilyName(k.family, &fam); b->StyleName(k.family, k.style, &sty, &face);
+				mi.font_size = size;
+				strlcpy(mi.f_family, fam.c_str(), sizeof(mi.f_family)); strlcpy(mi.f_style, sty.c_str(), sizeof(mi.f_style));
+				mi.background_color = (rgb_color){216, 216, 216, 255};
+				mi.separator = 0; mi.click_to_open = true; mi.triggers_always_shown = false;
+			}
+			reply.StartMessage(B_OK);
+			reply.Attach<menu_info>(mi);
+			reply.Flush();
+			return;
+		}
+		case AS_SET_MENU_INFO:
+		{
+			reply.StartMessage(B_OK);	// the client keeps its own copy (set_menu_info); one process, nothing to share
+			reply.Flush();
+			return;
+		}
 		case AS_GET_SCROLLBAR_INFO:
 		{
 			// Haiku's defaults: proportional thumb, one arrow at each end, knob style 0, 15 px minimum.
@@ -445,19 +543,35 @@ void PresentWindow(SWindow* w)
 	w->last.title = w->title;
 	w->last.argb.assign(w->canvas.Pixels(), w->canvas.Pixels() + (size_t)w->last.width * w->last.height);
 	w->haveLast = true;
+	if (IsMenu(w) && gWl && w->visible) {
+		int x = (int)lroundf(w->frame.left), y = (int)lroundf(w->frame.top), lw = (int)w->frame.IntegerWidth() + 1, lh = (int)w->frame.IntegerHeight() + 1;
+		if (w->wl && (x != w->popX || y != w->popY || lw != w->popW || lh != w->popH)) { au_wl_win_destroy(w->wl); w->wl = NULL; }	// moved or resized: a popup's geometry is fixed at creation
+		if (!w->wl) {
+			if (SWindow* parent = PopupParent(w)) {
+				w->wl = au_wl_popup_create(gWl, parent->wl, x - (int)lroundf(parent->frame.left), y - (int)lroundf(parent->frame.top), lw, lh, WlEvent, w);
+				w->popX = x; w->popY = y; w->popW = lw; w->popH = lh;
+			}
+		}
+	}
 	if (w->wl)
 		au_wl_win_present(w->wl, w->canvas.Pixels(), w->canvas.Width(), w->canvas.Height(), (int)ceil(w->canvas.Scale()));
 	if (const char* dir = getenv("AURORA_APPSERVER_DUMP")) {
-		char path[512];
+		// window-N.ppm is always the last frame; with AURORA_APPSERVER_DUMP_SEQ=1 every frame is also kept as window-N-K.ppm
+		static std::map<int, int> seq;
+		char path[512], path2[512]; path2[0] = 0;
 		snprintf(path, sizeof(path), "%s/window-%d.ppm", dir, w->index);
-		if (FILE* f = fopen(path, "wb")) {
-			fprintf(f, "P6\n%d %d\n255\n", w->last.width, w->last.height);
-			for (size_t i = 0; i < w->last.argb.size(); i++) {
-				uint32_t v = w->last.argb[i];
-				unsigned char rgb[3] = {(unsigned char)(v >> 16), (unsigned char)(v >> 8), (unsigned char)v};
-				fwrite(rgb, 3, 1, f);
+		if (getenv("AURORA_APPSERVER_DUMP_SEQ")) snprintf(path2, sizeof(path2), "%s/window-%d-%03d.ppm", dir, w->index, seq[w->index]++);
+		for (const char* p : std::initializer_list<const char*>{path, path2}) {
+			if (!p[0]) continue;
+			if (FILE* f = fopen(p, "wb")) {
+				fprintf(f, "P6\n%d %d\n255\n", w->last.width, w->last.height);
+				for (size_t i = 0; i < w->last.argb.size(); i++) {
+					uint32_t v = w->last.argb[i];
+					unsigned char rgb[3] = {(unsigned char)(v >> 16), (unsigned char)(v >> 8), (unsigned char)v};
+					fwrite(rgb, 3, 1, f);
+				}
+				fclose(f);
 			}
-			fclose(f);
 		}
 	}
 }
@@ -480,15 +594,35 @@ void InvalidateWindowRect(SWindow* w, BRect r)	// window coordinates
 	RequestUpdate(w);
 }
 
+void PostInternal(SWindow* w, int kind, int a, int b);
+
 void Show(SWindow* w, bool show)
 {
+	if (gTrace) fprintf(stderr, "appserver[%s]: %s (frame %.0f,%.0f,%.0f,%.0f)\n", w->title.c_str(), show ? "SHOW" : "HIDE", w->frame.left, w->frame.top, w->frame.right, w->frame.bottom);
 	if (show == w->visible) return;
 	w->visible = show;
+	if (!show && IsMenu(w) && w->wl) { au_wl_win_destroy(w->wl); w->wl = NULL; }	// a menu is an xdg_popup for as long as it is shown
 	if (show) {
-		if (!w->wl && gWl) {
+		if (!w->wl && gWl && !IsMenu(w)) {
 			int lw = (int)w->frame.IntegerWidth() + 1, lh = (int)w->frame.IntegerHeight() + 1;
 			w->wl = au_wl_win_create(gWl, w->title.c_str(), lw, lh, WlEvent, w);
 			if (w->wl) au_wl_win_set_key_fn(w->wl, WlKey);
+		}
+		// No compositor means no keyboard focus, so no B_WINDOW_ACTIVATED. AURORA_APPSERVER_ACTIVE=1 sends it, so a
+		// reference render of a focused window (blue focus ring, caret, selection) can be made without a seat.
+		if (!gWl && getenv("AURORA_APPSERVER_ACTIVE")) PostInternal(w, AU_EV_ACTIVATE, 1, 0);
+		// AURORA_APPSERVER_CLICK="x,y": press and release the left button there 500 ms later, through the same internal
+		// pointer event the Wayland callbacks post. A reference render of a *clicked* window needs this: a click makes
+		// BScrollView redraw its focus frame around the scroll bar too, which a program that merely selects an item does not.
+		const char* click = gWl ? NULL : getenv("AURORA_APPSERVER_CLICK");
+		float cx, cy;
+		if (click && sscanf(click, "%f,%f", &cx, &cy) == 2) {
+			std::thread([w, cx, cy] {
+				snooze(500000);
+				PostInternal(w, AU_EV_POINTER_MOVE, (int)(cx * 256), (int)(cy * 256));
+				PostInternal(w, AU_EV_POINTER_BUTTON, 1, 1);
+				PostInternal(w, AU_EV_POINTER_BUTTON, 1, 0);
+			}).detach();
 		}
 		InvalidateWindowRect(w, BRect(0, 0, w->frame.IntegerWidth(), w->frame.IntegerHeight()));
 	}
@@ -501,6 +635,7 @@ void BeginUpdate(SWindow* w)
 	// Background: the server fills each view's dirty part with its view colour (B_TRANSPARENT_COLOR: skip).
 	struct Item { SView* v; BRect r; };
 	std::vector<Item> items;
+	w->updRect.clear();
 	for (size_t i = 0; i < order.size(); i++) {
 		SView* v = order[i];
 		BRect vis = VisibleRect(v);
@@ -516,6 +651,8 @@ void BeginUpdate(SWindow* w)
 				w->canvas.FillRect(FRect{rr.left, rr.top, rr.right, rr.bottom}, ToColor(v->viewColor));
 			}
 		}
+		if (gTrace) fprintf(stderr, "appserver[%s]: update view '%s' rect %.0f,%.0f,%.0f,%.0f (dirty rects %d)\n", w->title.c_str(), v->name.c_str(), fr.left, fr.top, fr.right, fr.bottom, (int)part.CountRects());
+		w->updRect[v->token] = fr;
 		items.push_back(Item{v, fr});
 	}
 	w->dirty.MakeEmpty();
@@ -556,8 +693,10 @@ BRect ToWindow(const SView* v, BRect r)
 
 void SetupClip(SWindow* w, SView* v)
 {
+	if (!w->inUpdate) w->directDraw = true;	// drawing outside an update (BTextView's caret): present it, see WindowThread
 	BRect vis = VisibleRect(v);
 	BRect c = vis;
+	if (w->inUpdate) { auto it = w->updRect.find(v->token); c = it != w->updRect.end() ? (c & it->second) : BRect(); }	// app_server clips an update to the region it asked for: BMenu fills its whole background and relies on that
 	if (v->st.hasClip) c = c & v->st.clip.OffsetByCopy(WindowOffset(v));
 	if (!c.IsValid()) { w->canvas.SetClip(DRect{0, 0, 0, 0}); return; }
 	w->canvas.SetClip(w->canvas.ToDevice(FRect{c.left, c.top, c.right, c.bottom}));
@@ -681,6 +820,7 @@ void ApplyWindowResize(SWindow* w, int lw, int lh)
 {
 	float dw = (float)lw - (float)(w->frame.IntegerWidth() + 1), dh = (float)lh - (float)(w->frame.IntegerHeight() + 1);
 	if (dw == 0 && dh == 0) return;
+	if (gTrace) fprintf(stderr, "appserver[%s]: RESIZE to %dx%d\n", w->title.c_str(), lw, lh);
 	w->frame.right = w->frame.left + lw - 1;
 	w->frame.bottom = w->frame.top + lh - 1;
 	w->canvas.Init(lw, lh, gScale);
@@ -809,7 +949,10 @@ void HandleInternal(SWindow* w, const Internal& e)
 			m.AddInt64("when", system_time());
 			m.AddBool("active", w->active);
 			BMessenger reply;
-			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
+			// To the window's own token, not B_PREFERRED_TOKEN: the preferred handler is the focus view, and
+			// BWindow::DispatchMessage forwards a B_WINDOW_ACTIVATED whose target is not the window to that
+			// view's MessageReceived, which drops it. (Found with BTextView: its caret only exists while active.)
+			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, w->clientToken, 0, false, reply);
 			break;
 		}
 		case AU_EV_MODS:
@@ -857,6 +1000,8 @@ void HandleInternal(SWindow* w, const Internal& e)
 			else
 				buttons = e.b ? B_PRIMARY_MOUSE_BUTTON : 0;
 			w->ptrWhere = where;
+			w->buttons = buttons;
+			gPtr = BPoint(where.x + w->frame.left, where.y + w->frame.top); gPtrButtons = buttons;
 			SView* hit = w->top;
 			bool found = true;
 			while (found && hit) {
@@ -910,6 +1055,14 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 		case AS_SYNC:
 			reply.StartMessage(B_OK); reply.Flush();
 			return;
+		case AS_GET_MOUSE:
+			// Last pointer position (screen coordinates, = window coordinates + the window's frame origin) and buttons.
+			// View.cpp reads a BPoint and a uint32 (ServerWindow replies with an int32; same four bytes).
+			reply.StartMessage(B_OK);
+			reply.Attach<BPoint>(gPtr);
+			reply.Attach<uint32>((uint32)gPtrButtons);
+			reply.Flush();
+			return;
 		case AS_BEGIN_UPDATE: BeginUpdate(w); return;
 		case AS_END_UPDATE: EndUpdate(w); return;
 		case AS_ENABLE_UPDATES: w->updatesEnabled = true; RequestUpdate(w); return;
@@ -919,7 +1072,26 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			return;
 		case AS_ACTIVATE_WINDOW:
 		case AS_SET_LOOK: case AS_SET_FEEL: case AS_SET_FLAGS: case AS_SET_WORKSPACES:
-		case AS_MINIMIZE_WINDOW: case AS_SEND_BEHIND: case AS_SET_SIZE_LIMITS: case AS_ADD_TO_SUBSET:
+		case AS_SET_SIZE_LIMITS:
+		{
+			// Needs a reply (BWindow::SetSizeLimits blocks on it): the limits as enforced, and the frame. BMenuWindow's
+			// constructor is the first caller, from the menu tracking thread.
+			float a, b, c, d; link.Read<float>(&a); link.Read<float>(&b); link.Read<float>(&c); link.Read<float>(&d);
+			a = std::max(a, 0.f); c = std::max(c, 0.f); b = std::max(b, a); d = std::max(d, c);
+			// A frame outside the limits is brought inside them (BWindow adopts the frame we send back); layouts rely on
+			// this: B_AUTO_UPDATE_SIZE_LIMITS sets the minimum to the layout's, and the window must grow to it.
+			{
+				float fw = w->frame.Width() + 1, fh = w->frame.Height() + 1;
+				float nw = std::min(std::max(fw, a), b), nh = std::min(std::max(fh, c), d);
+				if (nw != fw || nh != fh) ApplyWindowResize(w, (int)ceilf(nw), (int)ceilf(nh));
+			}
+			reply.StartMessage(B_OK);
+			reply.Attach<BRect>(w->frame);
+			reply.Attach<float>(a); reply.Attach<float>(b); reply.Attach<float>(c); reply.Attach<float>(d);
+			reply.Flush();
+			return;
+		}
+		case AS_MINIMIZE_WINDOW: case AS_SEND_BEHIND: case AS_ADD_TO_SUBSET:
 		case AS_REMOVE_FROM_SUBSET: case AS_SYSTEM_FONT_CHANGED:
 			if (code == AS_SEND_BEHIND) { reply.StartMessage(B_OK); reply.Flush(); }
 			return;
@@ -1107,13 +1279,65 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			v->st.pen = i.endPoint;
 			return;
 		}
+		case AS_VIEW_DRAW_BITMAP:
+		{
+			ViewDrawBitmapInfo i; if (link.Read<ViewDrawBitmapInfo>(&i) != B_OK) return;
+			auto it = gBitmaps.find(i.bitmapToken);
+			if (it == gBitmaps.end()) return;
+			const SBitmap& bm = it->second;
+			int bw = bm.bounds.IntegerWidth() + 1, bh = bm.bounds.IntegerHeight() + 1;
+			std::vector<uint32_t> px((size_t)bw * bh, 0);
+			bool transparentOk = v->st.mode != B_OP_COPY;
+			bool alphaOk = v->st.mode == B_OP_ALPHA || bm.cs == B_RGBA32;
+			for (int y = 0; y < bh; y++) for (int x = 0; x < bw; x++) {
+				const uint8* p = bm.base + (size_t)y * bm.bpr;
+				uint32_t o = 0xFF000000u;
+				switch (bm.cs) {
+					case B_RGB32: case B_RGBA32: { const uint8* q = p + x * 4; o = ((alphaOk ? q[3] : 255u) << 24) | (q[2] << 16) | (q[1] << 8) | q[0]; break; }
+					case B_RGB24: { const uint8* q = p + x * 3; o |= (q[2] << 16) | (q[1] << 8) | q[0]; break; }
+					case B_GRAY8: o |= p[x] * 0x010101u; break;
+					case B_CMAP8: {
+						if (p[x] == B_TRANSPARENT_MAGIC_CMAP8 && transparentOk) { o = 0; break; }
+						rgb_color c = kSystemPalette[p[x]]; o |= (c.red << 16) | (c.green << 8) | c.blue; break;
+					}
+					default: gUnhandled++; return;
+				}
+				px[(size_t)y * bw + x] = o;
+			}
+			SetupClip(w, v);
+			BRect dst = ToWindow(v, i.viewRect);
+			w->canvas.DrawImage(px.data(), bw, bh, FRect{i.bitmapRect.left - bm.bounds.left, i.bitmapRect.top - bm.bounds.top, i.bitmapRect.right - bm.bounds.left, i.bitmapRect.bottom - bm.bounds.top}, FRect{dst.left, dst.top, dst.right, dst.bottom});
+			return;
+		}
+		case AS_FILL_REGION:
+		{
+			// Rects of the region, in the view's coordinates. B_OP_INVERT is how BTextView paints its selection.
+			BRegion r; if (link.ReadRegion(&r) != B_OK) return;
+			SetupClip(w, v);
+			for (int32 i = 0; i < r.CountRects(); i++) {
+				BRect wr = ToWindow(v, r.RectAt(i));
+				FRect f{wr.left, wr.top, wr.right, wr.bottom};
+				if (v->st.mode == B_OP_INVERT) w->canvas.InvertRect(f);
+				else w->canvas.FillRect(f, DrawColor(v->st));
+			}
+			return;
+		}
+		case AS_VIEW_INVERT_RECT:
+		{
+			BRect r; if (link.Read<BRect>(&r) != B_OK) return;
+			SetupClip(w, v);
+			BRect wr = ToWindow(v, r);
+			w->canvas.InvertRect(FRect{wr.left, wr.top, wr.right, wr.bottom});
+			return;
+		}
 		case AS_STROKE_RECT: case AS_FILL_RECT:
 		{
 			BRect r; if (link.Read<BRect>(&r) != B_OK) return;
 			SetupClip(w, v);
 			BRect wr = ToWindow(v, r);
 			FRect f{wr.left, wr.top, wr.right, wr.bottom};
-			if (code == AS_FILL_RECT) w->canvas.FillRect(f, DrawColor(v->st));
+			if (code == AS_FILL_RECT && v->st.mode == B_OP_INVERT) w->canvas.InvertRect(f);
+			else if (code == AS_FILL_RECT) w->canvas.FillRect(f, DrawColor(v->st));
 			else w->canvas.StrokeRect(f, DrawColor(v->st), v->st.penSize * v->st.scale);
 			return;
 		}
@@ -1260,6 +1484,10 @@ void WindowThread(SWindow* w)
 			continue;
 		}
 		WindowDispatch(w, code, link);
+		// A real app_server draws to the screen at once. Ours presents at EndUpdate, so a view that draws outside an
+		// update (BTextView inverts its caret that way, on every blink) would only show up at the next repaint.
+		// Present when the client has nothing more queued.
+		if (w->directDraw && !w->inUpdate && w->visible && port_count(w->port) <= 0) { w->directDraw = false; PresentWindow(w); }
 	}
 }
 
@@ -1306,7 +1534,7 @@ void CreateWindow(SApp* app, LinkReceiver& link, PortLink& reply)
 
 	SWindow* w = new SWindow;
 	w->app = app; w->clientToken = token; w->clientLooperPort = looperPort;
-	w->frame = frame; w->title = title ? title : ""; free(title); w->flags = flags;
+	w->frame = frame; w->title = title ? title : ""; free(title); w->flags = flags; w->feel = feel;
 	w->port = create_port(100, "w<app_server_win");
 	w->link.SetTo(replyPort, w->port);
 	{
@@ -1424,6 +1652,24 @@ int unhandled_opcodes(int* withReply)
 
 double output_scale() { return gScale; }
 uint32_t current_modifiers() { return gMods; }
+
+bool inject_special_key(int window, const char* name, bool shift)
+{
+	static const struct { const char* n; uint32_t ev; char ch; } k[] = {
+		{"BackSpace", 14, 0x08}, {"Delete", 111, 0x7f}, {"Home", 102, 0x01}, {"End", 107, 0x04}, {"PageUp", 104, 0x0b}, {"PageDown", 109, 0x0c}};
+	SWindow* w;
+	{ std::lock_guard<std::recursive_mutex> g(gMu); if (window < 0 || window >= (int)gWindows.size()) return false; w = gWindows[window]; }
+	for (auto& e : k) {
+		if (strcmp(e.n, name)) continue;
+		for (int pressed = 1; pressed >= 0; pressed--) {
+			au_key key; memset(&key, 0, sizeof(key));
+			key.evdev = e.ev; key.pressed = pressed; key.mods = shift ? AU_MOD_SHIFT : 0; key.raw_char = (uint32_t)e.ch; key.utf8[0] = e.ch;
+			PostKey(w, key);
+		}
+		return true;
+	}
+	return false;
+}
 
 // Test hook: the same internal event the Wayland pointer callbacks post, so a test can click without a seat.
 void inject_pointer(int window, float x, float y, int button)	// button: -1 move only, 0 release, 1 press

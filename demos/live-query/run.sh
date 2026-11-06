@@ -14,9 +14,10 @@
 # both domains, and subscribes to ** from inside a domain.
 #
 # What this demo does NOT show, or shows as still open (see index/README.md):
-#   - provenance.created is still broadcast to any subscriber, a domain
-#     included. The last step prints whether the domain's ** subscription saw
-#     it (information, not a pass/fail: the index cannot close it).
+#   - the index's own filter does not cover the bus; that is busd's job. busd
+#     never delivers system topics (provenance. approval. bus. agent. index.)
+#     to a domain connection. The last step ASSERTS that: a domain's ** sees a
+#     canary and no provenance.created, and an explicit subscribe is refused.
 #   - fanotify, history from btrfs snapshots, xattr attributes, a GUI/dock.
 # Needs: go, bwrap, ImageMagick (magick), ffmpeg, jq, python3. Installs nothing.
 set -uo pipefail
@@ -40,6 +41,7 @@ eq()   { [ "$1" = "$2" ] && ok "$3 ($1)" || bad "$3: got '$1', want '$2'"; }
 has()  { case $1 in *"$2"*) ok "$3";; *) bad "$3 (no '$2' in: ${1:0:500})";; esac; }
 lacks(){ case $1 in *"$2"*) bad "$3 ('$2' present)";; *) ok "$3";; esac; }
 indent() { sed 's/^/   | /'; }
+
 summary() { printf '\n%s checks passed, %s failed (%s steps)\n' "$PASS" "$FAIL" "$STEPS"; }
 us() { echo "${EPOCHREALTIME/./}"; }                       # microseconds, no fork
 ms() { python3 -I -c 'import sys; print(round(int(sys.argv[1])/1000,1))' "$1"; }
@@ -116,6 +118,9 @@ T0=$(us)
 $C invoke org.aurora.magick convert@v1 --input "$PIC/photo.png" --output "$PIC/export.png" --arg format=png >"$W/i1.out" 2>&1 || { cat "$W/i1.out"; die "invoke failed"; }
 T1=$(us)
 has "$(cat "$W/i1.out")" '"isolated": true' "the controller says the run was isolated"
+has "$(cat "$W/i1.out")" '"provenance"' "the invoke REPLY carries the provenance record, so a caller needs no provenance.created subscription"
+echo "   the reply's provenance record:"; jq -c '.provenance' "$W/i1.out" 2>/dev/null | cut -c1-400 | indent
+has "$(jq -r '.provenance.file // .provenance.output // empty' "$W/i1.out" 2>/dev/null)" "$PIC/export.png" "and that record names the output file"
 for _ in $(seq 100); do grep -q '"live":true' "$W/watch.json" && break; sleep 0.05; done
 LIVE=$(cut -d' ' -f2- "$W/watch.json" | jq -c 'select(.live)' 2>/dev/null | head -1)
 TL=$(grep -m1 '"live":true' "$W/watch.json" | cut -d' ' -f1)
@@ -142,7 +147,7 @@ for _ in $(seq 100); do [ "$(grep -c '"live":true' "$W/watch.json")" -ge 3 ] && 
 eq "$(grep -c '"live":true' "$W/watch.json")" 3 "the watcher saw three live matches (one per write, the overwrite included)"
 echo "   what a person watching saw:"; grep -E '^[0-9]+ \+ ' "$W/watch.txt" | cut -d' ' -f2- | indent
 has "$(cat "$W/watch.txt")" "VIEW: indexd says it saw this request from uid" "the watcher printed whose view it got (the session's)"
-has "$(cat "$W/watch.txt")" "THE FILTER COVERS THE INDEX ONLY" "and that provenance.created is not filtered by the index"
+lacks "$(cat "$W/watch.txt")" "THE FILTER COVERS THE INDEX ONLY" "the obsolete 'provenance.created is broadcast' warning is gone (busd closes it)"
 lacks "$(cat "$W/watch.txt")" "NOT FILTERED" "the old no-filter warning is gone"
 
 step "run the saved queries now"
@@ -178,7 +183,7 @@ $B pub provenance.created "{\"file\":\"$W/forged.png\",\"app\":\"org.aurora.magi
 has "$(cat "$W/indexd.log")" "not the controller" "an event from a non-controller sender is refused by indexd"
 lacks "$($A query run images-this-week 2>&1)" forged.png "and the forged file is not in the query"
 has "$RR" "as a session" "the run output says which view the caller got"
-has "$RR" "THE FILTER COVERS THE INDEX ONLY" "and that the filter does not cover provenance.created"
+lacks "$RR" "THE FILTER COVERS THE INDEX ONLY" "and the obsolete broadcast warning is gone from the run output"
 has "$RR" "invisible" "and that files made outside Aurora or before indexd ran are not known"
 [ "$(jq -s 'length' "$IDX/index.jsonl" 2>/dev/null)" = 3 ] && ok "index.jsonl holds exactly 3 entries (one per provenance event)" || bad "index.jsonl: $(wc -l <"$IDX/index.jsonl") lines"
 
@@ -254,13 +259,16 @@ eq "$(jq -r '.hits | length' "$W/pF-i.json" 2>/dev/null)" 0 "live, ffmpeg domain
 lacks "$(cat "$W/pF-i.json")" export2 "live, ffmpeg domain: export2 appears nowhere in its reply"
 has "$(cat "$W/subM.txt")" "demo.canary" "control: the magick domain's ** subscription was live (it saw the canary event)"
 lacks "$(cat "$W/subM.txt")" "index.match" "the magick domain's ** subscription received NO index.match.* event for either new file"
-if grep -q "tone2.flac" "$W/subM.txt"; then
-  echo "   KNOWN LEAK, NOT CLOSED BY THE INDEX: the magick domain's ** subscription DID receive provenance.created naming tone2.flac, the ffmpeg domain's file:"
-  grep -m1 "provenance.created" "$W/subM.txt" | cut -c1-260 | indent
-else
-  echo "   provenance.created did not reach the magick domain's subscription in this run; the upstream leak looks closed, update index/README.md"
-fi
+lacks "$(cat "$W/subM.txt")" "provenance.created" "LEAK CLOSED: the magick domain's ** subscription received NO provenance.created at all"
+lacks "$(cat "$W/subM.txt")" "tone2.flac" "LEAK CLOSED: and the ffmpeg domain's file name tone2.flac appears nowhere in what it received"
+SUBERR=$(inM timeout 5 $DB sub 'provenance.created' --socket $SOCK 2>&1; cat "$W/inM.err")   # inM sends the tool's stderr to inM.err
+has "$SUBERR" "reserved_topic" "an explicit subscribe to provenance.created from the magick domain is refused with reserved_topic"
 [ "$(jq -s 'length' "$IDX/index.jsonl" 2>/dev/null)" = 6 ] && ok "index.jsonl holds exactly 6 entries (export.png twice, export.jpg, tone.flac, tone2.flac, export2.png: one per provenance event)" || bad "index.jsonl: $(wc -l <"$IDX/index.jsonl") lines"
+
+# a domain loses nothing by not hearing provenance.created: the registry.invoke@v1 REPLY to a call made from inside the domain carries the record of its own output
+DOMINV=$(inM timeout 60 $DB send registry registry.invoke@v1 "{\"app\":\"org.aurora.magick\",\"verb\":\"resize@v1\",\"input\":\"$PIC/photo.png\",\"output\":\"$PIC/fromdomain.png\",\"args\":{\"width\":50}}" --socket $SOCK 2>/dev/null)
+eq "$(jq -r '.provenance.file' <<<"$DOMINV" 2>/dev/null)" "$PIC/fromdomain.png" "a registry.invoke@v1 made from INSIDE the magick domain: its reply carries the provenance record of its own output"
+eq "$(jq -r '.provenance.verb' <<<"$DOMINV" 2>/dev/null)" "resize@v1" "with the verb, from the reply, not from any subscription"
 
 summary
 [ "$FAIL" = 0 ]

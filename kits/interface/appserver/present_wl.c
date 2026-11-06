@@ -38,6 +38,7 @@ struct au_wl {
 	au_key rep;
 	struct timespec rep_next;
 	struct wl_output* out;
+	int mode_w, mode_h;	/* wl_output.mode (physical px) */
 	int scale;
 	pthread_mutex_t mu;
 	pthread_t thread;
@@ -51,6 +52,7 @@ struct au_wl_win {
 	struct wl_surface* surf;
 	struct xdg_surface* xs;
 	struct xdg_toplevel* top;
+	struct xdg_popup* pop;
 	au_event_fn fn;
 	au_key_fn kfn;
 	void* user;
@@ -97,7 +99,7 @@ static const struct xdg_toplevel_listener top_listener = { top_configure, top_cl
 
 static void out_geometry(void* d, struct wl_output* o, int32_t x, int32_t y, int32_t pw, int32_t ph, int32_t sp, const char* mk, const char* md, int32_t tr)
 { (void)d; (void)o; (void)x; (void)y; (void)pw; (void)ph; (void)sp; (void)mk; (void)md; (void)tr; }
-static void out_mode(void* d, struct wl_output* o, uint32_t f, int32_t w, int32_t h, int32_t r) { (void)d; (void)o; (void)f; (void)w; (void)h; (void)r; }
+static void out_mode(void* d, struct wl_output* o, uint32_t f, int32_t w, int32_t h, int32_t r) { au_wl* g = d; (void)o; (void)r; if (f & WL_OUTPUT_MODE_CURRENT) { g->mode_w = w; g->mode_h = h; } }
 static void out_done(void* d, struct wl_output* o) { (void)d; (void)o; }
 static void out_scale(void* d, struct wl_output* o, int32_t f) { au_wl* g = d; (void)o; if (f >= 1) g->scale = f; }
 static const struct wl_output_listener out_listener = { out_geometry, out_mode, out_done, out_scale };
@@ -344,6 +346,7 @@ au_wl* au_wl_connect(void)
 }
 
 int au_wl_output_scale(au_wl* g) { return g->scale; }
+int au_wl_output_size(au_wl* g, int* w, int* h) { if (g->mode_w <= 0) return 0; *w = g->mode_w / g->scale; *h = g->mode_h / g->scale; return 1; }
 
 au_wl_win* au_wl_win_create(au_wl* g, const char* title, int lw, int lh, au_event_fn fn, void* user)
 {
@@ -364,6 +367,39 @@ au_wl_win* au_wl_win_create(au_wl* g, const char* title, int lw, int lh, au_even
 	/* the event thread dispatches the configure; wait for it (the first present needs the ack) */
 	for (int i = 0; i < 200 && !w->configured; i++) { struct timespec ts = {0, 10 * 1000 * 1000}; nanosleep(&ts, NULL); }
 	if (!w->configured) fprintf(stderr, "present_wl: no xdg_surface.configure within 2 s\n");
+	g->nwins++;
+	return w;
+}
+
+static void pop_configure(void* d, struct xdg_popup* p, int32_t x, int32_t y, int32_t w, int32_t h) { (void)d; (void)p; (void)x; (void)y; (void)w; (void)h; }
+static void pop_done(void* d, struct xdg_popup* p) { (void)d; (void)p; /* the compositor dismissed it; the BMenu tracking thread closes it itself */ }
+static void pop_repos(void* d, struct xdg_popup* p, uint32_t t) { (void)d; (void)p; (void)t; }
+static const struct xdg_popup_listener pop_listener = { pop_configure, pop_done, pop_repos };
+
+/* A menu: an xdg_popup of `parent`, lw x lh, whose top-left sits at (x, y) in the parent's window coordinates. */
+au_wl_win* au_wl_popup_create(au_wl* g, au_wl_win* parent, int x, int y, int lw, int lh, au_event_fn fn, void* user)
+{
+	struct au_wl_win* w = calloc(1, sizeof(*w));
+	w->g = g; w->fn = fn; w->user = user; w->lw = lw; w->lh = lh;
+	pthread_mutex_lock(&g->mu);
+	w->surf = wl_compositor_create_surface(g->comp);
+	wl_surface_set_user_data(w->surf, w);
+	w->xs = xdg_wm_base_get_xdg_surface(g->wm, w->surf);
+	xdg_surface_add_listener(w->xs, &xs_listener, w);
+	struct xdg_positioner* pos = xdg_wm_base_create_positioner(g->wm);
+	xdg_positioner_set_size(pos, lw, lh);
+	xdg_positioner_set_anchor_rect(pos, x, y, 1, 1);
+	xdg_positioner_set_anchor(pos, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+	xdg_positioner_set_gravity(pos, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+	xdg_positioner_set_constraint_adjustment(pos, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_NONE);
+	w->pop = xdg_surface_get_popup(w->xs, parent->xs, pos);
+	xdg_positioner_destroy(pos);
+	xdg_popup_add_listener(w->pop, &pop_listener, w);
+	wl_surface_commit(w->surf);
+	wl_display_flush(g->dpy);
+	pthread_mutex_unlock(&g->mu);
+	for (int i = 0; i < 200 && !w->configured; i++) { struct timespec ts = {0, 10 * 1000 * 1000}; nanosleep(&ts, NULL); }
+	if (!w->configured) fprintf(stderr, "present_wl: no xdg_surface.configure for a popup within 2 s\n");
 	g->nwins++;
 	return w;
 }
@@ -404,7 +440,8 @@ void au_wl_win_destroy(au_wl_win* w)
 	w->destroyed = 1;
 	if (g->focus == w) g->focus = NULL;
 	if (g->kfocus == w) { g->kfocus = NULL; g->rep_key = 0; }
-	xdg_toplevel_destroy(w->top);
+	if (w->pop) xdg_popup_destroy(w->pop);
+	if (w->top) xdg_toplevel_destroy(w->top);
 	xdg_surface_destroy(w->xs);
 	wl_surface_destroy(w->surf);
 	wl_display_flush(g->dpy);

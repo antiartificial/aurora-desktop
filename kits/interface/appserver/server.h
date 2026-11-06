@@ -29,6 +29,11 @@ bool last_frame(int index, Frame* out);
 // Number of AS_* opcodes the server did not understand (and how many of those wanted a reply).
 int unhandled_opcodes(int* withReply);
 void inject_pointer(int window, float x, float y, int button);	// -1 move, 0 up, 1 down; window coords
+// Test hook for the keys the compositor's --test-input cannot name (BackSpace, Delete, Home, End, PageUp/Down).
+// Posts the same event the Wayland key callback does, with the char xkb gives those keys, so everything above the
+// presenter (HandleKey, B_KEY_DOWN, BWindow, the focus view) is the real path. It does NOT go through the compositor
+// or libxkbcommon. name: BackSpace Delete Home End PageUp PageDown. shift: hold Shift (B_SHIFT_KEY) for this key.
+bool inject_special_key(int window, const char* name, bool shift);
 uint32_t current_modifiers();	// Haiku modifier bits as of the last B_MODIFIERS_CHANGED / key event (modifiers())
 double output_scale();		// the scale the server renders at
 

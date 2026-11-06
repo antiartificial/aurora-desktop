@@ -185,3 +185,20 @@ What changed, and what the section 7 list above no longer says:
 - **Scrolling and shapes.** New opcodes: `AS_VIEW_SCROLL`, `AS_GET_SCROLLBAR_INFO`, `AS_STROKE_SHAPE`/`AS_FILL_SHAPE` (polylines; beziers flattened to 12 segments), needed by `BScrollBar` and its arrows. `BListView` needed none.
 - **A bug fixed on the way.** `fonts.cpp` shaped through `hb_ft_font`, which reads advances from the FT face at whatever size `Rasterize` last set: a string's width depended on what had been drawn before it (the same 12-character string measured 177 or 264 px). It now shapes from the font file with HarfBuzz's own OpenType functions.
 - ScrollView, ListView, ListItem, StringItem, OutlineListView are compiled in; `BTextView`, menus and layouts are still not run. `demos/browser/` is the first real application.
+
+## 9. Addendum: BTextView, menus, layouts (later still)
+
+Run 2026-11-06. `demos/interface-kit/run.sh` now has TEXT, MENUS and LAYOUTS sections (all decoded pixels, references from separate processes).
+
+**BTextView runs.** Typing, Backspace, caret, blinking, selection, Shift+arrows, typing over a selection, Home. What it needed:
+- `registrar.cpp`: the registrar slice `BMessageRunner` talks to (register/unregister/set-params/get-info) behind `BRoster::Private::SendTo`, with one timer thread. This is what makes B_PULSE (the 500 ms caret blink), tooltips and BTextView's auto-scroll runners exist. Real `MessageRunner.cpp` is unchanged.
+- `clipboard.cpp`: an in-process `BClipboard` (process-global per name; not shared between processes). `stubs_iface.cpp`: `beep()` (hollow), `__swap_float/__swap_double`, `BCatalog::GetString` identity + `gSystemCatalog`, real `send_data/receive_data/has_data`.
+- Server: `AS_VIEW_INVERT_RECT`, `AS_FILL_REGION` and `B_OP_INVERT` (caret and selection are inverted rects), `AS_GET_MOUSE`.
+- Three kit-level bugs found: **B_WINDOW_ACTIVATED was sent to the preferred handler (the focus view), which BWindow drops**, so no view ever saw activation (this also explains the old "2 unexplained focus-ring pixels"); **drawing outside an update was never presented** (caret blinks draw that way); **updates were not clipped to the dirty region**, so any widget that fills its whole background in a partial repaint (BMenu) wiped its neighbours.
+- Test hooks: `aurora::inject_special_key` (BackSpace/Delete/Home/End/PageUp/PageDown: --test-input has no names for them), env `AURORA_APPSERVER_ACTIVE=1` (activation without a seat), `AURORA_APPSERVER_CLICK=x,y`, `AURORA_APPSERVER_DUMP_SEQ=1`.
+
+**Menus.** A BMenu pop-up is its own `BMenuWindow` (feel 1025), positioned in screen coordinates, so yes: window opcodes were needed. Served: `AS_SET_SIZE_LIMITS` reply (it blocked the tracking thread forever; the server now also grows a window to its minimum, which layouts need), `AS_GET_SCREEN_FRAME`, `AS_GET_SCREEN_ID_FROM_WINDOW`, `AS_GET_MENU_INFO/SET`, `AS_CREATE_BITMAP/DELETE_BITMAP/VIEW_DRAW_BITMAP` (in-process areas; B_CMAP8 through Haiku's own `kSystemPalette`; BMenu lays out with 5 bitmaps), `AS_GET_MOUSE` from a process-wide pointer. Menu windows are presented as `xdg_popup`s of the application's main window (`au_wl_popup_create`; geometry fixed at creation, so a moved or resized menu is re-created). The compositor already supports popups (no grab).
+
+**Layouts** needed nothing from the BView API, only the window-size-limits reply above (and `GridLayout` added to the build list).
+
+Not built / not verified: keyboard navigation of an open menu (keys do not reach the tracker); selecting an item through the compositor (a 1 ms press+release, the only click --test-input has, is not seen by BMenu's 16 ms polling; verified only with 80 ms clicks via the server's internal pointer events); submenus (Format) opened, popup grabs/dismissal on outside click, BPopUpMenu, menu fields; bitmaps other than 32/24/8-bit and CMAP8, scaling is nearest-neighbour; update clip is the bounding box of the dirty region, not the region; IME, drag and drop, undo of BTextView through menus, text on multiple lines/wrapping/scrolling are untested; the clipboard is per-process.

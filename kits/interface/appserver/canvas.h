@@ -44,6 +44,9 @@ public:
 
 	void FillRect(FRect r, Color c);
 	void FillRect(FRect r, const Paint& p);
+	// Straight-alpha ARGB image (sw x sh), source rect in image pixels, destination in layout units; nearest neighbour.
+	void DrawImage(const uint32_t* argb, int sw, int sh, FRect src, FRect dst);
+	void InvertRect(FRect r);	// B_OP_INVERT: each pixel's RGB becomes 255 - RGB
 	void StrokeRect(FRect r, Color c, float pen);
 	void StrokeLine(float x0, float y0, float x1, float y1, Color c, float pen);
 	void FillRoundRect(FRect r, float rx, float ry, Color c);
