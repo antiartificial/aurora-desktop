@@ -68,6 +68,9 @@ func formatMsg(m proto.Envelope) string {
 	if len(m.CapIDs) > 0 {
 		s += " caps=" + strings.Join(m.CapIDs, ",")
 	}
+	for _, sg := range m.Segments {
+		s += fmt.Sprintf(" seg=%s(%d bytes %s)", sg.ID, sg.Bytes, sg.SHA256[:min(len(sg.SHA256), 19)])
+	}
 	return s
 }
 
@@ -107,6 +110,10 @@ func cmdInspect(args []string) int {
 	fmt.Printf("clients (%d):\n", len(r.Clients))
 	for _, c := range r.Clients {
 		fmt.Printf("  #%d %s pid=%d uid=%d since %s\n", c.ID, c.Domain, c.PID, c.UID, c.Connected.Format("15:04:05"))
+		if sg := c.Segments; sg.Received+int64(sg.Delivered)+int64(sg.OpenQueued) > 0 {
+			fmt.Printf("      segments: %d open (%d bytes, held by busd awaiting delivery), %d delivered, %d received (%d bytes)\n",
+				sg.OpenQueued, sg.OpenBytes, sg.Delivered, sg.Received, sg.ReceivedByte)
+		}
 		for rank, cs := range c.Outbox {
 			if cs.Queued > 0 {
 				fmt.Printf("      backlog %s: %d queued, oldest %dms\n", qosNames[rank], cs.Queued, cs.OldestAgeMS)
@@ -156,6 +163,10 @@ func cmdReplay(args []string) int {
 			return fail("%v", err)
 		}
 		fmt.Printf("replayed %d of %d messages into a fresh daemon\n", res.Delivered, len(msgs))
+		if n := countSegments(msgs); n > 0 {
+			fmt.Printf("note: %d segment(s) were carried; their CONTENTS are not in the log and are not replayed.\n"+
+				"      replay re-sends descriptors (id, size, mime, sha256) marked absent, and the check compares those.\n", n)
+		}
 		for _, c := range res.Report.Checks {
 			mark := "PASS"
 			if !c.OK {
@@ -183,3 +194,10 @@ func cmdReplay(args []string) int {
 }
 
 var qosNames = [...]string{"user-interactive", "user-initiated", "utility", "background"}
+
+func countSegments(msgs []proto.Envelope) (n int) {
+	for _, m := range msgs {
+		n += len(m.Segments)
+	}
+	return n
+}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -23,12 +24,20 @@ type outbox struct {
 	q       [proto.NumQoS][]queued
 	closed  bool
 	dropped int
+	fds     int   // fds currently queued
+	fdBytes int64 // segment bytes currently queued
+	sent    int   // segments handed to the socket
 }
 
 type queued struct {
-	line []byte
-	at   time.Time
+	line  []byte
+	files []*os.File // fds owned by this queue entry until written or dropped
+	bytes int64      // total declared segment bytes
+	at    time.Time
 }
+
+// maxQueuedFDs bounds the fds the daemon holds for one slow receiver.
+const maxQueuedFDs = 256
 
 // ClassStats is the backlog of one QoS class on one connection.
 type ClassStats struct {
@@ -42,34 +51,58 @@ func newOutbox() *outbox {
 	return o
 }
 
-func (o *outbox) push(rank int, line []byte) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
-		return
-	}
-	if len(o.q[rank]) >= maxQueuedPerClass {
-		o.dropped++
-		return
-	}
-	o.q[rank] = append(o.q[rank], queued{line, time.Now()})
-	o.cond.Signal()
-}
+func (o *outbox) push(rank int, line []byte) { o.pushFiles(rank, line, nil, 0) }
 
 // pop blocks until a line is available; ok is false once closed.
 func (o *outbox) pop() (line []byte, ok bool) {
+	line, files, ok := o.popFiles()
+	closeFiles(files)
+	return line, ok
+}
+
+// pushFiles queues a line and takes ownership of files: they are closed if
+// the message is dropped or the outbox closed.
+func (o *outbox) pushFiles(rank int, line []byte, files []*os.File, segBytes int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		closeFiles(files)
+		return
+	}
+	if len(o.q[rank]) >= maxQueuedPerClass || o.fds+len(files) > maxQueuedFDs {
+		o.dropped++
+		closeFiles(files)
+		return
+	}
+	o.fds += len(files)
+	o.fdBytes += segBytes
+	o.q[rank] = append(o.q[rank], queued{line, files, segBytes, time.Now()})
+	o.cond.Signal()
+}
+
+func closeFiles(fs []*os.File) {
+	for _, f := range fs {
+		f.Close()
+	}
+}
+
+// popFiles is pop plus the fds to send with the line; the caller closes them.
+func (o *outbox) popFiles() (line []byte, files []*os.File, ok bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for {
 		if o.closed {
-			return nil, false
+			return nil, nil, false
 		}
 		for r := range o.q {
 			if len(o.q[r]) > 0 {
-				line = o.q[r][0].line
+				it := o.q[r][0]
 				o.q[r][0] = queued{}
 				o.q[r] = o.q[r][1:]
-				return line, true
+				o.fds -= len(it.files)
+				o.fdBytes -= it.bytes
+				o.sent += len(it.files)
+				return it.line, it.files, true
 			}
 		}
 		o.cond.Wait()
@@ -91,9 +124,22 @@ func (o *outbox) stats() (cs [proto.NumQoS]ClassStats, dropped int) {
 	return cs, o.dropped
 }
 
+func (o *outbox) segStats() (queued int, queuedBytes int64, sent int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.fds, o.fdBytes, o.sent
+}
+
 func (o *outbox) close() {
 	o.mu.Lock()
 	o.closed = true
+	for r := range o.q {
+		for _, it := range o.q[r] {
+			closeFiles(it.files)
+		}
+		o.q[r] = nil
+	}
+	o.fds, o.fdBytes = 0, 0
 	o.mu.Unlock()
 	o.cond.Broadcast()
 }

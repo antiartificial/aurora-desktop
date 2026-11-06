@@ -22,6 +22,8 @@ func cmdSend(args []string) int {
 	qos := fs.String("qos", "", "QoS class (user-interactive|user-initiated|utility|background)")
 	timeout := fs.Duration("timeout", 10*time.Second, "how long to wait for the reply")
 	full := fs.Bool("envelope", false, "print the whole reply envelope instead of the payload")
+	var segs segFlag
+	fs.Var(&segs, "segment", segHelp)
 	pos, code, done := parse(fs, args, 2, 3)
 	if done {
 		return code
@@ -41,7 +43,11 @@ func cmdSend(args []string) int {
 	defer c.Close()
 	ctx, cancel := timeoutCtx(*timeout)
 	defer cancel()
-	r, err := c.Call(ctx, proto.Envelope{To: pos[0], Verb: pos[1], Payload: payload, QoS: q})
+	req := proto.Envelope{To: pos[0], Verb: pos[1], Payload: payload, QoS: q}
+	if err := attachFiles(&req, segs); err != nil {
+		return fail("%v", err)
+	}
+	r, err := c.Call(ctx, req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fail("no reply from %q within %v", pos[0], *timeout)
@@ -60,6 +66,7 @@ func cmdSend(args []string) int {
 func cmdSub(args []string) int {
 	fs, sock := cmdFlags("sub", "[flags] <topic-glob>", "Stream events whose topic matches the glob (e.g. 'window.*', '**') as JSON envelopes, one per line, until interrupted.")
 	payloadOnly := fs.Bool("payload-only", false, "print only each event's payload")
+	segDir := fs.String("segment-dir", "", "write each received segment into this directory, named by segment id")
 	pos, code, done := parse(fs, args, 1, 1)
 	if done {
 		return code
@@ -83,6 +90,12 @@ func cmdSub(args []string) int {
 			if !ok {
 				return fail("connection to busd lost")
 			}
+			if *segDir != "" {
+				if err := saveSegments(e, *segDir); err != nil {
+					fmt.Fprintf(os.Stderr, "bus: save segment: %v\n", err)
+				}
+			}
+			e.CloseAttachments()
 			if *payloadOnly {
 				fmt.Println(string(e.Payload))
 			} else {
@@ -99,6 +112,8 @@ func cmdPub(args []string) int {
 	fs, sock := cmdFlags("pub", "[flags] <topic> [json]", "Publish an event. ")
 	qos := fs.String("qos", "", "QoS class (user-interactive|user-initiated|utility|background)")
 	eph := fs.Bool("ephemeral", false, "deliver but do not log")
+	var segs segFlag
+	fs.Var(&segs, "segment", segHelp)
 	pos, code, done := parse(fs, args, 1, 2)
 	if done {
 		return code
@@ -118,7 +133,11 @@ func cmdPub(args []string) int {
 	defer c.Close()
 	ctx, cancel := timeoutCtx(10 * time.Second)
 	defer cancel()
-	if err := c.Publish(pos[0], payload, q, *eph); err != nil {
+	ev := proto.Envelope{Kind: proto.KindEvent, Topic: pos[0], Payload: payload, QoS: q, Ephemeral: *eph}
+	if err := attachFiles(&ev, segs); err != nil {
+		return fail("%v", err)
+	}
+	if err := c.Send(ev); err != nil {
 		return fail("%v", err)
 	}
 	if err := c.Flush(ctx); err != nil {
@@ -129,7 +148,7 @@ func cmdPub(args []string) int {
 
 func cmdServe(args []string) int {
 	fs, sock := cmdFlags("serve", "[flags] <name> <command>",
-		"Register as service <name>. For each request, run <command> with `sh -c`,\nthe payload on stdin, and reply with its stdout (JSON, or a JSON string if\nit is not valid JSON). A non-zero exit becomes an error reply.\nEnvironment: BUS_FROM (caller domain), BUS_VERB.")
+		"Register as service <name>. For each request, run <command> with `sh -c`,\nthe payload on stdin, and reply with its stdout (JSON, or a JSON string if\nit is not valid JSON). A non-zero exit becomes an error reply.\nEnvironment: BUS_FROM (caller domain), BUS_VERB. A request that carries\nsegments gets each as a read-only fd 3, 4, ... and BUS_SEGMENTS (descriptor\nJSON) and BUS_SEGMENT_FDS; read them with e.g. `sha256sum <&3`.")
 	pos, code, done := parse(fs, args, 2, 2)
 	if done {
 		return code
@@ -164,9 +183,21 @@ func cmdServe(args []string) int {
 }
 
 func handle(c *client.Client, req proto.Envelope, command string) {
+	defer req.CloseAttachments()
 	cmd := exec.Command("sh", "-c", command)
+	files, env, err := segmentEnv(req)
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	if err != nil {
+		c.ReplyError(req, "bad_segments", err.Error())
+		return
+	}
+	cmd.ExtraFiles = files
 	cmd.Stdin = bytes.NewReader(req.Payload)
-	cmd.Env = append(os.Environ(), "BUS_FROM="+req.From, "BUS_VERB="+req.Verb)
+	cmd.Env = append(append(os.Environ(), "BUS_FROM="+req.From, "BUS_VERB="+req.Verb), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

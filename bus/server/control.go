@@ -116,6 +116,18 @@ type InspectClient struct {
 	// in a higher one is starvation (no aging; see README).
 	Outbox  [proto.NumQoS]ClassStats `json:"outbox"`
 	Dropped int                      `json:"dropped"`
+	// Segments: fds the daemon holds open for this client right now (queued
+	// for delivery to it), and lifetime counts. Bytes are declared sizes.
+	Segments SegmentStats `json:"segments"`
+}
+
+// SegmentStats is one client's shared-memory activity.
+type SegmentStats struct {
+	OpenQueued   int   `json:"open_queued"`
+	OpenBytes    int64 `json:"open_bytes"`
+	Delivered    int   `json:"delivered"`
+	Received     int64 `json:"received"`
+	ReceivedByte int64 `json:"received_bytes"`
 }
 type InspectService struct {
 	Name   string `json:"name"`
@@ -138,9 +150,11 @@ func (s *Server) inspect() InspectReply {
 	r := InspectReply{Clients: []InspectClient{}, Services: []InspectService{}, Subscriptions: []InspectSub{}, Clock: s.clock.Now().String()}
 	for _, c := range s.conns {
 		cs, dropped := c.out.stats()
+		oq, ob, sent := c.out.segStats()
 		r.Clients = append(r.Clients, InspectClient{
 			Outbox: cs, Dropped: dropped,
-			ID: c.id, Domain: c.domain, PID: c.cred.PID, UID: c.cred.UID, Connected: c.since,
+			Segments: SegmentStats{oq, ob, sent, c.segsIn, c.segBytesIn},
+			ID:       c.id, Domain: c.domain, PID: c.cred.PID, UID: c.cred.UID, Connected: c.since,
 			Services: append([]string{}, c.services...), Subscriptions: append([]string{}, c.subs...),
 		})
 		for _, t := range c.subs {

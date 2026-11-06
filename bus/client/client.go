@@ -2,7 +2,6 @@
 package client
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/antiartificial/aurora/bus/proto"
+	"github.com/antiartificial/aurora/bus/wire"
 )
 
 // RemoteError is an error envelope returned by the daemon or a service.
@@ -30,7 +30,7 @@ var ErrClosed = errors.New("bus connection closed")
 
 // Client is one connection to the bus. Safe for concurrent use.
 type Client struct {
-	nc       net.Conn
+	nc       *net.UnixConn
 	wmu      sync.Mutex
 	next     atomic.Uint64
 	mu       sync.Mutex
@@ -42,7 +42,7 @@ type Client struct {
 
 // Dial connects to the daemon's Unix socket.
 func Dial(path string) (*Client, error) {
-	nc, err := net.Dial("unix", path)
+	nc, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach busd at %s (is it running? set --socket or AURORA_BUS_SOCK): %w", path, err)
 	}
@@ -71,13 +71,24 @@ func (c *Client) readLoop() {
 	defer close(c.done)
 	defer close(c.events)
 	defer close(c.requests)
-	sc := bufio.NewScanner(c.nc)
-	sc.Buffer(make([]byte, 64<<10), 64<<20)
-	for sc.Scan() {
+	rd := wire.NewReader(c.nc, 64<<20)
+	defer rd.Close()
+	for {
 		var e proto.Envelope
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
-			continue
+		_, files, err := rd.Next(func(line []byte) (int, error) {
+			if err := json.Unmarshal(line, &e); err != nil {
+				return 0, err
+			}
+			return e.Present(), nil
+		})
+		var rej *wire.Reject
+		if errors.As(err, &rej) {
+			continue // bad line or fd mismatch: fds already closed
 		}
+		if err != nil {
+			return
+		}
+		e.Attach = files
 		switch e.Kind {
 		case proto.KindResponse, proto.KindError:
 			c.mu.Lock()
@@ -95,16 +106,21 @@ func (c *Client) readLoop() {
 	}
 }
 
-// Send writes an envelope without waiting for anything.
+// Send writes an envelope without waiting for anything. Any e.Attach fds go
+// out with SCM_RIGHTS on the same write as the JSON line. Send takes
+// ownership of e.Attach and closes it, success or not.
 func (c *Client) Send(e proto.Envelope) error {
+	defer e.CloseAttachments()
+	if len(e.Attach) != e.Present() {
+		return fmt.Errorf("envelope declares %d segments but has %d fds attached", e.Present(), len(e.Attach))
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	_, err = c.nc.Write(append(b, '\n'))
-	return err
+	return wire.Write(c.nc, append(b, '\n'), e.Attach)
 }
 
 // Call sends a request (or control message) and waits for the matching

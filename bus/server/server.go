@@ -2,11 +2,12 @@
 package server
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/antiartificial/aurora/bus/buslog"
 	"github.com/antiartificial/aurora/bus/hlc"
 	"github.com/antiartificial/aurora/bus/proto"
+	"github.com/antiartificial/aurora/bus/wire"
 )
 
 const maxLine = 4 << 20
@@ -32,7 +34,10 @@ type Config struct {
 	AllowReplay bool
 	// Resolver maps peer credentials to a domain name (default DefaultDomain).
 	Resolver func(Cred) string
-	Logf     func(format string, args ...any)
+	// MaxSegmentBytes caps one segment (default 256 MiB). The daemon hashes
+	// every segment it accepts, so this bounds the work a sender can cause.
+	MaxSegmentBytes int64
+	Logf            func(format string, args ...any)
 }
 
 type conn struct {
@@ -44,6 +49,8 @@ type conn struct {
 	out      *outbox
 	subs     []string // guarded by Server.mu
 	services []string // guarded by Server.mu
+
+	segsIn, segBytesIn int64 // accepted from this client; guarded by Server.mu
 }
 
 type pendingReq struct {
@@ -177,11 +184,13 @@ func (s *Server) Close() error {
 func (s *Server) writeLoop(c *conn) {
 	defer s.wg.Done()
 	for {
-		line, ok := c.out.pop()
+		line, files, ok := c.out.popFiles()
 		if !ok {
 			return
 		}
-		if _, err := c.nc.Write(line); err != nil {
+		err := wire.Write(c.nc.(*net.UnixConn), line, files)
+		closeFiles(files) // the kernel holds its own reference once sent
+		if err != nil {
 			c.nc.Close()
 			c.out.close()
 			return
@@ -192,17 +201,53 @@ func (s *Server) writeLoop(c *conn) {
 func (s *Server) readLoop(c *conn) {
 	defer s.wg.Done()
 	defer s.drop(c)
-	sc := bufio.NewScanner(c.nc)
-	sc.Buffer(make([]byte, 64<<10), maxLine)
-	for sc.Scan() {
+	rd := wire.NewReader(c.nc.(*net.UnixConn), maxLine)
+	defer rd.Close()
+	for {
 		var e proto.Envelope
-		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+		var perr error
+		_, files, err := rd.Next(func(line []byte) (int, error) {
+			if perr = json.Unmarshal(line, &e); perr != nil {
+				return 0, perr
+			}
+			if err := e.ValidateSegments(); err != nil {
+				return 0, err
+			}
+			if s.isReplay(e) {
+				return 0, nil // replayed descriptors have no contents
+			}
+			for i := range e.Segments {
+				e.Segments[i].Absent = false // only the daemon sets this
+			}
+			return e.Present(), nil
+		})
+		var rej *wire.Reject
+		switch {
+		case errors.As(err, &rej):
+			code := "bad_segments"
+			if perr != nil {
+				code = "bad_json"
+			}
 			s.mu.Lock()
-			s.sendError(c, "", "bad_json", err.Error())
+			s.sendError(c, e.ID, code, rej.Error())
 			s.mu.Unlock()
+			continue
+		case err != nil:
+			if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
+				s.cfg.Logf("client %d: read: %v", c.id, err)
+			}
+			return
+		}
+		e.Attach = files
+		if err := s.prepareSegments(&e); err != nil {
+			s.mu.Lock()
+			s.sendError(c, e.ID, "bad_segments", err.Error())
+			s.mu.Unlock()
+			e.CloseAttachments()
 			continue
 		}
 		s.dispatch(c, e)
+		e.CloseAttachments() // enqueue gave every recipient its own dup
 	}
 }
 
@@ -239,7 +284,18 @@ func (s *Server) enqueue(c *conn, e proto.Envelope) {
 		s.cfg.Logf("marshal: %v", err)
 		return
 	}
-	c.out.push(e.QoS.Rank(), append(b, '\n'))
+	files, err := dupFiles(e.Attach)
+	if err != nil {
+		s.cfg.Logf("dup segment fds for client %d: %v", c.id, err)
+		return
+	}
+	var segBytes int64
+	for _, sg := range e.Segments {
+		if !sg.Absent {
+			segBytes += sg.Bytes
+		}
+	}
+	c.out.pushFiles(e.QoS.Rank(), append(b, '\n'), files, segBytes)
 }
 
 // sendError replies with an error envelope from the daemon. Callers hold s.mu.
@@ -262,7 +318,11 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clientID := e.ID
-	replay := s.cfg.AllowReplay && e.Origin != nil
+	replay := s.isReplay(e)
+	c.segsIn += int64(len(e.Segments))
+	for _, sg := range e.Segments {
+		c.segBytesIn += sg.Bytes
+	}
 
 	// Hard rule (0001): identity comes from SO_PEERCRED, never the message.
 	e.From = c.domain
@@ -287,6 +347,10 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 	}
 
 	if e.Kind == proto.KindRequest && e.To == proto.BusTarget {
+		if len(e.Segments) > 0 {
+			s.sendError(c, clientID, "bad_message", "control verbs take no segments")
+			return
+		}
 		s.control(c, e, clientID)
 		return
 	}

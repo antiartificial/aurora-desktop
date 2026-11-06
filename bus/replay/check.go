@@ -31,6 +31,7 @@ func Check(orig, replayed, delivered []proto.Envelope) Report {
 		causalOrder(orig, replayed),
 		finalState(orig, replayed, delivered),
 		capGrants(orig, replayed),
+		segmentDescriptors(orig, replayed, delivered),
 	}}
 	r.OK = true
 	for _, c := range r.Checks {
@@ -124,6 +125,78 @@ func fold(prev string, payload []byte) string {
 	return hash(append([]byte(prev), payload...))
 }
 
+// segSig is the canonical descriptor list of a message: id, size, seal, mime
+// and content HASH of each segment. Never bytes: contents are not logged and
+// cannot be replayed.
+func segSig(e proto.Envelope) string {
+	var b strings.Builder
+	for _, s := range e.Segments {
+		b.WriteString("|seg:" + s.Sig())
+	}
+	return b.String()
+}
+
+// withSegs is the unit folded into a state chain: payload plus descriptors.
+func withSegs(e proto.Envelope) []byte {
+	return append(append([]byte(nil), e.Payload...), segSig(e)...)
+}
+
+// segmentDescriptors: every message that carried segments carries the same
+// descriptors (id, size, seal, mime, content hash) after replay, both in the
+// replay daemon's log and as delivered to the probe subscriber. Contents are
+// not replayed (the log never held them), so a replayed segment is
+// descriptor-only and this compares hashes, not bytes.
+func segmentDescriptors(orig, replayed, delivered []proto.Envelope) CheckResult {
+	res := CheckResult{Name: "segment descriptors"}
+	want := map[string]string{}
+	n := 0
+	for _, e := range orig {
+		if len(e.Segments) > 0 {
+			want[e.ID] = segSig(e)
+			n += len(e.Segments)
+		}
+	}
+	var problems []string
+	got := map[string]string{}
+	for _, e := range replayed {
+		if len(e.Segments) > 0 {
+			got[originID(e)] = segSig(e)
+		}
+	}
+	for id, w := range want {
+		if g, ok := got[id]; !ok || g != w {
+			problems = append(problems, fmt.Sprintf("message %s segments diverged: want %q, got %q", id, w, g))
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			problems = append(problems, "unexpected segments on "+id)
+		}
+	}
+	sigs := map[string]int{}
+	for _, e := range orig {
+		if e.Kind == proto.KindEvent && len(e.Segments) > 0 {
+			sigs[segSig(e)]++
+		}
+	}
+	for _, e := range delivered {
+		if len(e.Segments) > 0 {
+			sigs[segSig(e)]--
+		}
+	}
+	for sig, c := range sigs {
+		if c != 0 {
+			problems = append(problems, fmt.Sprintf("delivered events with segments %q differ by %d", sig, c))
+		}
+	}
+	res.OK = len(problems) == 0
+	res.Detail = fmt.Sprintf("%d segments on %d messages; descriptors and hashes compared, contents not replayable", n, len(want))
+	if !res.OK {
+		res.Detail += "; " + summarize(problems)
+	}
+	return res
+}
+
 // finalState: a subscriber of a topic sees the same events in the same
 // order, so the state of every topic (event count, hash chain over every
 // payload in order) must match; likewise for every service (requests
@@ -136,7 +209,7 @@ func finalState(orig, replayed, delivered []proto.Envelope) CheckResult {
 	add := func(m map[string]state, key string, e proto.Envelope) {
 		s := m[key]
 		s.count++
-		s.chain = fold(s.chain, e.Payload)
+		s.chain = fold(s.chain, withSegs(e))
 		m[key] = s
 	}
 	for _, e := range orig {

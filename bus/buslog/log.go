@@ -57,6 +57,7 @@ func LogForm(e proto.Envelope) proto.Envelope {
 		e.CapIDs = ids
 	}
 	e.Caps = nil
+	e.Attach = nil // never a live fd; Segments keeps only descriptor + hash
 	return e
 }
 

@@ -44,7 +44,10 @@ func Deliver(ctx context.Context, c *client.Client, msgs []proto.Envelope, speed
 		out := proto.Envelope{
 			ID: m.ID, To: m.To, Kind: m.Kind, Verb: m.Verb, Topic: m.Topic, QoS: m.QoS,
 			Corr: m.Corr, Payload: m.Payload, CapIDs: m.CapIDs,
-			Origin: &proto.Origin{ID: m.ID, From: m.From, TS: m.TS},
+			// Descriptors and hashes only: segment CONTENTS are not in the log and
+			// cannot be replayed. The daemon marks them absent.
+			Segments: absent(m.Segments),
+			Origin:   &proto.Origin{ID: m.ID, From: m.From, TS: m.TS},
 		}
 		if err := c.Send(out); err != nil {
 			return err
@@ -137,4 +140,13 @@ func readOrEmpty(dir string) ([]proto.Envelope, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// absent copies descriptors marked as having no contents attached.
+func absent(in []proto.Segment) []proto.Segment {
+	out := append([]proto.Segment(nil), in...)
+	for i := range out {
+		out[i].Absent = true
+	}
+	return out
 }
