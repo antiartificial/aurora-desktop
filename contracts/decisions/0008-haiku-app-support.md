@@ -46,7 +46,7 @@ Work is staged. Each stage is plausible from the survey and proven by nothing.
 
 **Stage A: messaging core only.** `BMessage`, `BLooper`, `BHandler`, `BMessenger`, with the BeOS kernel primitives reimplemented in userspace on Linux, not in a kernel module:
 
-- ports map onto this project's message bus
+- ports map onto this project's message bus **(not as built — see Stage A as implemented, below)**
 - areas map onto memfd shared memory
 - semaphores map onto POSIX semaphores
 - threads map onto pthreads
@@ -68,6 +68,46 @@ The following are reasons the fit looks good. None has been tested by running an
 - `BMessenger` resembles a capability handle to a target. 0001 defines handles as opaque, unforgeable and transferable. `BMessenger` is forgeable in Haiku if the port and token are known, so the resemblance may not carry over.
 - Haiku scripting suites (apps exposing properties and actions over `BMessage`) closely resemble the typed-verb model in 0002.
 - `replicants` is already a declared manifest section in 0002 and currently describes nothing.
+
+## Stage A as implemented (2026-11-06)
+
+The primitives layer is built in `kits/` and verified: 1594 checks pass from a
+clean build, and two separate processes exchange a flattened message through a
+port and share a buffer through an area.
+
+Two divergences from the decision above, both deliberate, both recorded here
+rather than quietly absorbed:
+
+**Ports are NOT bus endpoints.** They are a standalone shared-memory ring in
+`/dev/shm`, one file per namespace, with a process-shared robust mutex and
+condvars. The reason is concrete: Haiku code passes bare `port_id` integers
+between processes, so an id must be globally meaningful without a broker in the
+path. A socket cannot provide `port_count`, nor a `delete_port` that wakes a
+peer's blocked read; POSIX message queues cap out around 10 messages of 8 KiB.
+Condvars give blocking, timed waits and delete-wakeups directly.
+
+This means the Stage A target above — "a `BLooper`'s port is a bus endpoint" —
+is **not met**. Whether it should be remains open. A `BLooper` on a private ring
+is a faster path and a weaker claim: it does not demonstrate that the bus design
+accommodates BeOS messaging, which was part of this record's reasoning for the
+fit being good. Bridging ports to the bus, or running both, is unscoped.
+
+**Semaphores are a mutex and condvar, not POSIX `sem_t`.** `sem_t` cannot do an
+atomic multi-count acquire, wake waiters on deletion, or `B_RELEASE_ALL`, all of
+which BeOS semantics require.
+
+Matched exactly and tested: Haiku error codes and typedefs; blocking read on
+empty and write on full; relative, absolute and infinite timeouts, with a zero
+relative timeout returning `B_WOULD_BLOCK`; `delete_port` waking waiters with
+`B_BAD_PORT_ID` while `close_port` lets readers drain; generation-tagged port
+ids so a stale id fails; areas on sealed memfd with clones getting their own
+area id; threads born suspended; `find_thread(NULL)` returning the kernel tid.
+
+Not yet done: no `BMessage`, `BLooper`, `BHandler` or `BMessenger`. Nothing has
+been compiled against real Haiku kit source, so the 21-call list comes from the
+survey, not from a build, and gaps should be expected. The tests were written
+alongside the implementation and have not been mutation-tested, so they show
+these cases pass rather than that a regression would be caught.
 
 ## Open questions
 
