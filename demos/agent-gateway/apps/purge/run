@@ -1,0 +1,13 @@
+#!/bin/sh
+# Demo app, run inside a domain: run --verb redact@v1 < {"input","output","args":{"word"}}
+set -eu
+[ "${1:-}" = "--verb" ] && [ "${2:-}" = "redact@v1" ] || { echo "usage: run --verb redact@v1" >&2; exit 2; }
+req=$(cat)
+in=$(printf '%s' "$req" | jq -r '.input // empty')
+out=$(printf '%s' "$req" | jq -r '.output // empty')
+word=$(printf '%s' "$req" | jq -r '.args.word // empty')
+[ -r "$in" ] && [ -n "$out" ] && [ -n "$word" ] || { echo "purge: need a readable input, an output and a word" >&2; exit 1; }
+# the word is data, never a sed expression: only [A-Za-z0-9] is accepted
+case $word in *[!A-Za-z0-9]*) echo "purge: word must be alphanumeric" >&2; exit 1;; esac
+sed "s/$word/[REDACTED]/g" "$in" > "$out"
+jq -nc --arg o "$out" '{ok:true,output:$o}'

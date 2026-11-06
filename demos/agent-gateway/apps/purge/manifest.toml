@@ -1,0 +1,33 @@
+# Demo-only app: the one DESTRUCTIVE verb in this demo, because no shipped app
+# declares one. The validator requires a destructive verb to declare a
+# capability, so it declares one path the demo never uses (~/Trash-demo). Every
+# path the demo's agent names is therefore OUTSIDE it: a gesture grant, so the
+# controller must ask a person before running it (decision 0007). Had the agent
+# named a path under ~/Trash-demo the controller would run it with no prompt,
+# which the gateway refuses (see gateway/README.md). Lives under demos/.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
+
+[app]
+id = "org.aurora.demo.purge"
+name = "Purge (demo)"
+version = "0.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+
+[[capabilities.paths]]
+path = "~/Trash-demo"
+access = "write"
+
+[types]
+opens = ["text/plain"]
+creates = ["text/plain"]
+
+[[verb]]
+name = "redact@v1"
+summary = "Write a copy of a text file with every occurrence of a word blanked out, REPLACING the output file if it exists"
+effect = "destructive"
+accepts = ["text/plain"]
+capabilities = ["path:~/Trash-demo"]
+input = { word = "string" }
+output = { text = "text/plain" }
