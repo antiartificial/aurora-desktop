@@ -66,7 +66,7 @@ Code: `src/fx/`. Parameters and shaders: `contracts/theme/` (`aurora-glass.toml`
 Code: `src/text.rs`, `src/shell/`, `src/fx/background.frag`. Drawn by the compositor itself, no UI toolkit, through the same offscreen scene and context B as windows. **It is ordinary chrome: it is in captures.** The trusted overlay is still drawn after captures are served and stays out of them (`tests/shell.rs` re-checks this with the dock up).
 
 - **Text** (`text.rs`): cosmic-text (fontdb discovery, shaping, fallback, swash). API in logical units: `metrics` (ascent/descent/leading), `string_width`, `escapements` (per char), `draw`. Glyphs are rasterised at `size * scale` device pixels and cached per (face, size, sub-pixel bin) by swash. The 8x16 bitmap font remains as the fallback when no font exists (`TextSystem::description` says which ran) and for the trusted overlay.
-- **HiDPI**: winit passes the host factor (1.45 here); headless takes `--scale F`. Chrome layout is logical and drawn at device pixels. **Clients are not HiDPI-aware**: `wl_output` stays scale 1 and windows, the switcher and the overlay are in physical pixels as before. Fractional scale for clients would need `wp_fractional_scale` + `wp_viewporter` and a logical/physical split in the fx pipeline; not done.
+- **HiDPI**: winit passes the host factor (1.45 here); headless takes `--scale F`. See "HiDPI" below for the logical/physical boundary, what clients are told, and what is not done.
 - **Background** (`[background]` in the theme file): `mode = "shader" | "image" | "gradient" | "solid"`. `image` is scaled to cover and centred (crop), re-read when the file changes, and falls back to the gradient if unreadable. `shader` is the `background` shader slot (`time`, `res`, `top`, `bottom`, `accent`), hot-reloaded like the others; the built-in default is `src/fx/background.frag` (copy it to `<theme>/shaders/background.frag` to edit it). `speed` scales time, `--freeze-time` pins it to 0.
 - **Desktop** (`[desktop]`): clock, date and hostname, top right of the usable area.
 - **Dock** (`[dock]`): glass panel on `edge`, items from `registry.apps@v1` over the bus (`--bus-socket`, refreshed every 5 s off the main thread). It reserves its strip: new windows start in the usable area and maximise to it. Hover highlights; a click runs `aurora open --pick --app ID` (`--aurora PATH`), in a terminal when `terminal` finds one. Not handled: fullscreen (ignored), re-fitting windows when the dock changes, dragging windows under the dock (allowed; the dock draws over them).
@@ -74,12 +74,22 @@ Code: `src/text.rs`, `src/shell/`, `src/fx/background.frag`. Drawn by the compos
 - Test flags: `--legacy-scene` (flat 25,25,25, no clock; the old tests use it), `--freeze-time`, `--scale F`, and `--test-input` now also takes `pointer X Y`, `click`, `keysym NAME`.
 - Winit's direct fallback (no second EGL context) draws none of this.
 
+## HiDPI
+
+Code: `src/scale.rs` (the boundary), `src/fx/` (window and card drawing), `src/trusted/draw.rs` (overlay), `tests/hidpi.rs`.
+
+- **The boundary.** The output carries one fractional scale (`Output::current_scale`, snapped to 1/120). The `Space`, windows, xdg configures, popups, pointer coordinates and `--test-input pointer X Y` are LOGICAL (`smithay::utils::Logical`). The output mode, the scene texture, captures, glyph rasters, GL calls and the dock layout (`shell::layout`, pure device-pixel functions) are PHYSICAL. Conversions happen in a handful of named places and nowhere else: `fx::window_elements` / `render_scene` (window location and size, glass rectangle, glass radius/blur/edge width times the scale), `fx::switcher::draw` (a card is the window at device size), `input.rs` (pointer to dock hit-test; dock strip to usable area, rounded inwards), and the overlay.
+- **What clients are told.** `wl_output.scale` and `wl_surface.preferred_buffer_scale` carry the integer ceiling (1.45 says 2); `wp_fractional_scale_v1` carries the exact value (174/120); `wp_viewporter` is advertised, and Smithay's surface elements honour the viewport destination and buffer scale. A scale-1 client (testclient's default) is therefore LOGICAL-sized: 420x300 covers 840x600 device pixels at scale 2 (upscaled, bar interiors exact). An integer-scale client draws at 2x and is scaled down to 1.45 (sharp). A fractional client draws `round(logical * scale)` and sets `wp_viewport` to the logical size; at 1.45 a 420x300 client is a 609x435 buffer mapped 1:1, pixel exact.
+- **Overlay.** The trusted overlay is laid out in logical units and rasterised by `text.rs` (cosmic-text) at device size: one text stack. Capture exclusion is unchanged (it is by draw order, see above). The 8x16 bitmap font is still the fallback when no font exists.
+- **Test clients.** `examples/testclient.rs`: `--size` is logical; `--hidpi` (fractional scale + viewport, else integer), `--integer-scale`; it prints `output_scale`, `fractional_scale`, `buffer ... logical ...`, and `pointer_enter/motion` in surface-local (logical) coordinates.
+- **Not done.** Switcher cards are not clickable (as before). `wp_viewport` source cropping is Smithay's, untested here. Output scale changes while windows are mapped re-announce to surfaces but windows are not re-fitted. No per-surface scale (single output). Text in the switcher is still absent (as before).
+
 ## Trusted path
 
 Decision 0003 reserved "a surface class only the compositor can draw". This is its first implementation: approval prompts for destructive and external verbs, requested by the controller (`controller/README.md`, "Approval"). Code: `src/trusted/`.
 
 **Design.**
-- The overlay is not a surface. There is no Wayland object for it: `ext_image_copy_capture` and every other global are unchanged, and `tests/trusted.rs` lists the advertised globals and checks none concerns it. It is a record in `Trusted::queue`, rasterised by the compositor itself (`draw.rs`: a built-in 8x16 bitmap font generated by `tools/gen_font.py` from a Linux console font, a CPU canvas, one texture and a dimming scrim), and drawn **after** every client surface in `render_and_capture`.
+- The overlay is not a surface. There is no Wayland object for it: `ext_image_copy_capture` and every other global are unchanged, and `tests/trusted.rs` lists the advertised globals and checks none concerns it. It is a record in `Trusted::queue`, rasterised by the compositor itself (`draw.rs`: the shared cosmic-text stack in `text.rs` at the output scale, with the built-in 8x16 bitmap font from `tools/gen_font.py` as fallback; a CPU canvas, one texture and a dimming scrim), and drawn **after** every client surface in `render_and_capture`.
 - **Capture exclusion is by order, not by filter.** `render_and_capture` renders the space, serves queued capture frames from the framebuffer (`serve_pending`), and only then draws the overlay. A capture therefore reads a framebuffer that never contained it. Any new capture or screencast path must read at that same point; one that reads after `draw_overlay` would leak it.
 - **Input.** While any overlay is queued: keyboard focus is taken from the client (it receives `wl_keyboard.leave`, so it sees no further keys and no stuck keys), every key goes to `Aurora::keyboard_input` and is intercepted for the overlay (`a` allows; `d` or Escape denies; anything else is swallowed), pointer events are dropped, and a window that maps meanwhile is not given focus. Releases of keys pressed during the overlay are swallowed after it goes away too. When the last overlay is decided or withdrawn, the previous focus is restored if that surface is alive.
 - Several requests queue; the first is shown, the count is displayed. An undecided request is denied at its deadline (`timeout_ms`, default 60 s, clamped 1 s to 10 min). If the requester hangs up, its overlay is withdrawn.
@@ -192,10 +202,10 @@ The decision comes only from the keyboard, never from the socket: nothing on the
   ./target/release/examples/winit_bisect` is the by-eye check (magenta, white
   border, resize the window).
   Scale: the host reported 1.45 here (1296x846 logical, 1856x1160 physical).
-  The output scale is fixed at 1 and everything (scene, fx, overlay, capture)
-  is in the window's physical pixels, so clients and the overlay look about
-  1.45x smaller than host apps. Honouring a fractional scale would touch the
-  fx pipeline, which treats geometry as physical; it is not done.
+  The output carries that scale (see "HiDPI"); the scene, fx and capture stay
+  in the window's physical pixels, so a capture is 1856x1160 and is
+  byte-identical to a headless `--headless=1856x1160 --scale 1.45` capture of
+  the same scene.
   Fallback: `AURORA_TEST_NO_SHARED_EGL=1` makes winit behave as if B could
   not be created (WARNING on start; test only). Run that way it maps clients
   and runs, and capture fails cleanly with `Unknown`. Whether the window
@@ -214,7 +224,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 - Glass and the switcher exist (see "Glass and the switcher"), but no window management beyond smallvil's move and resize grabs, and no animation: the switcher appears and changes between frames.
 - No multi-monitor: one output.
-- No HiDPI: scale is fixed at 1 (on winit that means physical pixels; see Known limits).
+- HiDPI: see "HiDPI" for what is and is not covered.
 - No XWayland.
 - No client-domain binding: clients are not tied to domains or capabilities.
 - No secure attention key, no per-user secret on the prompt, no pointer interaction with it, attribution of a request to a domain only through the bus event (a same-uid process that can run code in any domain can still get that domain attested; otherwise it can only verify that the named domain exists and is attested; see "Trusted path" for what exists and what it does not guarantee).

@@ -23,6 +23,7 @@ pub fn init_headless(
     state: &mut Aurora,
     width: i32,
     height: i32,
+    scale: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let device = EGLDevice::enumerate()?.next().ok_or("no EGL device found")?;
     let display = unsafe { EGLDisplay::new(device)? };
@@ -47,6 +48,7 @@ pub fn init_headless(
     let _global = output.create_global::<Aurora>(&state.display_handle);
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
+    state.set_output_scale(&output, scale);
     state.space.map_output(&output, (0, 0));
     let mut tracker = OutputDamageTracker::from_output(&output);
 

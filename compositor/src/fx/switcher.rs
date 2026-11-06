@@ -141,7 +141,7 @@ pub fn layout(l: Layout, angle_deg: f32, sel: usize, sizes: &[(f32, f32)], (sw, 
 
 /// Draw the switcher over the finished scene: blurred, dimmed backdrop, then
 /// one live card per window, far to near.
-pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, space: &Space<Window>) -> Res<()> {
+pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, scale: f64, space: &Space<Window>) -> Res<()> {
     fx.switcher.order.retain(|w| w.alive());
     if fx.switcher.order.is_empty() { fx.switcher.open = false; return Ok(()); }
     fx.switcher.sel = fx.switcher.sel.min(fx.switcher.order.len() - 1);
@@ -153,17 +153,18 @@ pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, space:
     let order = fx.switcher.order.clone();
     let mut sizes = vec![];
     for (i, w) in order.iter().enumerate() {
-        let g = w.geometry().size;
+        // A card is the window as it is drawn on screen: its logical size in device pixels.
+        let g: Size<i32, Physical> = w.geometry().size.to_physical_precise_round(scale);
         sizes.push((g.w.max(1), g.h.max(1)));
         if fx.cards.len() <= i { fx.cards.push(make_tex(r, 1, 1)?); }
         let ts = fx.cards[i].size();
         if (ts.w, ts.h) != (g.w.max(1), g.h.max(1)) { fx.cards[i] = make_tex(r, g.w, g.h)?; }
-        let els = window_elements(r, w, smithay::utils::Point::<i32, smithay::utils::Logical>::from((0, 0)) - w.geometry().loc);
+        let els = window_elements(r, w, smithay::utils::Point::<i32, smithay::utils::Logical>::from((0, 0)) - w.geometry().loc, scale);
         let csz: Size<i32, Physical> = (g.w.max(1), g.h.max(1)).into();
         let mut t = r.bind(&mut fx.cards[i])?;
         let mut f = r.render(&mut t, csz, Transform::Normal)?;
         f.clear(Color32F::new(0.0, 0.0, 0.0, 0.0), &[Rectangle::from_size(csz)])?;
-        draw_elements(&mut f, &els)?;
+        draw_elements(&mut f, &els, scale)?;
         let sy = f.finish()?; wait(r, sy)?;
     }
     let fsizes: Vec<(f32, f32)> = sizes.iter().map(|&(w, h)| (w as f32, h as f32)).collect();

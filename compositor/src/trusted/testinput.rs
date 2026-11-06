@@ -84,13 +84,17 @@ fn serve(h: &LoopHandle<'static, Aurora>, s: UnixStream) {
         return;
     }
     let mut r = BufReader::new(s);
+    let mut line = String::new();
     let _ = h.insert_source(Generic::new(r.get_ref().try_clone().unwrap(), Interest::READ, Mode::Level), move |_, _, state| {
         loop {
-            let mut line = String::new();
+            // `line` outlives a WouldBlock: a command that arrives in two reads
+            // ("key " then "Tab") must not lose its first half.
             match r.read_line(&mut line) {
                 Ok(0) => return Ok(PostAction::Remove),
+                Ok(_) if !line.ends_with('\n') => continue,
                 Ok(_) => {
                     let ans = run(state, line.trim());
+                    line.clear();
                     let _ = writeln!(r.get_mut(), "{ans}");
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(PostAction::Continue),
@@ -113,7 +117,7 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         };
     }
     if cmd.starts_with("pointer ") {
-        // `pointer X Y`: move the pointer (output pixels), through the same function winit uses.
+        // `pointer X Y`: move the pointer (LOGICAL coordinates, as clients see them), through the same function winit uses.
         let v: Vec<f64> = it.skip(1).filter_map(|t| t.parse().ok()).collect();
         return match v.as_slice() {
             [x, y] if !state.overlay_up() => { state.pointer_moved((*x, *y).into(), t); "ok".into() }

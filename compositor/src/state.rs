@@ -14,6 +14,8 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        fractional_scale::FractionalScaleManagerState,
+        viewporter::ViewporterState,
         image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState},
         image_copy_capture::{Frame, ImageCopyCaptureState, Session, SessionRef},
         output::OutputManagerState,
@@ -36,6 +38,8 @@ pub struct Aurora {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Aurora>,
     pub data_device_state: DataDeviceState,
@@ -73,6 +77,8 @@ impl Aurora {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
         let popups = PopupManager::default();
 
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -120,6 +126,8 @@ impl Aurora {
             compositor_state,
             xdg_shell_state,
             shm_state,
+            fractional_scale_state,
+            viewporter_state,
             output_manager_state,
             seat_state,
             data_device_state,

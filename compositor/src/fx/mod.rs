@@ -150,7 +150,12 @@ impl Fx {
     pub fn render_scene(&mut self, r: &mut GlesRenderer, fb: &mut GlesTarget<'_>, output: &Output, size: Size<i32, Physical>, space: &Space<Window>, shell: &mut crate::shell::Shell) -> Res<()> {
         self.ensure(r, size)?;
         shell.prepare(r, size)?;
-        let glass = self.theme.glass.clone();
+        let scale = output.current_scale().fractional_scale();
+        // The theme speaks logical pixels: radii, edge width and blur spread grow with the scale.
+        let mut glass = self.theme.glass.clone();
+        glass.corner_radius *= scale as f32;
+        glass.blur_radius *= scale as f32;
+        glass.edge.width *= scale as f32;
         let full = Rectangle::<i32, Physical>::from_size(size);
         let progs: Vec<&GlesTexProgram> = self.progs.iter().flatten().collect();
         let (down, up, glass_p, bg_p) = (progs[0], progs[1], progs[2], progs[4]);
@@ -163,17 +168,17 @@ impl Fx {
             let sy = f.finish()?; wait(r, sy)?;
         }
         for w in space.elements() {
-            let geo = space.element_geometry(w).ok_or("window without geometry")?;
-            let els = window_elements(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc);
+            let geo = crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale);
+            let els = window_elements(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc, scale);
             if glass.enabled { blur::run(r, s, down, up, &glass, size)?; }
             let mut t = r.bind(&mut s.scene)?;
             let mut f = r.render(&mut t, size, Transform::Normal)?;
             if glass.enabled { draw_glass(&mut f, glass_p, &s.up[0], geo, &glass)?; }
-            draw_elements(&mut f, &els)?;
+            draw_elements(&mut f, &els, scale)?;
             let sy = f.finish()?; wait(r, sy)?;
         }
         if let Some((tex, panel)) = shell.dock_draw(size) {
-            let geo = Rectangle::<i32, Logical>::new((panel.x, panel.y).into(), (panel.w, panel.h).into());
+            let geo = Rectangle::<i32, Physical>::new((panel.x, panel.y).into(), (panel.w, panel.h).into());
             if glass.enabled { blur::run(r, s, down, up, &glass, size)?; }
             let mut t = r.bind(&mut s.scene)?;
             let mut f = r.render(&mut t, size, Transform::Normal)?;
@@ -186,7 +191,7 @@ impl Fx {
             let sy = f.finish()?; wait(r, sy)?;
         }
         if self.switcher.open {
-            switcher::draw(self, r, size, space)?;
+            switcher::draw(self, r, size, scale, space)?;
         }
         let s = self.scratch.as_ref().unwrap();
         let mut f = r.render(fb, size, output.current_transform())?;
@@ -206,20 +211,22 @@ pub fn wait(r: &mut GlesRenderer, sync: smithay::backend::renderer::sync::SyncPo
     Ok(())
 }
 
-pub fn window_elements(r: &mut GlesRenderer, w: &Window, loc: Point<i32, Logical>) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+/// A window's surface elements. `loc` is the logical place of the window's
+/// surface origin; the elements are in device pixels at `scale`.
+pub fn window_elements(r: &mut GlesRenderer, w: &Window, loc: Point<i32, Logical>, scale: f64) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     use smithay::backend::renderer::element::AsRenderElements;
-    w.render_elements(r, loc.to_physical(1), Scale::from(1.0), 1.0)
+    w.render_elements(r, loc.to_physical_precise_round(scale), Scale::from(scale), 1.0)
 }
 
-pub fn draw_elements(f: &mut GlesFrame<'_, '_>, els: &[WaylandSurfaceRenderElement<GlesRenderer>]) -> Res<()> {
+pub fn draw_elements(f: &mut GlesFrame<'_, '_>, els: &[WaylandSurfaceRenderElement<GlesRenderer>], scale: f64) -> Res<()> {
     for e in els.iter().rev() {
-        let geo = e.geometry(Scale::from(1.0));
+        let geo = e.geometry(Scale::from(scale));
         e.draw(f, e.src(), geo, &[Rectangle::from_size(geo.size)], &[], None)?;
     }
     Ok(())
 }
 
-fn draw_glass(f: &mut GlesFrame<'_, '_>, prog: &GlesTexProgram, blurred: &GlesTexture, geo: Rectangle<i32, Logical>, g: &theme::Glass) -> Res<()> {
+fn draw_glass(f: &mut GlesFrame<'_, '_>, prog: &GlesTexProgram, blurred: &GlesTexture, geo: Rectangle<i32, Physical>, g: &theme::Glass) -> Res<()> {
     use smithay::backend::renderer::Texture;
     let ts = blurred.size();
     let dst = Rectangle::<i32, Physical>::new((geo.loc.x, geo.loc.y).into(), (geo.size.w, geo.size.h).into());

@@ -7,32 +7,36 @@ use smithay::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
+    utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER},
 };
 
 use crate::state::Aurora;
 
 impl Aurora {
-    /// Output size in device pixels (the compositor's single output).
-    pub fn output_size(&self) -> (i32, i32) {
-        self.space.outputs().next().and_then(|o| self.space.output_geometry(o)).map_or((0, 0), |g| (g.size.w, g.size.h))
+    /// The dock's layout, in device pixels (the unit `shell::layout` works in).
+    fn dock_layout(&self) -> crate::shell::layout::Layout {
+        let p = self.output_physical();
+        self.shell.layout(p.w, p.h)
     }
 
-    /// The area windows may use: the output minus the dock's reserved strip.
+    /// The area windows may use: the output minus the dock's reserved strip,
+    /// in logical units (rounded inwards, so a window never reaches the dock).
     pub fn usable_area(&self) -> Rectangle<i32, Logical> {
-        let (w, h) = self.output_size();
-        let u = self.shell.usable(w, h);
-        Rectangle::new((u.x, u.y).into(), (u.w, u.h).into())
+        let p = self.output_physical();
+        let u = self.shell.usable(p.w, p.h);
+        crate::scale::rect_to_logical_inward(Rectangle::<i32, Physical>::new((u.x, u.y).into(), (u.w, u.h).into()), self.output_scale())
     }
 
-    /// The pointer moved to `pos` (output pixels). Over the dock the pointer
-    /// belongs to the compositor: no client sees it, and the item under it is
-    /// highlighted. Shared by the winit backend and the headless test input.
+    /// The pointer moved to `pos` (logical coordinates). Over the dock the
+    /// pointer belongs to the compositor: no client sees it, and the item under
+    /// it is highlighted. The dock is laid out in device pixels, so the
+    /// position is converted for the hit-test. Shared by the winit backend and
+    /// the headless test input.
     pub fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: InputTime) {
-        let (w, h) = self.output_size();
-        let l = self.shell.layout(w, h);
-        let on_dock = l.panel.contains(pos.x, pos.y);
-        let hover = if on_dock { l.item_at(pos.x, pos.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
+        let l = self.dock_layout();
+        let dp = self.to_physical_point(pos);
+        let on_dock = l.panel.contains(dp.x, dp.y);
+        let hover = if on_dock { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
         self.shell.hover = hover;
         let under = if on_dock { None } else { self.surface_under(pos) };
         let pointer = self.seat.get_pointer().unwrap();
@@ -45,12 +49,12 @@ impl Aurora {
         let keyboard = self.seat.get_keyboard().unwrap();
         let serial = SERIAL_COUNTER.next_serial();
         let loc = pointer.current_location();
-        let (w, h) = self.output_size();
-        let l = self.shell.layout(w, h);
-        if l.panel.contains(loc.x, loc.y) {
+        let l = self.dock_layout();
+        let dp = self.to_physical_point(loc);
+        if l.panel.contains(dp.x, dp.y) {
             // The dock swallows the click: no window is raised or focused, no client sees it.
             if button_state == ButtonState::Pressed {
-                if let Some(i) = l.item_at(loc.x, loc.y) {
+                if let Some(i) = l.item_at(dp.x, dp.y) {
                     self.shell.launch(i);
                 }
             }

@@ -205,7 +205,15 @@ impl Theme {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/theme");
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("shaders")).unwrap();
-        fs::copy(src.join("aurora-glass.toml"), dir.path().join("aurora-glass.toml")).unwrap();
+        // The reference theme spells out every section, but the tests append their own
+        // [background]/[desktop]/[dock]/[font]/[input], and a repeated table is a TOML
+        // error. Drop those sections from the copy: the parser's defaults are the same.
+        let mut keep = true;
+        let text: String = fs::read_to_string(src.join("aurora-glass.toml")).unwrap().lines().filter(|l| {
+            if l.starts_with('[') { keep = !["[background]", "[desktop]", "[dock]", "[font]", "[input]"].contains(&l.trim()); }
+            keep
+        }).map(|l| format!("{l}\n")).collect();
+        fs::write(dir.path().join("aurora-glass.toml"), text).unwrap();
         for f in ["down", "up", "glass", "card"] {
             fs::copy(src.join(format!("shaders/{f}.frag")), dir.path().join(format!("shaders/{f}.frag"))).unwrap();
         }
@@ -268,4 +276,19 @@ pub fn dock_layout(log: &str) -> Option<(f64, [i32; 4], [i32; 4], Vec<[i32; 4]>)
         rect(&field("reserved")?),
         items.split(';').filter(|s| !s.is_empty()).map(rect).collect(),
     ))
+}
+
+impl Img {
+    /// Bounding box (x0, y0, x1, y1 inclusive) and count of pixels exactly equal to `c`.
+    pub fn bbox(&self, c: [u8; 3]) -> Option<(usize, usize, usize, usize, usize)> {
+        let mut b: Option<(usize, usize, usize, usize, usize)> = None;
+        for y in 0..self.h {
+            for x in 0..self.w {
+                if self.at(x, y) == c {
+                    b = Some(match b { None => (x, y, x, y, 1), Some((a, bb, cc, d, n)) => (a.min(x), bb.min(y), cc.max(x), d.max(y), n + 1) });
+                }
+            }
+        }
+        b
+    }
 }

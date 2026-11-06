@@ -59,7 +59,7 @@ pub fn render_and_capture(
     state.serve_pending(renderer, framebuffer, size, state.start_time.elapsed());
     // The trusted overlay goes on last, after captures were served from the
     // framebuffer above, so no capture can contain it.
-    match crate::trusted::draw::draw_overlay(&mut state.trusted, renderer, framebuffer, output, size) {
+    match crate::trusted::draw::draw_overlay(&mut state.trusted, &mut state.shell.text, renderer, framebuffer, output, size) {
         Ok(true) => dump_once(state, renderer, framebuffer, size),
         Ok(false) => {}
         Err(e) => tracing::error!("trusted overlay draw failed: {e}"),
@@ -89,7 +89,7 @@ pub fn render_direct(
     ) {
         tracing::error!("scene render failed: {e:?}");
     }
-    if let Err(e) = crate::trusted::draw::draw_overlay(&mut state.trusted, renderer, framebuffer, output, size) {
+    if let Err(e) = crate::trusted::draw::draw_overlay(&mut state.trusted, &mut state.shell.text, renderer, framebuffer, output, size) {
         tracing::error!("trusted overlay draw failed: {e}");
     }
 }

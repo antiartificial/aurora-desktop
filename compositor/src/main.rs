@@ -7,6 +7,7 @@ mod fx;
 mod grabs;
 mod headless;
 mod render;
+mod scale;
 mod input;
 mod shell;
 mod state;
@@ -34,7 +35,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.fx.preload_theme();
     state.shell.legacy_scene = args.legacy_scene;
     state.shell.freeze_time = args.freeze_time;
-    state.shell.scale = args.scale.unwrap_or(1.0);
     state.shell.registry = shell::apps::Registry::new(args.bus_socket.clone());
     if let Some(a) = &args.aurora_bin {
         state.shell.aurora_bin = a.clone();
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open a Wayland/X11 window for our nested compositor
     match args.headless {
-        Some((w, h)) => crate::headless::init_headless(&mut event_loop, &mut state, w, h)?,
+        Some((w, h)) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0))?,
         None => crate::winit::init_winit(&mut event_loop, &mut state)?,
     }
 

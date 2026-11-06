@@ -58,7 +58,7 @@ pub struct Trusted {
     saved_focus: Option<WlSurface>,
     next_id: u64,
     pub panel: Option<draw::Canvas>,
-    pub panel_key: Option<(u64, u64, usize)>,
+    pub panel_key: Option<(u64, u64, usize, u64)>,
     /// `--dump-overlay`: where the compositor writes its own final frame.
     pub dump_path: Option<PathBuf>,
     pub dumped: Option<u64>,

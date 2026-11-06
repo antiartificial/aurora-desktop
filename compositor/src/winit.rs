@@ -47,7 +47,7 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
-    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
+    output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Buffer as BufferCoords, Physical, Rectangle, Size, Transform},
 };
@@ -95,7 +95,6 @@ pub fn init_winit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
     let win_size = backend.window_size();
-    state.shell.scale = backend.scale_factor();
     // TEST AFFORDANCE: AURORA_TEST_NO_SHARED_EGL=1 behaves as if context B could
     // not be created, so the direct fallback below can be exercised. Loud, and
     // only ever makes the compositor LESS capable (no effects, no capture).
@@ -104,7 +103,7 @@ pub fn init_winit(
         eprintln!("aurora-compositor: WARNING: AURORA_TEST_NO_SHARED_EGL is set: the second EGL context is NOT created; no effects, no capture (test only)");
     }
     let made = if forced_fallback { Err("forced by AURORA_TEST_NO_SHARED_EGL".into()) } else { make_offscreen(backend.renderer(), win_size) };
-    tracing::info!("winit: window {}x{} physical, host scale factor {}; output scale fixed at 1 (rendering in physical pixels)", win_size.w, win_size.h, backend.scale_factor());
+    tracing::info!("winit: window {}x{} physical, host scale factor {}; the output carries that scale, clients get it logically", win_size.w, win_size.h, backend.scale_factor());
     let mut off = match made {
         Ok(o) => Some(o),
         Err(e) => {
@@ -129,10 +128,11 @@ pub fn init_winit(
     // flip happens in `present_texture`. The direct fallback draws into the
     // window itself and needs Smithay's winit convention, Flipped180.
     let transform = if off.is_some() { Transform::Normal } else { Transform::Flipped180 };
-    // Scale is deliberately 1 whatever the host's factor: the compositor
-    // renders and captures in the window's physical pixels (see README).
-    output.change_current_state(Some(mode), Some(transform), Some(Scale::Integer(1)), Some((0, 0).into()));
+    // The output carries the host's scale: the space is logical, the scene is
+    // rendered and captured in the window's physical pixels (src/scale.rs).
+    output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
     output.set_preferred(mode);
+    state.set_output_scale(&output, backend.scale_factor());
     state.space.map_output(&output, (0, 0));
 
     backend.window().request_redraw();
@@ -143,7 +143,7 @@ pub fn init_winit(
             WinitEvent::Resized { size, scale_factor } => {
                 tracing::debug!("winit: resized to {}x{} physical (host scale {scale_factor})", size.w, size.h);
                 output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
-                state.shell.scale = scale_factor;
+                state.set_output_scale(&output, scale_factor);
                 state.update_capture_constraints(&output);
             }
             WinitEvent::Input(event) => state.process_input_event(event),
