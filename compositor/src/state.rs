@@ -23,7 +23,7 @@ use smithay::{
         text_input::TextInputManagerState,
         xwayland_shell::XWaylandShellState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::xdg::{XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -41,6 +41,8 @@ pub struct Aurora {
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// Kept alive: it owns the `zxdg_decoration_manager_v1` global.
+    pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub viewporter_state: ViewporterState,
@@ -67,6 +69,8 @@ pub struct Aurora {
     pub trusted: crate::trusted::Trusted,
     pub fx: crate::fx::Fx,
     pub shell: crate::shell::Shell,
+    /// Title-bar input and window placement state (see `windeco`).
+    pub deco: crate::windeco::DecoInput,
     /// The input config last applied to the seat, so a theme reload only touches it on a real change.
     pub applied_input: Option<crate::fx::theme::Input>,
     /// Name of the keysym the last key press produced under the live keymap (test evidence).
@@ -98,6 +102,7 @@ impl Aurora {
         // Initialize protocols needed for displaying windows
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
@@ -153,6 +158,7 @@ impl Aurora {
 
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             fractional_scale_state,
             viewporter_state,
@@ -173,6 +179,7 @@ impl Aurora {
             trusted: Default::default(),
             fx: crate::fx::Fx::new(None),
             shell: crate::shell::Shell::new(),
+            deco: Default::default(),
             applied_input: None,
             last_keysym: None,
             chrome_buttons: Default::default(),

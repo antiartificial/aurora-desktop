@@ -33,6 +33,8 @@ pub fn render_and_capture(
     state.fx.poll(renderer);
     state.sync_scale(output);
     state.shell.sync(&state.fx.theme);
+    let specs = if state.shell.deco_on() { state.deco_specs() } else { vec![] };
+    state.shell.set_decos(specs);
     state.apply_input_config();
     if state.overlay_up() {
         state.fx.switcher.open = false;

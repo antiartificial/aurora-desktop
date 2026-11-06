@@ -81,6 +81,7 @@ pub struct Persist<I> {
     dirty: bool,
     /// Placements applied from the file since start.
     pub restored: usize,
+    restored_ids: std::collections::HashSet<I>,
 }
 
 /// Keep a restored window reachable: some of it must lie inside the output.
@@ -106,8 +107,13 @@ impl<I: Eq + Hash + Clone> Persist<I> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (vec![], "no earlier layout (first run)".into()),
             Err(e) => (vec![], format!("cannot read {}: {e}", path.display())),
         };
-        let p = Persist { path: path.into(), mem, placed: HashMap::new(), last_seen: vec![], changed_at: now, dirty: false, restored: 0 };
+        let p = Persist { path: path.into(), mem, placed: HashMap::new(), last_seen: vec![], changed_at: now, dirty: false, restored: 0, restored_ids: Default::default() };
         (p, note)
+    }
+
+    /// Whether this window was put back where its predecessor was left (placement must not override that).
+    pub fn was_restored(&self, id: &I) -> bool {
+        self.restored_ids.contains(id)
     }
 
     pub fn remembered(&self) -> &[Entry] {
@@ -119,6 +125,7 @@ impl<I: Eq + Hash + Clone> Persist<I> {
     /// the layout has settled. `out` is the output's logical size.
     pub fn tick(&mut self, live: &[Live<I>], out: (i32, i32), now: Instant) -> Vec<(I, i32, i32)> {
         self.placed.retain(|id, _| live.iter().any(|l| &l.id == id));
+        self.restored_ids.retain(|id| live.iter().any(|l| &l.id == id));
         let mut moves = vec![];
         let mut fresh: Vec<I> = vec![];
         for l in live.iter().filter(|l| !l.app_id.is_empty() || !l.title.is_empty()) {
@@ -135,6 +142,7 @@ impl<I: Eq + Hash + Clone> Persist<I> {
                     moves.push((l.id.clone(), x, y));
                 }
                 self.restored += 1;
+                self.restored_ids.insert(l.id.clone());
             }
         }
         // What is on screen now, for windows placed before this tick.
@@ -221,7 +229,8 @@ impl crate::Aurora {
         for (id, x, y) in p.tick(&live, out, Instant::now()) {
             let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface().id() == id)).cloned();
             if let Some(w) = win {
-                self.space.relocate_element(&w, (x, y));
+                let at = self.constrain(&w, (x, y).into(), w.geometry().size);
+                self.space.relocate_element(&w, at);
             }
         }
         self.persist = Some(p);

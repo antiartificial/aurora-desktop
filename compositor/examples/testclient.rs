@@ -5,7 +5,13 @@
 //! `configure WxH` for each non-zero toplevel configure, and with `--maximize` asks to be
 //! maximised and redraws at the size it is given.
 //! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|fine|split|bars|glass] [--alpha A] [--maximize]
-//!                   [--hidpi | --integer-scale]
+//!                   [--hidpi | --integer-scale] [--title T] [--app-id ID]
+//!                   [--decor client|server] [--min-size WxH] [--max-size WxH] [--refuse-close] [--child WxH]
+//! `--follow` redraws at the size a configure gives (as `--maximize` does, without maximising).
+//! `xdg_toplevel.close` prints `close` and ends the client, unless `--refuse-close`. `--decor` binds
+//! `zxdg_decoration_manager_v1` and asks for that mode (printing `decoration mode ...` for the answer);
+//! without it the manager is never bound. `--child WxH` maps a second toplevel with `set_parent` on the
+//! first (a dialog), titled `aurora-testclient-child`, and prints `child mapped`.
 //! `--size` is the LOGICAL size. By default the client knows nothing about scale (a scale-1 buffer).
 //! `--hidpi` is a modern client: it reads `wp_fractional_scale_v1`, draws a buffer of
 //! round(logical * scale) pixels and sets `wp_viewport.set_destination(logical)`; without
@@ -38,6 +44,13 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface}, xdg_toplevel::{self, XdgToplevel}, xdg_wm_base::{self, XdgWmBase},
 };
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
+};
+
+/// User data of the `--child` dialog's surfaces.
+struct Child;
 
 struct App {
     surface: WlSurface, buffers: Vec<WlBuffer>, configured: bool,
@@ -49,6 +62,39 @@ struct App {
     viewport: Option<WpViewport>,
     /// `--text-input`: a text field. It enables itself when it gets the keyboard and prints what the input method sends.
     ti: Option<ZwpTextInputV3>,
+    comp: WlCompositor, wm: XdgWmBase, top: Option<XdgToplevel>,
+    refuse_close: bool,
+    /// `--child WxH`, and the child's surface once made.
+    child: Option<(usize, usize)>, child_surface: Option<WlSurface>, child_done: bool,
+}
+
+delegate_noop!(App: ZxdgDecorationManagerV1);
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for App {
+    fn event(_: &mut Self, _: &ZxdgToplevelDecorationV1, e: zxdg_toplevel_decoration_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = e { say(&format!("decoration mode {mode:?}")); }
+    }
+}
+impl Dispatch<XdgSurface, Child> for App {
+    fn event(s: &mut Self, x: &XdgSurface, e: xdg_surface::Event, _: &Child, _: &Connection, qh: &QueueHandle<Self>) {
+        if let xdg_surface::Event::Configure { serial } = e {
+            x.ack_configure(serial);
+            if !s.child_done {
+                s.child_done = true;
+                let (w, h) = s.child.unwrap();
+                let surf = s.child_surface.clone().unwrap();
+                let buf = make_buffer(&s.shm, qh, "solid", (w, h), 1.0, [40, 200, 60], 1.0);
+                surf.attach(Some(&buf), 0, 0);
+                surf.commit();
+                s.buffers.push(buf);
+                say("child mapped");
+            }
+        }
+    }
+}
+impl Dispatch<XdgToplevel, Child> for App {
+    fn event(_: &mut Self, _: &XdgToplevel, e: xdg_toplevel::Event, _: &Child, _: &Connection, _: &QueueHandle<Self>) {
+        if let xdg_toplevel::Event::Close = e { say("child close"); }
+    }
 }
 
 impl App {
@@ -145,6 +191,15 @@ impl Dispatch<XdgSurface, ()> for App {
                 s.configured = true;
                 s.present(qh);
                 say("mapped");
+                if let (Some((_, _)), Some(top)) = (s.child, s.top.clone()) {
+                    let surf = s.comp.create_surface(qh, ());
+                    let xs = s.wm.get_xdg_surface(&surf, qh, Child);
+                    let ctop = xs.get_toplevel(qh, Child);
+                    ctop.set_title("aurora-testclient-child".into());
+                    ctop.set_parent(Some(&top));
+                    surf.commit();
+                    s.child_surface = Some(surf);
+                }
             }
         }
     }
@@ -197,6 +252,10 @@ delegate_noop!(App: ignore WlBuffer);
 delegate_noop!(App: ignore WlSurface);
 impl Dispatch<XdgToplevel, ()> for App {
     fn event(s: &mut Self, _: &XdgToplevel, e: xdg_toplevel::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let xdg_toplevel::Event::Close = e {
+            say("close");
+            if !s.refuse_close { std::process::exit(0); }
+        }
         if let xdg_toplevel::Event::Configure { width, height, .. } = e {
             if width > 0 && height > 0 {
                 say(&format!("configure {width}x{height}"));
@@ -205,13 +264,15 @@ impl Dispatch<XdgToplevel, ()> for App {
         }
     }
 }
-impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--maximize") } }
+impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--maximize" || a == "--follow") } }
 
 fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
     let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
     let (mut maximize, mut hidpi, mut integer_only, mut text_input) = (false, false, false, false);
     let (mut title, mut app_id) = ("aurora-testclient".to_string(), None::<String>);
+    let (mut decor, mut min_size, mut max_size, mut refuse_close, mut child) = (None::<String>, None::<(i32, i32)>, None::<(i32, i32)>, false, None::<(usize, usize)>);
+    let wh = |v: String| { let (x, y) = v.split_once('x').unwrap(); (x.parse().unwrap(), y.parse().unwrap()) };
     let mut a = std::env::args().skip(1);
     while let Some(f) = a.next() {
         match f.as_str() {
@@ -221,6 +282,12 @@ fn main() {
             "--alpha" => alpha = a.next().unwrap().parse().unwrap(),
             "--title" => title = a.next().unwrap(),
             "--app-id" => app_id = a.next(),
+            "--decor" => decor = a.next(),
+            "--min-size" => { let (x, y) = wh(a.next().unwrap()); min_size = Some((x as i32, y as i32)); }
+            "--max-size" => { let (x, y) = wh(a.next().unwrap()); max_size = Some((x as i32, y as i32)); }
+            "--refuse-close" => refuse_close = true,
+            "--follow" => {}
+            "--child" => child = Some(wh(a.next().unwrap())),
             "--maximize" => maximize = true,
             "--hidpi" => hidpi = true,
             "--integer-scale" => integer_only = true,
@@ -237,7 +304,8 @@ fn main() {
     let seat: WlSeat = globals.bind(&qh, 1..=5, ()).unwrap();
 
     let surface = comp.create_surface(&qh, ());
-    let mut app = App { surface: surface.clone(), buffers: vec![], configured: false, shm, pattern, rgb, alpha, size: (w, h), pending: None, hidpi, integer_only, int_scale: 1, frac120: 0, viewport: None, ti: None };
+    let mut app = App { surface: surface.clone(), buffers: vec![], configured: false, shm, pattern, rgb, alpha, size: (w, h), pending: None, hidpi, integer_only, int_scale: 1, frac120: 0, viewport: None, ti: None,
+        comp: comp.clone(), wm: wm.clone(), top: None, refuse_close, child, child_surface: None, child_done: false };
     if hidpi || integer_only {
         let _out: WlOutput = globals.bind(&qh, 2..=4, ()).unwrap();
     }
@@ -255,6 +323,14 @@ fn main() {
     let top = xs.get_toplevel(&qh, ());
     top.set_title(title);
     if let Some(id) = app_id { top.set_app_id(id); }
+    if let Some((x, y)) = min_size { top.set_min_size(x, y); }
+    if let Some((x, y)) = max_size { top.set_max_size(x, y); }
+    if let Some(mode) = decor {
+        let m: ZxdgDecorationManagerV1 = globals.bind(&qh, 1..=1, ()).expect("zxdg_decoration_manager_v1");
+        let d = m.get_toplevel_decoration(&top, &qh, ());
+        d.set_mode(if mode == "client" { zxdg_toplevel_decoration_v1::Mode::ClientSide } else { zxdg_toplevel_decoration_v1::Mode::ServerSide });
+    }
+    app.top = Some(top.clone());
     if maximize { top.set_maximized(); }
     surface.commit();
     loop { q.blocking_dispatch(&mut app).expect("dispatch"); }

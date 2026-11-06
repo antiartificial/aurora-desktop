@@ -11,6 +11,7 @@
 
 pub mod apps;
 mod chrome;
+pub mod deco;
 pub mod layout;
 pub mod menu;
 pub mod motion;
@@ -30,7 +31,7 @@ use smithay::{
 };
 
 use crate::{
-    fx::theme::{BgMode, Background, Desktop, Dock, FontCfg, Theme, oklab_to_srgb, oklab_to_u8},
+    fx::theme::{BgMode, Background, Decoration, Desktop, Dock, FontCfg, Theme, oklab_to_srgb, oklab_to_u8},
     text::{FontSpec, TextSystem},
     trusted::draw::Canvas,
 };
@@ -107,6 +108,8 @@ pub struct Shell {
     /// `--freeze-time`: the background shader's `time` stays 0.
     pub freeze_time: bool,
     pub aurora_bin: String,
+    pub deco: Decoration,
+    decos: deco::DecoStore,
     pub registry: apps::Registry,
     items: Vec<Item>,
     widths: Vec<i32>,
@@ -148,6 +151,8 @@ impl Shell {
             legacy_scene: false,
             freeze_time: false,
             aurora_bin: "aurora".into(),
+            deco: Decoration::default(),
+            decos: Default::default(),
             registry: apps::Registry::new(None),
             items: vec![],
             widths: vec![],
@@ -188,6 +193,10 @@ impl Shell {
             self.bg = theme.background.clone();
             self.glass_on = theme.glass.enabled;
             self.glass_radius = theme.glass.corner_radius;
+            changed = true;
+        }
+        if self.deco != theme.decoration {
+            self.deco = theme.decoration.clone();
             changed = true;
         }
         if self.rev == 0 || self.font.family != theme.font.family || self.font.file != theme.font.file {
@@ -325,6 +334,7 @@ impl Shell {
         self.prepare_background(r, size)?;
         self.prepare_clock(r, size)?;
         self.prepare_dock(r, size)?;
+        self.prepare_decos(r)?;
         self.prepare_chrome(r, size)
     }
 

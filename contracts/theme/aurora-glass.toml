@@ -155,3 +155,38 @@ repeat_rate = 25
 # wp_fractional_scale to clients that bind it and the integer ceiling on
 # wl_output for those that do not.
 scale = 0.0
+
+[decoration]
+# The title bar the compositor draws above a window that did not draw its own (every Haiku
+# window, anything that asks xdg-decoration for server-side, every managed X11 window).
+# A client that asks to decorate itself, and every override-redirect X11 window (menus, tooltips),
+# is left bare. Sizes are logical pixels.
+enabled = true
+# "bar": a glass bar the width of the window, with the close button at its left.
+# "tab": BeOS's tab: the same chrome, but only as wide as the title, hung from the window's
+#        top-left corner. The bar is the better default (a wider drag and double-click target,
+#        and the title always has room); the tab is the Haiku look.
+style = "bar"
+# Bar height. A touch taller than the dock's text so the close button is a real target.
+height = 30.0
+# Resize tolerance: a press this far OUTSIDE a window's frame (left, right, bottom, above the bar)
+# still grabs that edge. 8 is 8 px at scale 1 and 11.6 at 1.45. Nothing is taken from the client's
+# own pixels, so a scroll bar at the window's edge keeps working.
+grip = 8.0
+# Along an edge, this far from a corner a press grabs the corner (both edges) instead.
+corner = 20.0
+# Two presses on the bar within this many milliseconds maximise (or restore).
+double_click_ms = 400
+# Focus and close-button hover change on this ease-out (cubic, like the menus). 0 = instant.
+ease_ms = 140
+# Title text. Both sit on chrome glass, whose luminance ceiling bounds the worst-case backdrop at
+# Y = 0.1127, so a text luminance Y gives a floor of (Y + 0.05) / 0.1627:
+#   focused   L 0.98 -> Y 0.941 -> 6.1:1        unfocused L 0.90 -> Y 0.729 -> 4.8:1
+# compositor/tests/visual.rs asserts both over the worst backdrop. The unfocused title is also regular
+# weight where the focused one is bold, so focus never rests on colour alone.
+text_oklab = [0.98, 0.0, 0.0]
+text_dim_oklab = [0.90, 0.0, 0.0]
+# The focused window's stripe and close glyph: Haiku's tab yellow.
+accent_oklab = [0.86, 0.0, 0.16]
+# The close button's fill when the pointer is over it.
+close_oklab = [0.62, 0.20, 0.10]

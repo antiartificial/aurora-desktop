@@ -62,9 +62,12 @@ impl ResizeSurfaceGrab {
     ) -> Self {
         let initial_rect = initial_window_rect;
 
-        ResizeSurfaceState::with(window.toplevel().unwrap().wl_surface(), |state| {
-            *state = ResizeSurfaceState::Resizing { edges, initial_rect };
-        });
+        // An X11 window has no xdg surface to carry the state: its resize is finished in `motion`.
+        if let Some(t) = window.toplevel() {
+            ResizeSurfaceState::with(t.wl_surface(), |state| {
+                *state = ResizeSurfaceState::Resizing { edges, initial_rect };
+            });
+        }
 
         Self {
             start_data,
@@ -108,12 +111,17 @@ impl PointerGrab<Aurora> for ResizeSurfaceGrab {
             new_window_height = (self.initial_rect.size.h as f64 + delta.y) as i32;
         }
 
-        let (min_size, max_size) =
-            compositor::with_states(self.window.toplevel().unwrap().wl_surface(), |states| {
+        let (min_size, max_size) = match self.window.toplevel() {
+            Some(t) => compositor::with_states(t.wl_surface(), |states| {
                 let mut guard = states.cached_state.get::<SurfaceCachedState>();
                 let data = guard.current();
                 (data.min_size, data.max_size)
-            });
+            }),
+            None => {
+                let x = self.window.x11_surface().expect("a window is an xdg toplevel or an X11 surface");
+                (x.min_size().unwrap_or_default(), x.max_size().unwrap_or_default())
+            }
+        };
 
         let min_width = min_size.w.max(1);
         let min_height = min_size.h.max(1);
@@ -126,7 +134,16 @@ impl PointerGrab<Aurora> for ResizeSurfaceGrab {
             new_window_height.max(min_height).min(max_height),
         ));
 
-        let xdg = self.window.toplevel().unwrap();
+        let Some(xdg) = self.window.toplevel() else {
+            // X11: the client has no commit to wait for, so move and resize in one step.
+            let (r, s) = (self.initial_rect, self.last_window_size);
+            let x = if self.edges.intersects(ResizeEdge::LEFT) { r.loc.x + r.size.w - s.w } else { r.loc.x };
+            let y = if self.edges.intersects(ResizeEdge::TOP) { r.loc.y + r.size.h - s.h } else { r.loc.y };
+            let rect = Rectangle::new((x, y).into(), s);
+            let _ = self.window.x11_surface().unwrap().configure(rect);
+            data.space.map_element(self.window.clone(), rect.loc, false);
+            return;
+        };
         xdg.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Resizing);
             state.size = Some(self.last_window_size);
@@ -161,7 +178,7 @@ impl PointerGrab<Aurora> for ResizeSurfaceGrab {
             // No more buttons are pressed, release the grab.
             handle.unset_grab(self, data, event.serial, event.time, true);
 
-            let xdg = self.window.toplevel().unwrap();
+            let Some(xdg) = self.window.toplevel() else { return };
             xdg.with_pending_state(|state| {
                 state.states.unset(xdg_toplevel::State::Resizing);
                 state.size = Some(self.last_window_size);

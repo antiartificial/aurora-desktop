@@ -67,6 +67,37 @@ impl Appear {
     }
 }
 
+/// A value that eases to a new target on the same cubic ease-out, however often the target changes:
+/// a change starts from wherever the value is NOW, so reversing mid-way never jumps. Used for the
+/// window decorations' focus and hover (`shell/deco.rs`).
+#[derive(Clone, Copy, Debug)]
+pub struct Ease {
+    from: f32,
+    to: f32,
+    start: Instant,
+}
+
+impl Ease {
+    pub fn at(v: f32) -> Self {
+        Ease { from: v, to: v, start: Instant::now() }
+    }
+
+    pub fn value(&self, ms: u64) -> f32 {
+        if ms == 0 {
+            return self.to;
+        }
+        let k = ease_out_cubic(self.start.elapsed().as_secs_f32() * 1000.0 / ms as f32);
+        self.from + (self.to - self.from) * k
+    }
+
+    /// Head for `to`. Calling it every frame with the same target is a no-op.
+    pub fn set(&mut self, to: f32, ms: u64) {
+        if self.to != to {
+            *self = Ease { from: self.value(ms), to, start: Instant::now() };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +125,20 @@ mod tests {
         let b = Appear::new(10_000);
         let (k, alpha) = b.frame();
         assert!((START_SCALE..=1.0).contains(&k) && (0.0..=1.0).contains(&alpha));
+    }
+
+    #[test]
+    fn an_ease_reverses_from_where_it_is_and_is_ahead_of_linear() {
+        let mut e = Ease::at(0.0);
+        e.set(1.0, 10_000);
+        std::thread::sleep(Duration::from_millis(60));
+        let v = e.value(10_000);
+        assert!(v > 0.0 && v < 1.0);
+        e.set(0.0, 10_000);
+        assert!((e.value(10_000) - v).abs() < 0.05, "reversing starts from the current value, not from 1");
+        assert_eq!(Ease::at(0.3).value(140), 0.3);
+        let mut z = Ease::at(0.0);
+        z.set(1.0, 0);
+        assert_eq!(z.value(0), 1.0, "0 ms is instant");
     }
 }

@@ -16,6 +16,7 @@ mod state;
 mod stats;
 mod text;
 mod trusted;
+mod windeco;
 mod winit;
 mod xwayland;
 

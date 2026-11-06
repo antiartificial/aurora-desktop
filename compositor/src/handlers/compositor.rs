@@ -43,6 +43,7 @@ impl CompositorHandler for Aurora {
             {
                 window.on_commit();
             }
+            self.place_on_first_commit(&root);
         };
 
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);

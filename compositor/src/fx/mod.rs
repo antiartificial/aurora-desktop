@@ -218,18 +218,42 @@ impl Fx {
             let sy = f.finish()?; self.phases.lap(Phase::Scene, &sy); wait(r, sy)?;
         }
         s.reset();
-        for w in space.elements() {
+        for (i, w) in space.elements().enumerate() {
             let geo = crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale);
             let els = window_elements(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc, scale);
             // Everything this window puts in the scene: its glass, and its surfaces (which may overhang it).
-            let touched = els.iter().map(|e| e.geometry(Scale::from(scale))).fold(rect_of(geo), |a, g| union(a, rect_of(g)));
+            let mut touched = els.iter().map(|e| e.geometry(Scale::from(scale))).fold(rect_of(geo), |a, g| union(a, rect_of(g)));
             if glass.enabled { blur::backdrop(r, s, &bp, Kind::Window, rect_of(geo), glass.blur_radius, linear, &mut self.phases)?; }
+            // The title bar hangs above the window: window glass, then the bar (chrome glass and its
+            // texture), then the client's surfaces. The bar's texture reaches a corner radius below
+            // its edge, under the client, so the glass's rounded bottom corners are hidden by it.
+            let bar = shell.deco_draw(i).map(|d| (d.tex, d.dst));
+            let split = bar.is_some();
             {
                 let mut t = r.bind(&mut s.scene)?;
                 let mut f = r.render(&mut t, size, Transform::Normal)?;
                 if glass.enabled { draw_glass(&mut f, glass_p, &s.window.up[0], geo, size, &glass, 0.0, linear)?; self.phases.surfaces += 1; }
-                draw_elements(&mut f, &els, scale)?;
+                if !split { draw_elements(&mut f, &els, scale)?; }
                 let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+            }
+            if let Some((tex, dst)) = bar {
+                s.mark_dirty(rect_of(geo));
+                let bg = Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into());
+                if glass.enabled { blur::backdrop(r, s, &bp, Kind::Chrome, rect_of(bg), chrome_radius, linear, &mut self.phases)?; }
+                {
+                    let mut t = r.bind(&mut s.scene)?;
+                    let mut f = r.render(&mut t, size, Transform::Normal)?;
+                    if glass.enabled {
+                        let mut g = chrome_glass(&glass);
+                        g.corner_radius = shell.dock_radius();
+                        draw_glass(&mut f, glass_p, &s.chrome.up[0], bg, size, &g, glass.chrome.luminance_max, linear)?;
+                        self.phases.surfaces += 1;
+                    }
+                    crate::shell::draw_tex(&mut f, tex, dst)?;
+                    draw_elements(&mut f, &els, scale)?;
+                    let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+                }
+                touched = union(touched, rect_of(bg));
             }
             s.mark_dirty(touched);
         }

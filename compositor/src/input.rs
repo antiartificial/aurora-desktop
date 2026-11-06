@@ -67,8 +67,12 @@ impl Aurora {
         let on_dock = l.panel.contains(dp.x, dp.y) || on_chrome;
         let hover = if on_dock && !on_chrome { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
         self.shell.hover = hover;
-        let under = if on_dock { None } else { self.surface_under(pos) };
         let pointer = self.seat.get_pointer().unwrap();
+        // A window's title bar and edges belong to the compositor too: no client sees the pointer there.
+        // While a grab runs (a move, a resize) the grab owns the pointer and nothing is hit-tested.
+        let deco = if on_dock || pointer.is_grabbed() { None } else { self.deco_hit(pos) };
+        self.deco.hover = deco.as_ref().and_then(|(w, h)| crate::windeco::win_key(w).map(|k| (k, *h)));
+        let under = if on_dock || deco.is_some() { None } else { self.surface_under(pos) };
         pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);
     }
@@ -84,6 +88,7 @@ impl Aurora {
         // and neither does its release.
         if button_state == ButtonState::Released && self.chrome_buttons.remove(&button) {
             self.shell.chrome_release();
+            self.deco_release(loc);
             return;
         }
         if button_state == ButtonState::Pressed {
@@ -128,6 +133,14 @@ impl Aurora {
                 }
             }
             return;
+        }
+        if button == BTN_LEFT && button_state == ButtonState::Pressed && !pointer.is_grabbed() {
+            if let Some((w, hit)) = self.deco_hit(loc) {
+                let press = ButtonEvent { button, state: button_state, serial, time };
+                if self.deco_press(w, hit, loc, serial, &press) {
+                    return;
+                }
+            }
         }
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             if let Some((window, _loc)) = self.space.element_under(loc).map(|(w, l)| (w.clone(), l)) {
