@@ -256,6 +256,47 @@ func (s Store) GrantNet(name, host string) error {
 	return s.Save(m)
 }
 
+// GrantDevice records a device grant. Only the classes in DeviceClasses are
+// accepted: a class the adapter cannot compose would be a claim nothing enforces.
+func (s Store) GrantDevice(name, class string) error {
+	if !KnownDevice(class) {
+		return fmt.Errorf("unknown device class %q (known: %s)", class, DeviceClassList())
+	}
+	m, err := s.Load(name)
+	if err != nil {
+		return err
+	}
+	for _, g := range m.Grants {
+		if g.Kind == "device" && g.Device == class {
+			return nil
+		}
+	}
+	m.Grants = append(m.Grants, Grant{Kind: "device", Device: class})
+	return s.Save(m)
+}
+
+// RevokeDevice removes a device grant; the next run has no such node.
+func (s Store) RevokeDevice(name, class string) error {
+	m, err := s.Load(name)
+	if err != nil {
+		return err
+	}
+	keep := []Grant{}
+	found := false
+	for _, g := range m.Grants {
+		if g.Kind == "device" && g.Device == class {
+			found = true
+			continue
+		}
+		keep = append(keep, g)
+	}
+	if !found {
+		return fmt.Errorf("no such device grant: %s", class)
+	}
+	m.Grants = keep
+	return s.Save(m)
+}
+
 // Revoke removes a path grant (by path) or, with net, a net grant (by host).
 func (s Store) Revoke(name, target string, net bool) error {
 	m, err := s.Load(name)

@@ -18,6 +18,8 @@ const usage = `usage: domain <command> [args]
                                         grant one file or directory (default --ro); --exact binds
                                         the path as given and refuses it unless already canonical
   grant <name> --net <host>             grant network (coarse: shares the host network)
+  grant <name> --device <class>         grant a device: gpu (render node) or wayland (the compositor socket)
+  revoke <name> --device <class>        remove a device grant
   revoke <name> <path>                  remove a path grant
   revoke <name> --net <host>            remove a net grant
   list                                  list domains
@@ -93,6 +95,7 @@ func main() {
 	case "grant":
 		ro, rw := fs.Bool("ro", false, "read-only (default)"), fs.Bool("rw", false, "read-write")
 		net := fs.String("net", "", "network host to grant")
+		device := fs.String("device", "", "device class to grant: gpu or wayland")
 		exact := fs.Bool("exact", false, "path is already canonical: bind it as given, refuse if it is not")
 		pos := parse(fs, args)
 		if *net != "" {
@@ -101,6 +104,14 @@ func main() {
 				die("%v", err)
 			}
 			fmt.Printf("granted net %s to %s\n  NOTE: enforcement is coarse. Any net grant gives the domain the host network namespace;\n  the host name is recorded but NOT filtered.\n", *net, pos[0])
+			return
+		}
+		if *device != "" {
+			need(pos, 1, "grant <name> --device <class>")
+			if err := st.GrantDevice(pos[0], *device); err != nil {
+				die("%v", err)
+			}
+			fmt.Printf("granted device %s to %s\n", *device, pos[0])
 			return
 		}
 		need(pos, 2, "grant <name> <path>")
@@ -122,7 +133,16 @@ func main() {
 		fmt.Printf("granted %s (%s) to %s\n", p, mode, pos[0])
 	case "revoke":
 		net := fs.Bool("net", false, "target is a net host")
+		device := fs.Bool("device", false, "target is a device class")
 		pos := parse(fs, args)
+		if *device {
+			need(pos, 2, "revoke <name> --device <class>")
+			if err := st.RevokeDevice(pos[0], pos[1]); err != nil {
+				die("%v", err)
+			}
+			fmt.Printf("revoked device %s from %s\n", pos[1], pos[0])
+			return
+		}
 		need(pos, 2, "revoke <name> <path>  |  revoke <name> --net <host>")
 		if err := st.Revoke(pos[0], pos[1], *net); err != nil {
 			die("%v", err)
@@ -250,6 +270,8 @@ func show(st dom.Store, name string) {
 	for _, g := range m.Grants {
 		if g.Kind == "net" {
 			fmt.Printf("  net   %s (coarse: host netns)\n", g.Host)
+		} else if g.Kind == "device" {
+			fmt.Printf("  device %s\n", g.Device)
 		} else {
 			fmt.Printf("  path  %s (%s)\n", g.Path, g.Mode)
 		}
