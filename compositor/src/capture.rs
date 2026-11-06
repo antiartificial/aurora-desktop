@@ -50,6 +50,7 @@ pub fn output_constraints(output: &Output) -> Option<BufferConstraints> {
     Some(BufferConstraints {
         size: mode.size.to_logical(1).to_buffer(1, Transform::Normal),
         shm: vec![wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888],
+        dma: None,
     })
 }
 

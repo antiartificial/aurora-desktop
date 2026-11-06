@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         InputTime, AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
@@ -191,7 +191,16 @@ impl Aurora {
             InputEvent::Keyboard { event, .. } => {
                 self.keyboard_input(event.key_code(), event.state(), Event::time(&event));
             }
-            InputEvent::PointerMotion { .. } => {}
+            InputEvent::PointerMotion { event } => {
+                // Relative devices (a real mouse via libinput). Winit reports
+                // absolute positions only, so this is the DRM backend's path.
+                let output = self.space.outputs().next().unwrap();
+                let geo = self.space.output_geometry(output).unwrap();
+                let at = self.seat.get_pointer().unwrap().current_location() + event.delta();
+                let x = at.x.clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64 - 1.0);
+                let y = at.y.clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64 - 1.0);
+                self.pointer_moved((x, y).into(), event.time());
+            }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
                 let output_geo = self.space.output_geometry(output).unwrap();

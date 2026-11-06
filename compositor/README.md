@@ -40,7 +40,11 @@ It is not Compositor v0. It is smallvil plus a working capture path.
     cargo build --release                      # in compositor/
     harness/nested-up --compositor aurora      # winit window, plus a terminal if found
     harness/nested-up --compositor aurora --headless=1280x800
-    compositor/target/release/aurora-compositor [--headless[=WxH]] [-c COMMAND]
+    compositor/target/release/aurora-compositor [--headless[=WxH] | --drm[=CARD]] [-c COMMAND]
+
+`--drm` runs on a bare TTY (DRM/KMS + libinput); it is written but not yet
+run on a display, see [docs/bare-metal.md](../docs/bare-metal.md) for the test
+recipe. It is mutually exclusive with `--headless`.
 
 The compositor prints `aurora-compositor: socket wayland-N`. Capture with:
 
