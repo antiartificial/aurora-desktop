@@ -176,7 +176,8 @@ static void RoundRectPath(std::vector<float>& p, FRect r, float rx, float ry, do
 	float l = r.l * s, t = r.t * s, rr = (r.r + 1) * s, bb = (r.b + 1) * s;
 	rx = std::min(rx * (float)s, (rr - l) / 2); ry = std::min(ry * (float)s, (bb - t) / 2);
 	const int N = 16;
-	float cx[4] = {rr - rx, l + rx, l + rx, rr - rx}, cy[4] = {t + ry, t + ry, bb - ry, bb - ry};
+	// clockwise from the top-right corner, matching the angle sweep below: top-right, bottom-right, bottom-left, top-left
+	float cx[4] = {rr - rx, rr - rx, l + rx, l + rx}, cy[4] = {t + ry, bb - ry, bb - ry, t + ry};
 	for (int q = 0; q < 4; q++)
 		for (int i = 0; i <= N; i++) {
 			float a = (float)M_PI * 0.5f * (q + (float)i / N) - (float)M_PI * 0.5f;
