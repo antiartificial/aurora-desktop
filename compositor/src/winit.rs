@@ -1,66 +1,45 @@
-//! Winit backend. The whole frame (effects, capture read-back, trusted overlay)
-//! is rendered into an offscreen texture exactly as `headless` does; the window
-//! surface is only touched at the very end, to blit that texture and swap.
+//! Winit backend: a real window on the host, for seeing the desktop.
 //!
-//! Why not render into the window surface directly: several Smithay calls
-//! (`GlesRenderer::wait`, `map_texture`, binding a texture) make the EGL context
-//! current with *no* surface. After that `eglSwapBuffers` fails with
-//! BAD_SURFACE ("not current draw surface"), and even re-binding the surface
-//! gives a fresh back buffer on the NVIDIA driver, so the drawn frame is lost
-//! (a capture read back black). Keeping the surface out of everything but the
-//! final blit avoids both.
+//! It renders the scene straight into the window surface and swaps. There is
+//! no offscreen pass, which costs it the effects pipeline and frame capture.
+//!
+//! Why: binding an offscreen texture makes Smithay call `eglMakeCurrent` with
+//! no surface (`GlesRenderer::bind` for a texture, `wait`, `map_texture`,
+//! `with_context`). On this host -- NVIDIA 580, KWin, PLATFORM_WAYLAND_KHR --
+//! re-binding the window surface afterwards hands out a back buffer that
+//! `eglSwapBuffers` does not present. Every call returns success and the
+//! window stays blank, so nothing in a log reveals it.
+//!
+//! This was bisected with `examples/winit_bisect.rs`, which draws a colour
+//! four ways: clearing the window directly is visible; the same clear with an
+//! offscreen texture bound first is not, and neither is a blit from an
+//! offscreen, nor one with an explicit surfaceless `make_current`. Only the
+//! phase that never goes surfaceless appears on screen. `examples/winit_red.rs`
+//! is the matching baseline: a bare clear-and-swap, which is visible, proving
+//! the window path itself works here.
+//!
+//! So: use `--headless` for effects, capture and the test suites; use winit to
+//! look at the thing. Fixing this properly needs a second, shared EGL context
+//! so the window's context never goes surfaceless.
 
 use smithay::{
     backend::{
         SwapBuffersError,
-        allocator::Fourcc,
-        renderer::{
-            Bind, Frame, Offscreen, Renderer, damage::OutputDamageTracker,
-            gles::{GlesRenderer, GlesTexture},
-        },
-        winit::{self, WinitEvent, WinitGraphicsBackend},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Buffer as BufferCoords, Physical, Rectangle, Size, Transform},
+    utils::{Physical, Rectangle, Transform},
 };
 
 use crate::{Aurora, render};
-
-/// Transform used when blitting the offscreen frame onto the window surface.
-const BLIT: Transform = Transform::Flipped180;
-
-fn make_target(r: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<GlesTexture, Box<dyn std::error::Error>> {
-    Ok(r.create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((size.w.max(1), size.h.max(1))))?)
-}
-
-/// Blit `frame` to the window and swap. The first (empty) frame on the window
-/// is a precaution: it lets Smithay run deferred cleanup (which can unbind the
-/// surface) before the frame that is swapped;
-/// the second frame then draws and swaps with nothing in between.
-fn present(backend: &mut WinitGraphicsBackend<GlesRenderer>, frame: &GlesTexture, size: Size<i32, Physical>) -> Result<(), String> {
-    let full = Rectangle::<i32, Physical>::from_size(size);
-    for pass in 0..2 {
-        let (renderer, mut window) = backend.bind().map_err(|e| format!("bind: {e}"))?;
-        let mut f = renderer.render(&mut window, size, BLIT).map_err(|e| format!("render: {e}"))?;
-        if pass == 1 {
-            let src = Rectangle::<f64, BufferCoords>::from_size((size.w as f64, size.h as f64).into());
-            f.render_texture_from_to(frame, src, full, &[full], &[], Transform::Normal, 1.0, None, &[])
-                .map_err(|e| format!("blit: {e}"))?;
-        }
-        let _sync = f.finish().map_err(|e| format!("finish: {e}"))?;
-    }
-    backend.submit(Some(&[full])).map_err(|e| match e {
-        SwapBuffersError::ContextLost(e) => format!("context lost: {e}"),
-        e => format!("swap: {e}"),
-    })
-}
 
 pub fn init_winit(
     event_loop: &mut EventLoop<Aurora>,
     state: &mut Aurora,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init()?;
+    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
 
     let mode = Mode { size: backend.window_size(), refresh: 60_000 };
     let output = Output::new(
@@ -74,13 +53,12 @@ pub fn init_winit(
         },
     );
     let _global = output.create_global::<Aurora>(&state.display_handle);
-    // The offscreen frame is upright (as in headless); `BLIT` flips it for the window.
-    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    // Flipped180 is Smithay's convention for a winit window (anvil does the
+    // same): GL's origin is bottom-left, the window's is top-left.
+    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
 
-    let mut target = make_target(backend.renderer(), mode.size)?;
-    let mut target_size = mode.size;
     backend.window().request_redraw();
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
@@ -97,32 +75,30 @@ pub fn init_winit(
                     backend.window().request_redraw();
                     return;
                 }
-                if size != target_size {
-                    match make_target(backend.renderer(), size) {
-                        Ok(t) => { target = t; target_size = size; }
-                        Err(e) => {
-                            tracing::error!("winit: cannot resize the offscreen frame, stopping: {e}");
-                            state.loop_signal.stop();
-                            return;
-                        }
+                let full = Rectangle::<i32, Physical>::from_size(size);
+                // One bind, one render, one swap, and nothing in between that
+                // could make the context current without the surface.
+                let drew = match backend.bind() {
+                    Ok((renderer, mut window)) => {
+                        render::render_direct(state, renderer, &mut window, &output, &mut damage_tracker, size);
+                        true
                     }
-                }
-                let drawn = {
-                    let renderer = backend.renderer();
-                    renderer.bind(&mut target).map(|mut fb| {
-                        render::render_and_capture(state, renderer, &mut fb, &output, &mut damage_tracker, size);
-                    })
+                    Err(e) => {
+                        tracing::error!("winit: cannot bind the window, stopping: {e}");
+                        state.loop_signal.stop();
+                        false
+                    }
                 };
-                if let Err(e) = drawn {
-                    tracing::error!("winit: cannot bind the offscreen frame, stopping: {e}");
-                    state.loop_signal.stop();
-                    return;
-                }
-                if let Err(e) = present(&mut backend, &target, size) {
-                    // A lost context cannot be recovered here; leave cleanly rather than panic.
-                    tracing::error!("winit: presenting failed, stopping: {e}");
-                    state.loop_signal.stop();
-                    return;
+                if drew {
+                    if let Err(e) = backend.submit(Some(&[full])) {
+                        let why = match e {
+                            SwapBuffersError::ContextLost(e) => format!("context lost: {e}"),
+                            e => format!("swap: {e}"),
+                        };
+                        tracing::error!("winit: presenting failed, stopping: {why}");
+                        state.loop_signal.stop();
+                        return;
+                    }
                 }
                 render::after_frame(state, &output);
                 backend.window().request_redraw();

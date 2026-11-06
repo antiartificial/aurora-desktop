@@ -95,6 +95,16 @@ impl Aurora {
     /// Fill every queued frame from `framebuffer`, which must hold the output's
     /// freshly rendered content. Frames that cannot be filled are failed with a
     /// reason, never completed blank.
+    /// Refuse every queued frame. The winit backend calls this: it cannot read
+    /// a framebuffer back without a surfaceless `make_current`, which costs it
+    /// the window (see `winit.rs`). Failing is honest; leaving clients waiting
+    /// on a frame that will never arrive is not.
+    pub fn fail_pending(&mut self) {
+        for f in std::mem::take(&mut self.pending_frames) {
+            f.1.fail(CaptureFailureReason::Unknown);
+        }
+    }
+
     pub fn serve_pending(
         &mut self,
         renderer: &mut GlesRenderer,

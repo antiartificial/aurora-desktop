@@ -64,6 +64,34 @@ pub fn render_and_capture(
     }
 }
 
+/// Render the scene and the trusted overlay straight into `framebuffer`, with
+/// no offscreen pass and no capture.
+///
+/// This exists for the winit backend only. Binding an offscreen texture calls
+/// `eglMakeCurrent` with no surface, and on this NVIDIA driver the window
+/// surface then hands out a back buffer that `eglSwapBuffers` does not
+/// present: every call reports success and the window stays blank. The
+/// effects pipeline and capture read-back both do exactly that, so winit gets
+/// neither. Headless keeps both; see `render_and_capture`.
+pub fn render_direct(
+    state: &mut Aurora,
+    renderer: &mut GlesRenderer,
+    framebuffer: &mut GlesTarget<'_>,
+    output: &Output,
+    tracker: &mut OutputDamageTracker,
+    size: Size<i32, Physical>,
+) {
+    state.fail_pending();
+    if let Err(e) = smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+        output, renderer, framebuffer, 1.0, 0, [&state.space], &[], tracker, CLEAR,
+    ) {
+        tracing::error!("scene render failed: {e:?}");
+    }
+    if let Err(e) = crate::trusted::draw::draw_overlay(&mut state.trusted, renderer, framebuffer, output, size) {
+        tracing::error!("trusted overlay draw failed: {e}");
+    }
+}
+
 /// `--dump-overlay`: write the compositor's own frame once per request.
 fn dump_once(state: &mut Aurora, renderer: &mut GlesRenderer, framebuffer: &GlesTarget<'_>, size: Size<i32, Physical>) {
     let (Some(path), Some(head)) = (state.trusted.dump_path.clone(), state.trusted.queue.front()) else { return };
