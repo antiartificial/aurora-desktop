@@ -43,7 +43,7 @@ fn glass_on_and_off_produce_different_frames() {
 #[test]
 fn blur_is_a_gradient_across_a_high_contrast_edge_not_a_step() {
     let t = Theme::new();
-    t.edit("strength = 0.22", "strength = 0.0"); // no tint: any change across the edge is the blur
+    t.edit("strength = 0.10", "strength = 0.0"); // no tint: any change across the edge is the blur
     t.edit("strength = 0.75", "strength = 0.0"); // no edge highlight
     let mut c = Comp::start(&theme_args(&t));
     edge_scene(&mut c);
@@ -69,7 +69,7 @@ fn blur_is_a_gradient_across_a_high_contrast_edge_not_a_step() {
 #[test]
 fn hot_reload_picks_up_a_parameter_change() {
     let t = Theme::new();
-    t.edit("strength = 0.22", "strength = 0.0");
+    t.edit("strength = 0.10", "strength = 0.0");
     let mut c = Comp::start(&theme_args(&t));
     edge_scene(&mut c);
     let a = c.capture("a.png");
@@ -80,7 +80,7 @@ fn hot_reload_picks_up_a_parameter_change() {
     println!("HOT RELOAD tint 0 -> 0.9: {d} pixels changed, (400,400) {:?} -> {:?}; compositor log: {}", a.at(400, 400), b.at(400, 400), c.log().matches("theme: loaded").count());
     assert!(d > 20_000);
     assert!(c.log().matches("theme: loaded").count() >= 2, "no reload logged");
-    t.edit("blur_passes = 3", "blur_passes = 5"); // the chain is rebuilt live
+    t.edit("blur_passes = 2", "blur_passes = 5"); // the chain is rebuilt live
     settle();
     let e = c.capture("c.png");
     assert!(b.diff_count(&e) > 100, "changing the pass count changed nothing");
@@ -169,4 +169,39 @@ fn overlay_is_still_excluded_from_captures_of_a_glass_scene() {
     assert_eq!(during.count(BORDER), 0);
     assert_eq!(before.diff_count(&during), 0, "capture during overlay differs from before");
     drop(pending);
+}
+
+/// Luminance (WCAG) of a grey code.
+fn lum(v: u8) -> f64 { srgb_to_linear(v) }
+
+/// C1.1 and C1.3 of docs/visual-system.md: blur averages LIGHT, and its width is the one the theme documents.
+#[test]
+fn blur_averages_light_not_codes_and_has_the_documented_width() {
+    let measure = |linear: bool| {
+        let t = Theme::new();
+        t.edit("strength = 0.10", "strength = 0.0"); // no tint
+        t.edit("strength = 0.75", "strength = 0.0"); // no edge highlight
+        if !linear { t.edit("linear_blur = true", "linear_blur = false"); }
+        let mut c = Comp::start(&theme_args(&t));
+        edge_scene(&mut c);
+        let img = c.capture("e.png");
+        row(&img, 350, SPLIT_X - 60, SPLIT_X + 60)
+    };
+    let (lin, enc) = (measure(true), measure(false));
+    // The step is between x = 299 and 300 (indexes 59 and 60 of the row).
+    let (mid_lin, mid_enc) = ((lin[59] as f64 + lin[60] as f64) / 2.0, (enc[59] as f64 + enc[60] as f64) / 2.0);
+    let (lo, hi) = (lin[0], *lin.last().unwrap());
+    println!("BLUR step midpoint: linear light {mid_lin} ({:?}), blurred as encoded {mid_enc}; ends {lo}..{hi}", &lin[55..65]);
+    // Black is code 13 here (the 5% white glass client over it), white 255: averaging codes gives 134, averaging light gives 188.
+    assert!((mid_enc - (lo as f64 + hi as f64) / 2.0).abs() <= 6.0, "encoded blur midpoint {mid_enc}, expected the mean of the codes");
+    assert!((170.0..=205.0).contains(&mid_lin), "C1.1: linear-light midpoint {mid_lin} outside 170..=205");
+    assert!(mid_lin - mid_enc >= 40.0, "C1.1: linear vs encoded differ by only {} codes", mid_lin - mid_enc);
+    // C1.2 monotone, C1.3 width: 10-90% of the luminance step is 1.9 * r * 2^passes * 2^level = 30.4 px for window glass (r 2, passes 2, level 1), +-15%.
+    assert!(lin.windows(2).all(|w| w[1] as i32 + 1 >= w[0] as i32), "C1.2: not monotone: {lin:?}");
+    let ls: Vec<f64> = lin.iter().map(|&v| lum(v)).collect();
+    let (a, b) = (ls[0] + 0.1 * (ls[ls.len() - 1] - ls[0]), ls[0] + 0.9 * (ls[ls.len() - 1] - ls[0]));
+    let cross = |l: f64| { let i = ls.windows(2).position(|w| w[0] <= l && w[1] > l).unwrap(); i as f64 + (l - ls[i]) / (ls[i + 1] - ls[i]) };
+    let w = cross(b) - cross(a);
+    println!("BLUR 10-90% luminance width: {w:.1} px (identity predicts 30.4, accept 26-35)");
+    assert!((26.0..=35.0).contains(&w), "C1.3: window glass blur width {w:.1} px outside the identity's 30.4 +-15%");
 }

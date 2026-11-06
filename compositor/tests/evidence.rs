@@ -35,7 +35,7 @@ fn write_phase_1_evidence() {
 
     // The blur profile: plain split window, glass window over the edge, no tint, no highlight.
     let t = Theme::new();
-    t.edit("strength = 0.22", "strength = 0.0");
+    t.edit("strength = 0.10", "strength = 0.0");
     t.edit("strength = 0.75", "strength = 0.0");
     let mut c = Comp::start(&["--theme", t.path()]);
     c.client_args(&["--size", "400x500", "--pattern", "split"]);

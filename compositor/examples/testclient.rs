@@ -4,7 +4,7 @@
 //! It also prints `keymap <xkb_symbols line>` and `repeat <rate> <delay>` as the seat sends them,
 //! `configure WxH` for each non-zero toplevel configure, and with `--maximize` asks to be
 //! maximised and redraws at the size it is given.
-//! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|split|bars|glass] [--alpha A] [--maximize]
+//! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|fine|split|bars|glass] [--alpha A] [--maximize]
 //!                   [--hidpi | --integer-scale]
 //! `--size` is the LOGICAL size. By default the client knows nothing about scale (a scale-1 buffer).
 //! `--hidpi` is a modern client: it reads `wp_fractional_scale_v1`, draws a buffer of
@@ -228,6 +228,8 @@ fn pixels(pattern: &str, w: usize, h: usize, k: f32, rgb: [u8; 3], alpha: f32) -
             let (lx, ly) = ((x as f32 / k) as usize, (y as f32 / k) as usize);
             let c: [u8; 4] = match pattern {
                 "checker" => { let v = if (lx / 40 + ly / 40) % 2 == 0 { 0 } else { 255 }; [v, v, v, 255] }
+                // 2x2-pixel black/white checker in BUFFER pixels: the highest frequency a blur can be asked to hide.
+                "fine" => { let v = if (x / 2 + y / 2) % 2 == 0 { 0 } else { 255 }; [v, v, v, 255] }
                 "split" => { let v = if x < w / 2 { 0 } else { 255 }; [v, v, v, 255] }
                 "bars" => { let b: [[u8; 3]; 4] = [[230, 30, 30], [30, 200, 60], [40, 70, 240], [250, 220, 20]]; let c = b[(lx / 50) % 4]; [c[2], c[1], c[0], 255] }
                 "glass" => {

@@ -8,8 +8,13 @@
 # defaults written here.
 #
 # Colours are Oklab [L, a, b] (L 0..1, a and b about -0.4..0.4). The compositor
-# converts them to sRGB on load. Blending itself is done on sRGB-encoded
-# values, not in linear light or in Oklab (see compositor/README.md).
+# converts them to linear light on load. Oklab is for authoring only: no shader
+# does arithmetic in it. Where each operation happens (decision 0010, section 1):
+#   blur, glass tint, luminance ceiling, edge highlight ... LINEAR light
+#   client window translucency over the scene ............ ENCODED (sRGB), on
+#                                                          purpose: client alpha is
+#                                                          authored for it
+#   the finished glass is encoded to sRGB where it meets the scene.
 
 [theme]
 name = "aurora-glass"
@@ -17,22 +22,66 @@ version = 1
 
 [glass]
 enabled = true
-# Dual-Kawase sampling offset multiplier (1.0 = the textbook kernel).
-# Visible blur extent is roughly blur_radius * 2^blur_passes pixels.
+# Dual-Kawase sampling offset multiplier (1.0 = the textbook kernel). WINDOW glass
+# only; chrome glass has its own, below. Window glass blurs from the half-resolution
+# copy of the scene, chrome glass from the quarter-resolution one (see [glass.chrome]).
 blur_radius = 2.0
-# Number of downsample steps (and the same number of upsample steps), 1..6.
-blur_passes = 3
+# Number of downsample steps (and the same number of upsample steps) per glass chain, 1..6.
+blur_passes = 2
 # Pixels. The glass layer is clipped to a rounded rectangle of the window.
 corner_radius = 12.0
+# Blur in linear light (an average of light). false averages sRGB-encoded values,
+# which is always too dark (black and white meet at code 128, not 188): kept only
+# for A/B comparison.
+linear_blur = true
+# Storage of the blur chain's intermediate targets, always holding sqrt(linear light):
+#   "rgb10" Abgr2101010, 4 bytes/px (needs GLES 3.0; on GLES 2 the chain falls back to
+#           8 bits and the compositor logs a warning)
+#   "fp16"  Abgr16161616f, 8 bytes/px: an A/B instrument
+#   "srgb8" Abgr8888 holding sRGB-encoded values, blurred as encoded: the pre-0010 look
+precision = "rgb10"
+# The scene is downsampled once (the "prepass") and every glass surface blurs from that copy,
+# so the cost of N surfaces is not N full-size chains. The prepass is redone only when a
+# surface lies within the blur's reach of something drawn since it ran, which is what lets glass
+# over glass, and the dock over a window, see what is under them. false redoes it for every
+# surface: slower, and identical pixels; for A/B and for testing the sharing.
+share_prepass = true
 
 [glass.tint]
 oklab = [0.80, -0.01, -0.04]
-strength = 0.22        # 0 = pure blur, 1 = flat colour
+# Mixed in LINEAR light. 0.10 is a starting point set for the linear mix (0.22 was
+# tuned for an encoded-space mix and is far too bright now), not a derived value.
+strength = 0.10        # 0 = pure blur, 1 = flat colour
 
 [glass.edge]
 oklab = [0.98, 0.0, 0.0]
 width = 1.5            # pixels, measured inward from the window edge
 strength = 0.75        # fades from top (full) to bottom (45%) of the window
+
+[glass.chrome]
+# Chrome glass sits under compositor-drawn text: the dock, the desktop menu, the
+# settings panel and the switcher's backdrop. Unlike window glass it has a dark tint and an
+# ENFORCED luminance ceiling, so that text on it keeps a contrast floor over ANY backdrop,
+# including a white one.
+#
+# The ceiling is a Reinhard roll-off of the backdrop's luminance in linear light, applied
+# before the tint:  Yb = dot(backdrop, (0.2126, 0.7152, 0.0722));  backdrop *= 1 / (1 + Yb / Ymax)
+# Scaling the linear triple keeps hue, and the result asymptotes to Ymax rather than flattening.
+# The worst-case glass luminance is  Ymax * (1 - strength) + Y_tint * strength  for every
+# possible backdrop, so the floor holds by construction:
+#   contrast floor = (Y_text + 0.05) / (Y_glass_max + 0.05)
+# With the values below  Y_glass_max = 0.16 * 0.55 + 0.055 * 0.45 = 0.1127, and the dock's
+# text (Oklab L 0.97, Y = 0.913) has a floor of 5.9:1, against WCAG 2's 4.5:1 for body text.
+# To choose Ymax for a floor R:  Ymax = ((Y_text + 0.05) / R - 0.05 - Y_tint * strength) / (1 - strength)
+# Replaced as a whole when set: give oklab and strength together.
+tint = { oklab = [0.38, -0.005, -0.020], strength = 0.45 }   # tint luminance 0.055, linear
+luminance_max = 0.16     # Ymax, linear light; 0 = no ceiling (then there is NO contrast guarantee)
+# Chrome blurs from the QUARTER-resolution copy of the scene, so with the same offset it has twice
+# window glass's sigma: chrome's job is to suppress the backdrop, not to show it.
+# Kernel width (calibrated against fx/blur.rs, +-7%; docs/visual-system.md section 3.2):
+#   sigma ~= 0.75 * blur_radius * 2^blur_passes * 2^level   full-resolution device pixels
+# where level is 1 for window glass (half) and 2 for chrome (quarter). It is multiplied by the output scale.
+blur_radius = 2.0
 
 [switcher]
 layout = "flip"        # "grid" or "flip"

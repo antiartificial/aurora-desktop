@@ -65,6 +65,12 @@ pub struct Aurora {
     pub chrome_buttons: std::collections::HashSet<u32>,
     /// Keys whose press the shell's chrome took (menu, settings); their release is taken too.
     pub chrome_keys: std::collections::HashSet<u32>,
+    /// `--frame-stats PATH`: per-frame timings, when asked for.
+    pub stats: Option<crate::stats::Stats>,
+    /// Frames rendered so far (the headless timer and the winit redraw both count).
+    pub frame: u64,
+    /// `--test-input frame N` callers: their reply is held until frame `.1` has been rendered.
+    pub frame_waiters: Vec<(std::os::unix::net::UnixStream, u64)>,
 }
 
 impl Aurora {
@@ -149,6 +155,9 @@ impl Aurora {
             last_keysym: None,
             chrome_buttons: Default::default(),
             chrome_keys: Default::default(),
+            stats: None,
+            frame: 0,
+            frame_waiters: vec![],
         }
     }
 

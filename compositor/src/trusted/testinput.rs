@@ -2,7 +2,10 @@
 //!
 //! `--test-input PATH` opens a Unix socket (0600, same euid only) taking one
 //! command per line: `key <name>` (press then release), `down <name>`,
-//! `up <name>`, `pointer X Y` (logical), `click`, `rclick` (right button), `move N X Y`. Events enter through `Aurora::keyboard_input`, the same function
+//! `up <name>`, `pointer X Y` (logical), `click`, `rclick` (right button), `move N X Y`,
+//! `frame N` (the reply is held until N more frames have been rendered, so a test
+//! can step the compositor deterministically; see `Aurora::frame_waiters`) and
+//! `stats [N]` (the `--frame-stats` summary over the last N frames; reads, injects nothing). Events enter through `Aurora::keyboard_input`, the same function
 //! real keyboards use, so an injected key meets the same overlay routing.
 //!
 //! Why it is not a way to approve a prompt on a real machine: it exists only
@@ -92,6 +95,17 @@ fn serve(h: &LoopHandle<'static, Aurora>, s: UnixStream) {
             match r.read_line(&mut line) {
                 Ok(0) => return Ok(PostAction::Remove),
                 Ok(_) if !line.ends_with('\n') => continue,
+                Ok(_) if line.trim().starts_with("frame ") => {
+                    // `frame N`: answer after N more frames. The caller is synchronous, so
+                    // nothing else is written to this stream in the meantime.
+                    let n = line.trim()["frame ".len()..].trim().parse::<u64>().ok().filter(|n| *n <= 100_000);
+                    match (n, r.get_ref().try_clone()) {
+                        (Some(0), _) => { let _ = writeln!(r.get_mut(), "ok"); }
+                        (Some(n), Ok(c)) => state.frame_waiters.push((c, state.frame + n)),
+                        _ => { let _ = writeln!(r.get_mut(), "err bad frame count (want 0..=100000)"); }
+                    }
+                    line.clear();
+                }
                 Ok(_) => {
                     let ans = run(state, line.trim());
                     line.clear();
@@ -114,6 +128,13 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         return match (w, v.as_slice()) {
             (Some(w), [_, x, y]) => { state.space.relocate_element(&w, (*x, *y)); "ok".into() }
             _ => "err bad move".into(),
+        };
+    }
+    if cmd == "stats" || cmd.starts_with("stats ") {
+        let last = cmd["stats".len()..].trim().parse::<usize>().unwrap_or(0);
+        return match &state.stats {
+            Some(st) => format!("ok {}", st.summary(last)),
+            None => "err no --frame-stats".into(),
         };
     }
     if cmd.starts_with("pointer ") {

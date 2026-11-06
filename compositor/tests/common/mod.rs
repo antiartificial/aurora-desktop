@@ -210,11 +210,11 @@ impl Theme {
         // error. Drop those sections from the copy: the parser's defaults are the same.
         let mut keep = true;
         let text: String = fs::read_to_string(src.join("aurora-glass.toml")).unwrap().lines().filter(|l| {
-            if l.starts_with('[') { keep = !["[background]", "[desktop]", "[dock]", "[font]", "[input]", "[output]"].contains(&l.trim()); }
+            if l.starts_with('[') { keep = !["[background]", "[desktop]", "[dock]", "[font]", "[input]", "[output]", "[glass.chrome]"].contains(&l.trim()); }
             keep
         }).map(|l| format!("{l}\n")).collect();
         fs::write(dir.path().join("aurora-glass.toml"), text).unwrap();
-        for f in ["down", "up", "glass", "card"] {
+        for f in ["down", "up", "glass", "card", "down0"] {
             fs::copy(src.join(format!("shaders/{f}.frag")), dir.path().join(format!("shaders/{f}.frag"))).unwrap();
         }
         Theme { dir }
@@ -291,4 +291,67 @@ impl Img {
         }
         b
     }
+}
+
+/// sRGB code (0..=255) to linear light, IEC 61966-2-1.
+pub fn srgb_to_linear(v: u8) -> f64 {
+    let c = v as f64 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+impl Img {
+    /// WCAG 2 relative luminance: sRGB decode, then 0.2126 R + 0.7152 G + 0.0722 B.
+    pub fn luminance(&self, x: usize, y: usize) -> f64 {
+        let p = self.at(x, y);
+        0.2126 * srgb_to_linear(p[0]) + 0.7152 * srgb_to_linear(p[1]) + 0.0722 * srgb_to_linear(p[2])
+    }
+
+    /// WCAG 2 contrast ratio between two pixels: (Lhi + 0.05) / (Llo + 0.05).
+    pub fn contrast(&self, a: (usize, usize), b: (usize, usize)) -> f64 {
+        let (la, lb) = (self.luminance(a.0, a.1), self.luminance(b.0, b.1));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// Longest run of byte-identical pixels along the straight scan `from..=to`
+    /// (horizontal, vertical or any Bresenham line), per channel: the run of
+    /// equal values in that channel alone, which is what a visible band is.
+    pub fn max_run(&self, from: (usize, usize), to: (usize, usize)) -> [usize; 3] {
+        let (mut x, mut y) = (from.0 as i64, from.1 as i64);
+        let (dx, dy) = ((to.0 as i64 - x).abs(), -(to.1 as i64 - y).abs());
+        let (sx, sy) = (if from.0 < to.0 { 1 } else { -1 }, if from.1 < to.1 { 1 } else { -1 });
+        let mut err = dx + dy;
+        let (mut best, mut run, mut prev) = ([0usize; 3], [0usize; 3], None::<[u8; 3]>);
+        loop {
+            let p = self.at(x as usize, y as usize);
+            for c in 0..3 {
+                run[c] = if prev.is_some_and(|q| q[c] == p[c]) { run[c] + 1 } else { 1 };
+                best[c] = best[c].max(run[c]);
+            }
+            prev = Some(p);
+            if (x, y) == (to.0 as i64, to.1 as i64) { break; }
+            let e2 = 2 * err;
+            if e2 >= dy { err += dy; x += sx; }
+            if e2 <= dx { err += dx; y += sy; }
+        }
+        best
+    }
+}
+
+impl Comp {
+    /// Hold until the compositor has rendered `n` more frames (`--test-input frame N`).
+    pub fn step_frames(&self, n: u64) { self.inject(&format!("frame {n}")); }
+
+    /// The `--frame-stats` summary over the last `last` frames (0 = all). Needs `--frame-stats PATH` in `extra`.
+    pub fn stats(&self, last: usize) -> String {
+        let r = self.inject_reply(&format!("stats {last}"));
+        assert!(r.starts_with("ok "), "stats: {r}");
+        r
+    }
+}
+
+/// `key=` value of a `name p50=.. p95=.. ...` group in a stats summary line.
+pub fn stat(summary: &str, group: &str, key: &str) -> f64 {
+    let g = summary.split(" | ").find(|g| g.trim_start().starts_with(group)).unwrap_or_else(|| panic!("no {group} in {summary}"));
+    let v = g.split_whitespace().find_map(|t| t.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key} in {g}"));
+    v.parse().unwrap()
 }

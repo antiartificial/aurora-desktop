@@ -145,11 +145,14 @@ pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, scale:
     fx.switcher.order.retain(|w| w.alive());
     if fx.switcher.order.is_empty() { fx.switcher.open = false; return Ok(()); }
     fx.switcher.sel = fx.switcher.sel.min(fx.switcher.order.len() - 1);
-    let (theme, progs) = (fx.theme.clone(), fx.progs.clone());
-    let [Some(down), Some(up), _, Some(card), _] = &progs else { return Err("shaders missing".into()) };
+    let (theme, progs, linear) = (fx.theme.clone(), fx.progs.clone(), fx.linear());
+    let [Some(down), Some(up), Some(glass_p), Some(card), _, Some(down0)] = &progs else { return Err("shaders missing".into()) };
     let full = Rectangle::<i32, Physical>::from_size(size);
     let s = fx.scratch.as_mut().unwrap();
-    blur::run(r, s, down, up, &theme.glass, size)?;
+    // The backdrop is chrome glass over the whole screen: blurred from the quarter copy, with the
+    // chrome ceiling and tint, then dimmed.
+    let radius = theme.glass.chrome.blur_radius * scale as f32;
+    blur::backdrop(r, s, &blur::Progs { down0, down, up }, blur::Kind::Chrome, (0, 0, size.w, size.h), radius, linear, &mut fx.phases)?;
     let order = fx.switcher.order.clone();
     let mut sizes = vec![];
     for (i, w) in order.iter().enumerate() {
@@ -175,8 +178,10 @@ pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, scale:
     let s = fx.scratch.as_mut().unwrap();
     let mut t = r.bind(&mut s.scene)?;
     let mut f = r.render(&mut t, size, Transform::Normal)?;
-    let fsrc = Rectangle::<f64, BufferCoords>::from_size((size.w as f64, size.h as f64).into());
-    f.render_texture_from_to(&s.up[0], fsrc, full, &[full], &[], Transform::Normal, 1.0, None, &[])?;
+    let mut g = super::chrome_glass(&theme.glass);
+    g.corner_radius = 0.0;
+    g.edge.strength = 0.0;
+    super::draw_glass(&mut f, glass_p, &s.chrome.up[0], full, size, &g, theme.glass.chrome.luminance_max, linear)?;
     f.draw_solid(full, &[full], Color32F::new(0.0, 0.0, 0.0, theme.switcher.backdrop_dim))?;
     for i in idx {
         let (p, (w, h)) = (poses[i], sizes[i]);

@@ -2,7 +2,7 @@
 //! frames from it, then send frame callbacks. Shared by the winit and headless
 //! backends so both go through the same capture path.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::{
     backend::renderer::{
@@ -14,7 +14,7 @@ use smithay::{
     utils::{Physical, Size},
 };
 
-use crate::Aurora;
+use crate::{Aurora, stats::{Phase, Sample, ms}};
 
 /// Background colour behind windows.
 pub const CLEAR: [f32; 4] = [0.1, 0.1, 0.1, 1.0];
@@ -28,6 +28,8 @@ pub fn render_and_capture(
     tracker: &mut OutputDamageTracker,
     size: Size<i32, Physical>,
 ) {
+    let frame_start = Instant::now();
+    let mut sample = Sample::default();
     state.fx.poll(renderer);
     state.sync_scale(output);
     state.shell.sync(&state.fx.theme);
@@ -37,7 +39,18 @@ pub fn render_and_capture(
     }
     let mut done = false;
     if state.fx.active(&state.shell) {
-        match state.fx.render_scene(renderer, framebuffer, output, size, &state.space, &mut state.shell) {
+        state.fx.phases.begin();
+        let t = Instant::now();
+        let r = state.fx.render_scene(renderer, framebuffer, output, size, &state.space, &mut state.shell);
+        if state.stats.is_some() {
+            let p = &state.fx.phases;
+            sample = Sample {
+                effects: ms(t.elapsed()), scene: p.ms(Phase::Scene), prepass: p.ms(Phase::Prepass), chain: p.ms(Phase::Chain),
+                composite: p.ms(Phase::Composite), switcher: p.ms(Phase::Switcher), blit: p.ms(Phase::Blit),
+                surfaces: p.surfaces, prepasses: p.prepasses, fx: r.is_ok(), ..Sample::default()
+            };
+        }
+        match r {
             Ok(()) => done = true,
             Err(e) => tracing::error!("effects pipeline failed, drawing flat this frame: {e}"),
         }
@@ -60,10 +73,19 @@ pub fn render_and_capture(
     state.serve_pending(renderer, framebuffer, size, state.start_time.elapsed());
     // The trusted overlay goes on last, after captures were served from the
     // framebuffer above, so no capture can contain it.
+    let overlay_start = Instant::now();
     match crate::trusted::draw::draw_overlay(&mut state.trusted, &mut state.shell.text, renderer, framebuffer, output, size) {
         Ok(true) => dump_once(state, renderer, framebuffer, size),
         Ok(false) => {}
         Err(e) => tracing::error!("trusted overlay draw failed: {e}"),
+    }
+    if state.stats.is_some() {
+        sample.overlay = ms(overlay_start.elapsed());
+        sample.total = ms(frame_start.elapsed());
+        let frame = state.frame;
+        if let Some(st) = state.stats.as_mut() {
+            st.push(frame, sample);
+        }
     }
 }
 
@@ -109,6 +131,14 @@ fn dump_once(state: &mut Aurora, renderer: &mut GlesRenderer, framebuffer: &Gles
 
 /// Frame callbacks and housekeeping after a frame was presented.
 pub fn after_frame(state: &mut Aurora, output: &Output) {
+    state.frame += 1;
+    let frame = state.frame;
+    state.frame_waiters.retain_mut(|(s, until)| {
+        if frame < *until { return true; }
+        use std::io::Write;
+        let _ = writeln!(s, "ok");
+        false
+    });
     let now: Duration = state.start_time.elapsed();
     state.space.elements().for_each(|window| {
         window.send_frame(output, now, Some(Duration::ZERO), |_, _| Some(output.clone()))
