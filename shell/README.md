@@ -123,7 +123,7 @@ destructive/external marking, watch formatting, `-h`. `launcher/approvals_test.g
 - No graphical launcher: no layer-shell window, fuzzy search or keyboard-driven UI.
   It is a terminal prompt.
 - No trusted-path picker (see Powerbox v0); `chain` has no `--pick`.
-- No trusted approval UI: approval is a terminal prompt (see Approvals). The compositor-drawn one is Phase 10.
+- Approval is a terminal prompt here (see Approvals); the compositor-drawn prompt exists (`compositor/README.md`) and is preferred by the controller when reachable, but this launcher does not draw it and has no trusted picker.
 - No recipes or saved chains; chains are exactly two verbs, no general pipeline.
 - No argument validation beyond type coercion (no enums, ranges, path pickers).
 - Chains are not atomic: if step 2 fails, step 1's output stays.

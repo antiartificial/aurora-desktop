@@ -50,6 +50,7 @@ pub struct Aurora {
     pub pending_frames: Vec<(SessionRef, Frame)>,
 
     pub seat: Seat<Self>,
+    pub trusted: crate::trusted::Trusted,
 }
 
 impl Aurora {
@@ -123,6 +124,7 @@ impl Aurora {
             capture_sessions: Vec::new(),
             pending_frames: Vec::new(),
             seat,
+            trusted: Default::default(),
         }
     }
 

@@ -21,3 +21,17 @@ func BusSocket() string {
 
 // Service is the bus service name the registry registers.
 const Service = "registry"
+
+// TrustedSocket returns the compositor's trusted-path socket: where the
+// controller asks the compositor to draw an approval prompt. Not the Wayland
+// socket. Same default the compositor binds.
+func TrustedSocket() string {
+	if s := os.Getenv("AURORA_TRUSTED_SOCK"); s != "" {
+		return s
+	}
+	rt := os.Getenv("XDG_RUNTIME_DIR")
+	if rt == "" {
+		rt = os.TempDir()
+	}
+	return filepath.Join(rt, "aurora-trusted.sock")
+}

@@ -46,3 +46,10 @@ Options not yet tried:
   capture path can be built in deliberately.
 
 The table above is the evidence of record until one of those lands.
+
+## Trusted-path overlay
+
+- `trusted-overlay-compositor-frame.png`: the compositor's own final frame (written by `aurora-compositor --dump-overlay`, not via any client) with an approval overlay up over a client window.
+- `trusted-overlay-client-capture.png`: a capture taken over `ext-image-copy-capture-v1` at the same moment. It shows the client window and no overlay and no dimming.
+
+Both come from `controller/demo-trusted.sh` against a headless compositor (1280x800); see `compositor/README.md`, "Trusted path".

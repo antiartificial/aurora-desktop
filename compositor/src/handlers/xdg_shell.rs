@@ -32,8 +32,14 @@ impl XdgShellHandler for Aurora {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let wl = surface.wl_surface().clone();
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window, (0, 0), false);
+        // A new window takes keyboard focus, except while the trusted overlay
+        // is up: then it must not receive keys until the overlay is gone.
+        if !self.overlay_up() {
+            self.seat.get_keyboard().unwrap().set_focus(self, Some(wl), smithay::utils::SERIAL_COUNTER.next_serial());
+        }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

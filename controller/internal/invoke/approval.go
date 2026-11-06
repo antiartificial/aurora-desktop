@@ -55,6 +55,9 @@ type Approver struct {
 	// AutoApprove allows every request immediately. A test and scripting
 	// affordance that defeats the point of approval: it is logged loudly.
 	AutoApprove bool
+	// Compositor, if set, is tried first: the compositor draws the prompt.
+	// When it cannot be reached or refuses us, the bus route below is used.
+	Compositor *CompositorPrompt
 
 	mu      sync.Mutex
 	pending map[string]chan verdict
@@ -155,9 +158,32 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 		iv.logf("WARNING: AUTO-APPROVED (--auto-approve): %s verb %s of %s on %v, args %s; no human was asked", verb.Effect, name, app.ID(), grants, argsJSON)
 		return &prov.Approval{Required: true, Route: prov.RouteAutoApprove, Decision: Allow, RequestID: id, By: "controllerd", At: now()}, nil
 	}
+	wait := ap.timeout()
+	if ap.Compositor != nil {
+		req.RequestID, req.TimeoutSeconds = newID(), int(wait.Round(time.Second)/time.Second)
+		iv.logf("approval requested %s on the compositor: %s verb %s of %s on %v; waiting up to %s", req.RequestID, verb.Effect, name, app.ID(), grants, wait)
+		ans, err := ap.Compositor.Ask(ctx, req, wait)
+		switch {
+		case ctx.Err() != nil:
+			iv.publishDecided(req.RequestID, verdict{Deny, "compositor"}, "canceled", prov.RouteCompositor)
+			return nil, fail("approval_denied", "%s was not approved: the invoke was canceled while waiting", "request "+req.RequestID+"; nothing was run", name)
+		case err != nil:
+			iv.logf("compositor prompt unavailable (%v); falling back to the bus route (approval.requested / approval.decide@v1)", err)
+		case ans.Decision != Allow:
+			reason := ans.Reason
+			iv.publishDecided(req.RequestID, verdict{Deny, "compositor"}, reason, prov.RouteCompositor)
+			if reason == "timeout" {
+				return nil, fail("approval_timeout", "%s was not approved: no decision within %s, so the answer is deny", "request "+req.RequestID+"; nothing was run", name, wait)
+			}
+			return nil, fail("approval_denied", "%s was denied by the compositor prompt (key %q)", "request "+req.RequestID+"; nothing was run", name, ans.Key)
+		default:
+			iv.publishDecided(req.RequestID, verdict{Allow, "compositor"}, "", prov.RouteCompositor)
+			iv.logf("approval %s: allowed at the compositor prompt (key %q)", req.RequestID, ans.Key)
+			return compositorApproval(req.RequestID, ans, now()), nil
+		}
+	}
 	id, ch := ap.open()
 	defer ap.forget(id)
-	wait := ap.timeout()
 	req.RequestID, req.TimeoutSeconds = id, int(wait.Round(time.Second)/time.Second)
 	req.ExpiresAt = time.Now().Add(wait).UTC().Format(time.RFC3339)
 	b, _ := json.Marshal(req)
@@ -179,7 +205,7 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	case <-ctx.Done():
 		v.decision, reason = Deny, "canceled"
 	}
-	iv.publishDecided(id, v, reason)
+	iv.publishDecided(id, v, reason, prov.RouteInteractive)
 	switch {
 	case reason == "timeout":
 		return nil, fail("approval_timeout", "%s was not approved: no decision within %s, so the answer is deny", "request "+id+"; nothing was run", name, wait)
@@ -192,11 +218,11 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	return &prov.Approval{Required: true, Route: prov.RouteInteractive, Decision: Allow, RequestID: id, By: v.by, At: now()}, nil
 }
 
-func (iv *Invoker) publishDecided(id string, v verdict, reason string) {
+func (iv *Invoker) publishDecided(id string, v verdict, reason, route string) {
 	if iv.Publish == nil {
 		return
 	}
-	b, _ := json.Marshal(map[string]string{"request_id": id, "decision": v.decision, "by": v.by, "reason": reason})
+	b, _ := json.Marshal(map[string]string{"request_id": id, "decision": v.decision, "by": v.by, "reason": reason, "route": route})
 	if err := iv.Publish(TopicDecided, b); err != nil {
 		iv.logf("WARNING: could not publish %s: %v", TopicDecided, err)
 	}

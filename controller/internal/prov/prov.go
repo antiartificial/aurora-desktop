@@ -41,6 +41,11 @@ const (
 	// RouteAutoApprove: controllerd --auto-approve. A test affordance that
 	// defeats the point of approval.
 	RouteAutoApprove = "auto-approve"
+	// RouteCompositor: the compositor drew the prompt itself and read the
+	// keystroke (Approval.Key). Preferred when the compositor is reachable;
+	// the others are fallbacks. See compositor/README.md for what that does
+	// and does not authenticate.
+	RouteCompositor = "compositor"
 )
 
 // Approval records whether a destructive or external verb needed approval and
@@ -51,8 +56,9 @@ type Approval struct {
 	Route     string `json:"route"`
 	Decision  string `json:"decision,omitempty"` // "allow" when Required
 	RequestID string `json:"request_id,omitempty"`
-	By        string `json:"by,omitempty"` // bus identity that decided; "controllerd" for auto-approve
-	At        string `json:"at"`           // RFC3339Nano, when decided (or when the invoke was checked)
+	By        string `json:"by,omitempty"`  // bus identity that decided; "controllerd" for auto-approve; "compositor" for route compositor
+	Key       string `json:"key,omitempty"` // route compositor: the keystroke the compositor read
+	At        string `json:"at"`            // RFC3339Nano, when decided (or when the invoke was checked)
 }
 
 // Grant is one filesystem grant given to the app's domain for one invoke.

@@ -11,6 +11,10 @@ path = "src/main.rs"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 bitflags = "2.2.1"
 tracing = "0.1"
+serde_json = "1.0.154"
+serde = { version = "1.0.229", features = ["derive"] }
+png = "0.17"
+libc = "0.2.191"
 
 # Pinned to the commit of the clone at ~/.cache/aurora/smithay (harness/nested-up
 # uses the same SMITHAY_REV). Cargo.lock records it too.
@@ -19,3 +23,11 @@ git = "https://github.com/Smithay/smithay.git"
 rev = "65aa86fa5236e41775c313408102a5d5c2d1e2ca"
 default-features = false
 features = ["backend_winit", "wayland_frontend", "desktop"]
+
+[dev-dependencies]
+memmap2 = "0.9"
+png = "0.17"
+serde_json = "1.0.154"
+tempfile = "3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

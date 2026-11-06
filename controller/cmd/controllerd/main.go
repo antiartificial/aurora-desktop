@@ -35,6 +35,8 @@ func main() {
 	reqPB := fs.Bool("require-powerbox", false, "refuse any grant that is neither ambient nor backed by a valid powerbox ticket (bare gesture grants are rejected)")
 	keyPath := fs.String("powerbox-key", ticket.KeyPath(), "shared key file for powerbox tickets (env AURORA_POWERBOX_KEY), created 0600 if missing")
 	autoApprove := fs.Bool("auto-approve", false, "TEST AFFORDANCE, defeats approval: allow every destructive/external invoke on a non-ambient grant without asking anyone (logged loudly each time)")
+	compSock := fs.String("compositor-socket", config.TrustedSocket(), "compositor trusted-path socket (env AURORA_TRUSTED_SOCK): approvals are drawn by the compositor when it answers here, else they fall back to the bus route")
+	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
@@ -76,6 +78,14 @@ func main() {
 	}
 
 	approver := &invoke.Approver{Timeout: *apprTimeout, AutoApprove: *autoApprove}
+	if !*noComp {
+		approver.Compositor = &invoke.CompositorPrompt{Socket: *compSock}
+		if _, err := os.Stat(*compSock); err != nil {
+			log.Printf("compositor trusted socket %s not present: approvals will use the bus route until it appears (each request tries the compositor first)", *compSock)
+		} else {
+			log.Printf("approvals are drawn by the compositor via %s when it answers; otherwise the bus route", *compSock)
+		}
+	}
 	if *autoApprove {
 		log.Printf("WARNING: --auto-approve: destructive and external verbs on non-ambient grants will be APPROVED WITHOUT ASKING. This is a test affordance and defeats the point of approval.")
 	} else {

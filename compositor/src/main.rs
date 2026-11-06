@@ -8,6 +8,7 @@ mod headless;
 mod render;
 mod input;
 mod state;
+mod trusted;
 mod winit;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
@@ -22,8 +23,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = Aurora::new(&mut event_loop, display);
 
+    let args = parse_args();
+    if args.test_input.is_some() && args.headless.is_none() {
+        return Err("--test-input is a test affordance that exists only with --headless (no input device); refusing".into());
+    }
+    state.trusted.dump_path = args.dump_overlay.clone();
+    if let Some(uids) = args.trusted_uids.clone() {
+        state.trusted.allow.uids = uids;
+    }
+    state.trusted.allow.deny_prefixes = args.deny_cgroups.clone();
+    let tsock = args.trusted_socket.clone().unwrap_or_else(default_trusted_socket);
+    match trusted::socket::listen(&event_loop.handle(), &tsock) {
+        Ok(()) => println!(
+            "aurora-compositor: trusted socket {} (uids {:?}, refusing peers in cgroup component {:?})",
+            tsock.display(), state.trusted.allow.uids, state.trusted.allow.deny_components
+        ),
+        Err(e) => eprintln!("aurora-compositor: WARNING: no trusted socket, approvals cannot be drawn: {e}"),
+    }
+    if let Some(p) = &args.test_input {
+        trusted::testinput::listen(&event_loop.handle(), p)?;
+        eprintln!("aurora-compositor: WARNING: --test-input {}: keyboard injection ENABLED (headless only; no real input device exists in this process)", p.display());
+    }
+    if let Some(p) = &args.dump_overlay {
+        eprintln!("aurora-compositor: WARNING: --dump-overlay {}: the overlay will be written to a file (demo/test only)", p.display());
+    }
+
     // Open a Wayland/X11 window for our nested compositor
-    match parse_args().headless {
+    match args.headless {
         Some((w, h)) => crate::headless::init_headless(&mut event_loop, &mut state, w, h)?,
         None => crate::winit::init_winit(&mut event_loop, &mut state)?,
     }
@@ -50,9 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn init_logging() {
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt().with_writer(std::io::stderr).with_env_filter(env_filter).init();
     } else {
-        tracing_subscriber::fmt().init();
+        tracing_subscriber::fmt().with_writer(std::io::stderr).init();
     }
 }
 
@@ -60,14 +86,35 @@ struct Args {
     /// `--headless[=WxH]`: no host window; offscreen output of this size.
     headless: Option<(i32, i32)>,
     command: Option<String>,
+    trusted_socket: Option<std::path::PathBuf>,
+    trusted_uids: Option<Vec<u32>>,
+    deny_cgroups: Vec<String>,
+    test_input: Option<std::path::PathBuf>,
+    dump_overlay: Option<std::path::PathBuf>,
+}
+
+fn default_trusted_socket() -> std::path::PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| "/tmp".into());
+    dir.join("aurora-trusted.sock")
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { headless: None, command: None };
+    let mut args = Args {
+        headless: None, command: None, trusted_socket: None, trusted_uids: None,
+        deny_cgroups: vec![], test_input: None, dump_overlay: None,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "-c" | "--command" => args.command = it.next(),
+            "--trusted-socket" => args.trusted_socket = it.next().map(Into::into),
+            "--trusted-uid" => {
+                let uid = it.next().and_then(|v| v.parse().ok()).expect("--trusted-uid wants a number");
+                args.trusted_uids.get_or_insert_with(Vec::new).push(uid);
+            }
+            "--deny-cgroup" => args.deny_cgroups.extend(it.next()),
+            "--test-input" => args.test_input = it.next().map(Into::into),
+            "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
             "--headless" => args.headless = Some((1280, 800)),
             s if s.starts_with("--headless=") => {
                 let dims = s["--headless=".len()..].split_once('x');

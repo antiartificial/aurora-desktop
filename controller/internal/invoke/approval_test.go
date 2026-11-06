@@ -1,8 +1,11 @@
 package invoke
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,3 +208,126 @@ func TestNonDestructiveInvokeUnaffected(t *testing.T) {
 }
 
 func testCtx() context.Context { return context.Background() }
+
+// fakeCompositor listens like the compositor's trusted socket and answers
+// each request with reply (a JSON line); got receives the decoded requests.
+func fakeCompositor(t *testing.T, reply string) (string, chan map[string]any) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "trusted.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	got := make(chan map[string]any, 4)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				line, _ := bufio.NewReader(c).ReadBytes('\n')
+				var m map[string]any
+				json.Unmarshal(line, &m)
+				got <- m
+				fmt.Fprintln(c, reply)
+			}()
+		}
+	}()
+	return path, got
+}
+
+func TestCompositorRouteAllowRecordsRouteAndKey(t *testing.T) {
+	inv, dir, _, reqs, recs := withApprover(t)
+	sock, got := fakeCompositor(t, `{"v":1,"decision":"allow","key":"a","reason":"key"}`)
+	inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+	req := gesture(t, dir)
+	res, e := inv.Invoke(testCtx(), req)
+	if e != nil {
+		t.Fatal(e, e.Detail)
+	}
+	m := <-got
+	if m["op"] != "approve" || m["verb"] != "delete@v1" || m["effect"] != "destructive" || m["app"] != "org.aurora.demo" || m["request_id"] == "" {
+		t.Fatalf("compositor was shown %+v", m)
+	}
+	if gs, _ := m["grants"].([]any); len(gs) != 2 {
+		t.Fatalf("grants shown: %+v", m["grants"])
+	}
+	a := res.Approval
+	if a == nil || a.Route != prov.RouteCompositor || a.Decision != "allow" || a.By != "compositor" || a.Key != "a" || a.RequestID != m["request_id"] {
+		t.Fatalf("approval %+v", a)
+	}
+	if got := (*recs)[0].Approval; got == nil || got.Route != "compositor" || got.Key != "a" {
+		t.Fatalf("provenance %+v", got)
+	}
+	if _, err := os.Stat(req.Output); err != nil {
+		t.Fatalf("allowed verb produced no output: %v", err)
+	}
+	select {
+	case r := <-reqs:
+		t.Fatalf("the bus route was used too: %+v", r)
+	default:
+	}
+}
+
+func TestCompositorRouteDenyAndTimeoutRunNothing(t *testing.T) {
+	for reply, code := range map[string]string{
+		`{"v":1,"decision":"deny","key":"Escape","reason":"key"}`: "approval_denied",
+		`{"v":1,"decision":"deny","key":"","reason":"timeout"}`:   "approval_timeout",
+	} {
+		inv, dir, _, reqs, recs := withApprover(t)
+		sock, _ := fakeCompositor(t, reply)
+		inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+		req := gesture(t, dir)
+		_, e := inv.Invoke(testCtx(), req)
+		if e == nil || e.Code != code {
+			t.Fatalf("%s: got %+v", reply, e)
+		}
+		if _, err := os.Stat(req.Output); err == nil {
+			t.Fatal("denied invoke left an output file")
+		}
+		if len(*recs) != 0 || len(reqs) != 0 {
+			t.Fatalf("denied invoke published: %+v, bus route used: %d", *recs, len(reqs))
+		}
+	}
+}
+
+func TestFallsBackToBusRouteWhenCompositorAbsentOrRefuses(t *testing.T) {
+	refuse, _ := fakeCompositor(t, `{"v":1,"error":"uid 1000 is not allowed to request approvals"}`)
+	for name, sock := range map[string]string{
+		"absent":  filepath.Join(t.TempDir(), "nothing-here.sock"),
+		"refused": refuse,
+	} {
+		inv, dir, _, reqs, recs := withApprover(t)
+		inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+		var logs []string
+		inv.Logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+		done := invokeAsync(inv, gesture(t, dir))
+		ar := waitReq(t, reqs)
+		if err := inv.Approvals.Decide(ar.RequestID, "allow", "uid1000:aurora"); err != nil {
+			t.Fatal(err)
+		}
+		o := <-done
+		if o.err != nil {
+			t.Fatalf("%s: %v %v", name, o.err, o.err.Detail)
+		}
+		if a := o.res.Approval; a == nil || a.Route != prov.RouteInteractive || a.Key != "" {
+			t.Fatalf("%s: approval %+v", name, a)
+		}
+		if (*recs)[0].Approval.Route != prov.RouteInteractive || !strings.Contains(strings.Join(logs, "\n"), "falling back to the bus route") {
+			t.Fatalf("%s: record %+v, logs %q", name, (*recs)[0].Approval, logs)
+		}
+	}
+}
+
+func TestCompositorRouteDoesNotBypassAmbientOrAutoApprove(t *testing.T) {
+	inv, _, pics, _, _ := withApprover(t)
+	sock, got := fakeCompositor(t, `{"v":1,"decision":"deny","key":"d","reason":"key"}`)
+	inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+	res, e := inv.Invoke(testCtx(), Request{App: "org.aurora.demo", Verb: "delete@v1", Input: putPNG(t, pics, "in.png"), Output: filepath.Join(pics, "gone.png")})
+	if e != nil || res.Approval.Route != prov.RouteAmbient || len(got) != 0 {
+		t.Fatalf("ambient grants must not prompt: %+v %+v", e, res)
+	}
+}

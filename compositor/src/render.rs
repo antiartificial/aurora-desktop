@@ -41,6 +41,25 @@ pub fn render_and_capture(
     )
     .unwrap();
     state.serve_pending(renderer, framebuffer, size, state.start_time.elapsed());
+    // The trusted overlay goes on last, after captures were served from the
+    // framebuffer above, so no capture can contain it.
+    match crate::trusted::draw::draw_overlay(&mut state.trusted, renderer, framebuffer, output, size) {
+        Ok(true) => dump_once(state, renderer, framebuffer, size),
+        Ok(false) => {}
+        Err(e) => tracing::error!("trusted overlay draw failed: {e}"),
+    }
+}
+
+/// `--dump-overlay`: write the compositor's own frame once per request.
+fn dump_once(state: &mut Aurora, renderer: &mut GlesRenderer, framebuffer: &GlesTarget<'_>, size: Size<i32, Physical>) {
+    let (Some(path), Some(head)) = (state.trusted.dump_path.clone(), state.trusted.queue.front()) else { return };
+    if state.trusted.dumped == Some(head.id) {
+        return;
+    }
+    state.trusted.dumped = Some(head.id);
+    if let Err(e) = crate::trusted::dump::write_frame(renderer, framebuffer, size, &path) {
+        tracing::error!("overlay dump failed: {e}");
+    }
 }
 
 /// Frame callbacks and housekeeping after a frame was presented.
@@ -50,6 +69,7 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
         window.send_frame(output, now, Some(Duration::ZERO), |_, _| Some(output.clone()))
     });
     state.space.refresh();
+    state.trusted_tick();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();
 }

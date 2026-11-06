@@ -51,13 +51,20 @@ A decision is `approval.decide@v1 {request_id, decision}` to the `registry` serv
 - The decision is bound to a random request id, not to what the user was shown or to their input. Nothing proves a human pressed a key.
 - `registry.invoke@v1` itself has no caller attribution, so a request is not tied to who asked.
 
-Still needs the compositor: drawing the approval from the real verb and arguments on a surface no client can write to, and attributing the answer to the user's input events rather than to a socket peer.
+Amendment, the compositor now exists: `controllerd` asks the compositor first. The prompt is drawn by the compositor from the real verb, grants and args above all clients, cannot be captured by clients, and the answer is a keystroke the compositor read while the focused client received none; the record says `route: compositor` and which key. The bus route above is the fallback when the compositor's trusted socket is absent or refuses the controller, and is unchanged. See decision 0003's amendment and `compositor/README.md`.
+
+What the compositor route still does not give, stated so it is not read as the full Phase 10 property:
+- The controller does not authenticate the compositor: a same-uid process that binds the trusted socket path first can answer `allow`, and the answer is not signed or bound to what was displayed.
+- The compositor does not authenticate what it displays: any same-uid process outside a domain cgroup can request a prompt with arbitrary text (it cannot answer one).
+- A look-alike prompt drawn by a client is not prevented, and the user has no secret or secure-attention key to tell them apart.
+- A keystroke is evidence of the backend's key event, not of a human. Only the headless backend, with injected keys, was run; the winit path was not.
+- The picker (powerbox) is still a terminal program, not drawn on the trusted path.
 
 **Not decided.** Whether a powerbox ticket should count as approval for non-destructive-but-external verbs, and whether approvals can be remembered (none are; each invoke asks).
 
 ## Open questions
 
-- **Trusted approval UI.** Mechanism done (blocking, timeout, decider check, record); the compositor-drawn, user-attributed prompt is Phase 10.
+- **Trusted approval UI.** Mechanism done (blocking, timeout, decider check, record) and a compositor-drawn prompt now exists as the preferred route (see the amendment above). Open: authenticating the compositor to the controller, a distinct controller uid, a secure attention key or user secret, running it on a real-input backend.
 - **Powerbox trusted path.** Gesture grants must come from a picker the user actually operated. What exists (the third source above) is the mechanism: tickets, binding, single use, `--require-powerbox`. What still waits for Phase 6 and the compositor: the picker drawn by the compositor on its trusted UI path, with input the compositor attributes to the user, and the signing capability held by the compositor rather than a key file any same-user process can read. Until then the property "this grant came from the user" is NOT achieved; only "this grant came from something holding the key".
 - **Shared coverage rule.** `contracts/manifest` keeps its path-coverage rule unexported, so the controller has its own in `controller/internal/invoke/grants.go`. It should move into the manifest package so the consent diff and the grant check cannot drift. Phase 6.
 - **Gesture grant in the provenance chain.** Whether a later reader should treat output from a gesture-granted run differently. Phase 6.

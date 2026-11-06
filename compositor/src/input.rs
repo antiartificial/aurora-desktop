@@ -4,7 +4,6 @@ use smithay::{
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
-        keyboard::FilterResult,
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -15,19 +14,15 @@ use crate::state::Aurora;
 
 impl Aurora {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // While a trusted overlay is up, only the keyboard (to the overlay,
+        // see `keyboard_input`) is live. Pointer events must not reach or
+        // refocus a client behind it.
+        if self.overlay_up() && !matches!(event, InputEvent::Keyboard { .. }) {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event, .. } => {
-                let serial = SERIAL_COUNTER.next_serial();
-                let time = Event::time(&event);
-
-                self.seat.get_keyboard().unwrap().input::<(), _>(
-                    self,
-                    event.key_code(),
-                    event.state(),
-                    serial,
-                    time,
-                    |_, _, _| FilterResult::Forward,
-                );
+                self.keyboard_input(event.key_code(), event.state(), Event::time(&event));
             }
             InputEvent::PointerMotion { .. } => {}
             InputEvent::PointerMotionAbsolute { event, .. } => {
