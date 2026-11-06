@@ -53,7 +53,9 @@ Hypothesis check: the working assumption was that BeAPI coupling blocks reuse an
 Per subsystem:
 
 1. **Retire the BeAPI layer** (`src/kits`, `src/servers/app`, `src/system/libroot2`, `headers/os`, the Be apps and preferences). The plan's compositor and bus do not need a Be-compatible API surface. Carrying it would import roughly 400k lines that the plan does not use.
-2. **Retire Nexus.** The plan's kernel adapter is built on namespaces, fd passing, memfd and peer credentials. A DKMS module is an extra kernel dependency the plan does not want. Keep `node_monitor.c` as a reading reference for Phase 9 only.
+
+   **Superseded by 0008 (2026-11-06).** The project now wants to run simple Haiku applications, so the recommendation to retire the BeAPI layer no longer holds. 0008 pursues source compatibility in stages, starting with the messaging core of `src/kits/app`. The reasoning above applied to a project that did not need a Be-compatible surface; the survey findings stay as written. The rest of this record, including items 2 to 6, is unchanged. This record's status stays proposed because only this item changed.
+2. **Retire Nexus.** The plan's kernel adapter is built on namespaces, fd passing, memfd and peer credentials. A DKMS module is an extra kernel dependency the plan does not want. Keep `node_monitor.c` as a reading reference for Phase 9 only. This conclusion stands under 0008 and is reinforced by it: 0008 reaches Haiku source compatibility by reimplementing the BeOS ports, areas, semaphores and threads in userspace (bus, memfd, POSIX semaphores, pthreads), so Nexus is not needed for it either. Nexus's purpose is binary compatibility, which 0008 does not pursue.
 3. **Port the kernel-facing display code behind the kernel adapter, as reference, not as a copied backend.** Take `drm/modeset.c` (KMS mode setting, pure libdrm), the buffer-flush rule from `GBMBuffer.cpp`, the EGL-on-GBM setup from `GLCompositor::Init`, and the `libseat` session pattern. Do not port `GBMHWInterface` or `DrmHWInterface`; they implement the BeAPI contract. Before Phase 4 starts, check whether Smithay's own DRM and GBM backends cover this. That check has not been done here, and if they do, the port shrinks to notes.
 4. **Retire the GL compositor and per-window compositing code**, and record the failure modes (virgl `glReadPixels` zeros, `EGL_BAD_SURFACE` on `eglSwapBuffers`, off-screen crash). The Phase 4 renderer choice should not assume this code works.
 5. **Adopt the VM harness pattern** from `test-harness/`: serial log capture, a QEMU monitor socket for screen capture, and log collection (`run-vm.sh`, `screenshot.sh`, `wait-ssh.sh`, `collect-logs.sh`). The scripts have not been copied into Aurora. The pattern is to be adapted for `harness/ginux-up` when the Ginux source lands: the boot target changes to Alpine on Ginux, and Venus, which the scripts lack, is added.
@@ -64,14 +66,14 @@ Per subsystem:
 - The Aurora repo takes no code from VOS in Phase 0. Phase 2 and Phase 4 work starts from the plan's own design.
 - The display knowledge is reused as notes and as small ports. Those ports need their own tests on the virtio-gpu VM. Their correctness is not inherited from VOS.
 - Any harness pattern taken from VOS is adapted, not linked. VOS remains a separate project and keeps its own history.
-- Nothing from `src/kits` or `src/servers/app` is needed for Phase 1 or Phase 4.
+- Nothing from `src/kits` or `src/servers/app` is needed for Phase 1 or Phase 4. Under 0008, `src/kits` becomes relevant later, from Stage A, and `src/servers/app` is relevant to Stage B (after Phase 4). 0008 leaves the sourcing open (upstream Haiku or the VOS fork).
 
 ## What would change this
 
 - **Harvest more of the GPU path:** a reproducible run log on virtio-gpu-gl showing the GL compositor producing correct frames, with no zeros and no `EGL_BAD_SURFACE`, across repeated runs. Also a run of the software or DRM path on the 4090.
 - **Port the GBM backend whole:** Smithay's DRM and GBM support is shown not to cover the 4090 or virtio-gpu, and VOS's `GBMHWInterface` can be split from `HWInterface` with a small diff.
 - **Revisit Nexus:** a measured bus latency or throughput on Unix sockets that misses the plan's interactive target, where kernel ports would fix it. The plan's bus is Go over sockets, so this would need evidence.
-- **Revisit the BeAPI retirement:** a requirement that BeAPI binaries run unmodified. That would change Phase 7 and bring the kits back into scope.
+- **Revisit the BeAPI retirement:** a requirement that BeAPI binaries run unmodified. That would change Phase 7 and bring the kits back into scope. A requirement to run Haiku applications from source has since arisen, and 0008 handles it. Running unmodified BeAPI binaries remains not required.
 - **Revisit the libseat pattern:** a finding that the Phase 2 adapter cannot grant DRM fds through a session, which would make the VOS device-access code more relevant.
 
 ## Open checks
