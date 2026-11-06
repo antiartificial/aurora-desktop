@@ -163,6 +163,21 @@ impl<I: Eq + Hash + Clone> Persist<I> {
         moves
     }
 
+    /// Write now if anything is pending, ignoring the settle delay. For a
+    /// clean shutdown: the per-frame tick only writes once the layout has been
+    /// still for `SETTLE`, so quitting inside that window would otherwise drop
+    /// the last move. A crash still loses it -- that is what SETTLE buys, a
+    /// resting place rather than a half-finished drag.
+    pub fn flush(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
+        if let Err(e) = self.write() {
+            tracing::warn!("layout state {}: {e}", self.path.display());
+        }
+    }
+
     fn remember(&mut self, e: Entry) {
         if let Some(i) = self.mem.iter().position(|m| m.same_window(&e)) {
             if self.mem[i] == e {

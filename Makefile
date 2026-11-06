@@ -8,6 +8,9 @@ SHELL := /bin/bash
 RUN   ?= /tmp/aurora-up-$(shell id -u)
 COMP  := compositor/target/release/aurora-compositor
 SIZE  ?= 1600x1000
+# Xwayland is opt-in in the compositor; the desktop target turns it on, because
+# running a real X app is the point of having it. `make desktop XWAYLAND=` off.
+XWAYLAND ?= --xwayland
 
 .DEFAULT_GOAL := help
 .PHONY: help build desktop up env stop status test demos clean
@@ -18,7 +21,8 @@ help:
 	  | sed -E 's/^([a-z-]+):.*## /\1|/' \
 	  | awk -F'|' '{printf "  make %-9s %s\n", $$1, $$2}'
 	@printf '\n  run dir   %s   (override: make desktop RUN=...)\n' '$(RUN)'
-	@printf '  headless  %s        (make up SIZE=1920x1200; a host window takes its size from the host)\n\n' '$(SIZE)'
+	@printf '  headless  %s        (make up SIZE=1920x1200; a host window takes its size from the host)\n' '$(SIZE)'
+	@printf '  xwayland  %s     (make desktop XWAYLAND= to leave Xwayland out)\n\n' '$(XWAYLAND)'
 
 build: ## build everything: the Go modules, the compositor, the Haiku kits
 	./aurora-up --build-only
@@ -41,10 +45,12 @@ desktop: build ## open the desktop in a window on this host, with the stack behi
 	trap '[ -n "$$up" ] && kill $$up 2>/dev/null' EXIT; \
 	[ -d '$(RUN)/theme' ] || cp -r contracts/theme '$(RUN)/theme'; \
 	echo "make: the desktop is a host window. Right-click it for the menu; close it to stop."; \
-	./$(COMP) \
+	./$(COMP) $(XWAYLAND) \
 	  --bus-socket '$(RUN)/bus.sock' \
 	  --trusted-socket '$(RUN)/xdg/aurora-trusted.sock' \
-	  --theme '$(RUN)/theme'
+	  --theme '$(RUN)/theme' \
+	  --state-file '$(RUN)/compositor-state.json' \
+	  --aurora '$(CURDIR)/build/bin/aurora'
 
 up: ## run the stack in the foreground, headless, with no host window (Ctrl-C stops it)
 	./aurora-up --run '$(RUN)' --size '$(SIZE)'

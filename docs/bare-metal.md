@@ -15,7 +15,6 @@ Verified (by running it):
   from before, plus 2 unit tests in `drm.rs` for the scale rule and the cursor
   bitmap) pass.
 - `--drm --headless` is refused before anything starts.
-- `--drm-timeout` without `--drm` is refused.
 - `--drm` from inside a graphical session fails at once with an actionable
   message and exit status 1 (it never touches the display).
 
@@ -46,7 +45,7 @@ Not verified:
   vblank event. One EGL context; the winit two-context workaround does not
   apply (no window surface).
 - Input: libinput. Ctrl-Alt-F1..F12 switch VT. Ctrl-Alt-Backspace quits.
-- `--drm-timeout SECS`: quit by itself. Use it for the first run.
+- `--quit-after SECS`: quit by itself, on any backend. Use it for the first run.
 
 ## Manual test recipe
 
@@ -72,7 +71,7 @@ Test 1, free VT, with a timeout:
 
 1. Press Ctrl-Alt-F3. Log in as yourself on the text console.
 2. `cd ~/projects/aurora/compositor`
-3. `LIBSEAT_BACKEND=seatd ./target/release/aurora-compositor --drm --drm-timeout 60 2>aurora.log`
+3. `LIBSEAT_BACKEND=seatd ./target/release/aurora-compositor --drm --quit-after 60 2>aurora.log`
    (drop `LIBSEAT_BACKEND` if logind works for you).
 4. Expect: the screen goes black for a moment, then the Aurora desktop (dock,
    background) at the display's native mode, and an arrow cursor that follows
@@ -93,7 +92,7 @@ Test 4, hotplug: unplug and replug the monitor. Expect `output ... unplugged`
 and, on replug, a new output.
 
 Getting back: Ctrl-Alt-Backspace quits Aurora and restores the console. If the
-keyboard is dead, wait for `--drm-timeout`, switch VT with Ctrl-Alt-Fn (handled
+keyboard is dead, wait for `--quit-after`, switch VT with Ctrl-Alt-Fn (handled
 by the kernel only when Aurora is not holding the VT in graphics mode, so this
 may not work), or ssh in and `kill <pid>` (find it with `ps -o pid= -C aurora-compositor`).
 The seat is released when the process exits.

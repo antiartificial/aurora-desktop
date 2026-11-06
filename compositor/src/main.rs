@@ -31,9 +31,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.drm.is_some() && args.headless.is_some() {
         fail("--drm and --headless are mutually exclusive: --drm drives a real display and input devices, --headless has none");
     }
-    if args.drm_timeout.is_some() && args.drm.is_none() {
-        fail("--drm-timeout only makes sense with --drm");
-    }
     // Everything the DRM backend needs from the system is checked here, before
     // sockets are opened or anything else starts.
     let drm_prepared = match &args.drm {
@@ -54,9 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.shell.legacy_scene = args.legacy_scene;
     state.shell.freeze_time = args.freeze_time;
     state.shell.registry = shell::apps::Registry::new(args.bus_socket.clone());
-    if let Some(a) = &args.aurora_bin {
-        state.shell.aurora_bin = a.clone();
-    }
+    state.shell.aurora_bin = crate::shell::resolve_launcher(args.aurora_bin.as_deref());
     state.apply_input_config();
     state.trusted.dump_path = args.dump_overlay.clone();
     if let Some(uids) = args.trusted_uids.clone() {
@@ -110,9 +105,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open a Wayland/X11 window for our nested compositor
     match (args.headless, drm_prepared) {
         (Some((w, h)), _) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0))?,
-        (None, Some(p)) => crate::drm::init_drm(&mut event_loop, &mut state, p, args.scale, args.drm_timeout)
+        (None, Some(p)) => crate::drm::init_drm(&mut event_loop, &mut state, p, args.scale)
             .unwrap_or_else(|e| fail(&e.to_string())),
         (None, None) => crate::winit::init_winit(&mut event_loop, &mut state)?,
+    }
+
+    // One timer for every backend, installed after the backend so it cannot be
+    // lost by a backend that forgets to honour it. Headless has no window to
+    // close and no VT to switch, so without this it only ever stops by being
+    // killed, and the clean shutdown path is unreachable.
+    if let Some(d) = args.quit_after {
+        eprintln!("aurora-compositor: --quit-after: quitting by itself in {d:?}");
+        event_loop.handle().insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(d),
+            |_, _, state: &mut Aurora| {
+                tracing::info!("--quit-after elapsed; stopping the event loop");
+                state.loop_signal.stop();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        )?;
     }
 
     // Set WAYLAND_DISPLAY to our socket name, so child processes connect to Aurora rather
@@ -139,7 +150,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
     })?;
 
-    Ok(())
+    // The loop has stopped: a window close, a VT quit, or --quit-after.
+    //
+    // Then leave without running libc's exit handlers. NVIDIA's EGL driver
+    // registers one that logs, the log goes to the EGL debug callback Smithay
+    // installed, and that callback reads a thread_local Rust has already
+    // destroyed -- so a clean shutdown printed six copies of "cannot access a
+    // Thread Local Storage value during or after destruction: AccessError"
+    // after the last frame. Harmless (the exit code was still 0) but it buried
+    // whatever a real shutdown error would have said. Diagnosed from the
+    // backtrace: __run_exit_handlers -> smithay::backend::egl::ffi::egl_debug_log
+    // -> LocalKey::with -> panic_access_error.
+    //
+    // So: do our own cleanup explicitly, flush, and _exit. Anything that must
+    // happen at shutdown has to happen above this line, not in a Drop impl.
+    // The placement memory writes only after the layout has been still for
+    // 400 ms, so a clean quit inside that window would drop the last move.
+    if let Some(p) = state.persist.as_mut() {
+        p.flush();
+    }
+    drop(state);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    unsafe { libc::_exit(0) }
 }
 
 /// A startup refusal: the message, plainly, and a failing exit. Not an `Error:
@@ -162,8 +196,11 @@ struct Args {
     headless: Option<(i32, i32)>,
     /// `--drm[=CARD]`: DRM/KMS + libinput on a bare TTY. `Some(None)` picks the GPU.
     drm: Option<Option<std::path::PathBuf>>,
-    /// `--drm-timeout SECS`: quit by itself, so a first run on hardware cannot strand you.
-    drm_timeout: Option<std::time::Duration>,
+    /// `--quit-after SECS`: stop the event loop by itself, on any backend. For
+    /// a first run on hardware that could leave you with no way back, and for
+    /// exercising the clean shutdown path, which otherwise only a window close
+    /// can reach.
+    quit_after: Option<std::time::Duration>,
     command: Option<String>,
     trusted_socket: Option<std::path::PathBuf>,
     trusted_uids: Option<Vec<u32>>,
@@ -198,7 +235,7 @@ fn default_trusted_socket() -> std::path::PathBuf {
 
 fn parse_args() -> Args {
     let mut args = Args {
-        headless: None, drm: None, drm_timeout: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
+        headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None,
     };
@@ -225,9 +262,9 @@ fn parse_args() -> Args {
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),
             "--drm" => args.drm = Some(None),
             s if s.starts_with("--drm=") => args.drm = Some(Some(s["--drm=".len()..].into())),
-            "--drm-timeout" => {
-                let secs: u64 = it.next().and_then(|v| v.parse().ok()).filter(|s| *s > 0).expect("--drm-timeout wants a number of seconds");
-                args.drm_timeout = Some(std::time::Duration::from_secs(secs));
+            "--quit-after" => {
+                let secs: u64 = it.next().and_then(|v| v.parse().ok()).filter(|s| *s > 0).expect("--quit-after wants a number of seconds");
+                args.quit_after = Some(std::time::Duration::from_secs(secs));
             }
             "--headless" => args.headless = Some((1280, 800)),
             s if s.starts_with("--headless=") => {

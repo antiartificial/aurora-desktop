@@ -153,7 +153,7 @@ if [ $COMPOSITOR = 1 ]; then COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOC
   if [ $COMPOSITOR = 1 ]; then
     printf ',\n'
     cp -r "$ROOT/contracts/theme" "$RUN/theme"   # a copy: edit it and the compositor hot-reloads it; settings edits land here and survive a restart
-    FLAGS=(--headless="$SIZE" --bus-socket "$AURORA_BUS_SOCK" --trusted-socket "$AURORA_TRUSTED_SOCK" --theme "$RUN/theme" --state-file "$RUN/compositor-state.json")
+    FLAGS=(--headless="$SIZE" --bus-socket "$AURORA_BUS_SOCK" --trusted-socket "$AURORA_TRUSTED_SOCK" --theme "$RUN/theme" --state-file "$RUN/compositor-state.json" --aurora "$BIN/aurora")
     [ $TESTINPUT = 1 ] && FLAGS+=(--test-input "$INPUT")
     [ -n "$DUMP" ] && FLAGS+=(--dump-overlay "$DUMP")
     svc_entry compositor "$RUN/compositor.log" '{"type":"none"}' '["busd"]' '' "$COMP" "${FLAGS[@]}"

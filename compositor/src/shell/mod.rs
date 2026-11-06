@@ -624,6 +624,40 @@ fn on_path(cmd: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
 }
 
+/// Where the `aurora` launcher is. A dock click runs it, and the compositor's
+/// PATH is whatever started the compositor -- usually not the build tree -- so
+/// a bare name fails with `aurora: command not found` only once you click,
+/// which is far too late to be useful.
+///
+/// `--aurora` wins. Otherwise: PATH, then beside this executable, then the
+/// dev layout (`compositor/target/<profile>/aurora-compositor` sits four
+/// levels under the repo root, where the Go binaries land in `build/bin`).
+/// Found nothing: return the bare name and say so now, not on the click.
+pub fn resolve_launcher(given: Option<&str>) -> String {
+    if let Some(a) = given {
+        if !std::path::Path::new(a).is_file() && !on_path(a) {
+            eprintln!("aurora-compositor: WARNING: --aurora {a}: not a file and not on PATH; launching from the dock will fail");
+        }
+        return a.to_string();
+    }
+    if on_path("aurora") {
+        return "aurora".into();
+    }
+    let exe = std::env::current_exe().ok();
+    let candidates = exe.as_deref().and_then(|e| e.parent()).map(|d| {
+        vec![d.join("aurora"), d.join("../../../build/bin/aurora"), d.join("../../../../build/bin/aurora")]
+    }).unwrap_or_default();
+    for c in candidates {
+        if c.is_file() {
+            let c = c.canonicalize().unwrap_or(c);
+            tracing::info!("dock: launcher is {} (not on PATH; found next to the compositor)", c.display());
+            return c.to_string_lossy().into_owned();
+        }
+    }
+    eprintln!("aurora-compositor: WARNING: no `aurora` launcher on PATH or beside this binary; launching from the dock will fail. Pass --aurora /path/to/aurora");
+    "aurora".into()
+}
+
 /// What a dock click runs. The launcher does the work: `aurora open --pick --app ID`
 /// (the powerbox picker; an interactive terminal flow), inside a terminal window
 /// when one is configured so the prompts have somewhere to appear.

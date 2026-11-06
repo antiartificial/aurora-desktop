@@ -169,7 +169,6 @@ pub fn init_drm(
     state: &mut Aurora,
     p: Prepared,
     scale: Option<f64>,
-    exit_after: Option<Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Prepared { session, notifier, gpu } = p;
     let seat = session.seat();
@@ -286,15 +285,6 @@ pub fn init_drm(
             }
         }
     })?;
-
-    if let Some(d) = exit_after {
-        eprintln!("aurora-compositor: --drm-timeout: quitting by itself after {d:?}");
-        handle.insert_source(Timer::from_duration(d), |_, _, state| {
-            tracing::info!("drm: --drm-timeout elapsed, quitting");
-            state.loop_signal.stop();
-            TimeoutAction::Drop
-        })?;
-    }
 
     // Kick the first frame of every output; the vblank handler carries on.
     let crtcs: Vec<_> = shared.borrow().gpu.as_ref().map(|g| g.surfaces.iter().map(|(c, _)| *c).collect()).unwrap_or_default();
