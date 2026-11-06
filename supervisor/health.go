@@ -25,12 +25,44 @@ import (
 const (
 	pingEvery   = 10 * time.Second
 	pingTimeout = 2 * time.Second
+	// A healthy service is pinged less and less often, up to this.
+	pingMax = 5 * time.Minute
 )
 
+// pingInterval is how long to wait before pinging again after `streak`
+// consecutive answers: the floor, doubled per answer, capped.
+//
+// Why back off at all: a ping is a request, and requests are written to the
+// append-only, hash-chained log. At a flat 10s, a measurement of a running
+// desktop found 1463 of 2642 records in that log were pings -- 55% of the
+// thing `bus verify` chains and audit tools read was liveness noise nobody
+// subscribed to.
+//
+// Why not exempt pings from the log instead: a message class that skips the
+// audit log is precisely what an attacker would want to send. The log's worth
+// comes from having no exceptions.
+//
+// Backing off costs detection latency for a service that has been answering
+// for a long time, which is the case where something going wrong is least
+// likely and a late notice matters least. Any failure, restart or pid change
+// resets the streak, so a flapping service is still probed at the floor.
+func pingInterval(streak int) time.Duration {
+	d := pingEvery
+	for i := 0; i < streak && d < pingMax; i++ {
+		d *= 2
+	}
+	if d > pingMax {
+		d = pingMax
+	}
+	return d
+}
+
 type pingState struct {
-	pid  int
-	ok   bool
-	last time.Time
+	pid int
+	ok  bool
+	// Consecutive answers; drives the backoff above.
+	streak int
+	last   time.Time
 }
 
 type probeInput struct {
@@ -132,7 +164,7 @@ func probeService(p probeInput, cli *client.Client, ins *server.InspectReply, pi
 		ps = &pingState{pid: p.pid}
 		pings[p.v.spec.Name] = ps
 	}
-	if ps.ok && time.Since(ps.last) < pingEvery {
+	if ps.ok && time.Since(ps.last) < pingInterval(ps.streak) {
 		return verdict{true, "registered by the supervised pid; last answered a request " + time.Since(ps.last).Truncate(time.Second).String() + " ago"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
@@ -140,10 +172,10 @@ func probeService(p probeInput, cli *client.Client, ins *server.InspectReply, pi
 	_, err := cli.Call(ctx, proto.Envelope{To: name, Verb: "supervisor.ping@v1", QoS: proto.QoSBackground})
 	var re *client.RemoteError
 	if err != nil && !errors.As(err, &re) {
-		ps.ok = false
+		ps.ok, ps.streak = false, 0
 		return verdict{false, fmt.Sprintf("registered as %q but not answering requests (%s)", Clean(name), Clean(err.Error()))}
 	}
-	ps.ok, ps.last = true, time.Now()
+	ps.ok, ps.last, ps.streak = true, time.Now(), ps.streak+1
 	return verdict{true, "registered by the supervised pid and answering requests"}
 }
 
