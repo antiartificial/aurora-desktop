@@ -169,8 +169,27 @@ The decision comes only from the keyboard, never from the socket: nothing on the
   pointer focus on a click and echoes typed keys, with the xkb seat reporting
   `Loaded Keymap name="English (US)"`. That makes the nested desktop usable
   and not merely visible.
-  Still untested on winit: resize, scale factors other than 1, the fallback
-  path when B cannot be created, and frame pacing across the B-to-A switch.
+  Resize: B's target is recreated at the new window size in the Redraw
+  handler, and the output mode and capture constraints are re-synced there
+  (`window_size()` reads the live window and can be ahead of the last
+  `Resized` event). Driven through KWin scripting, captures decoded to the
+  window's physical size at 6 sizes with the bars pixel-exact, and 90
+  back-to-back resizes left GPU memory and RSS flat. That the window still
+  presents after a resize is not visible to a program: `BISECT_PHASES=F
+  ./target/release/examples/winit_bisect` is the by-eye check (magenta, white
+  border, resize the window).
+  Scale: the host reported 1.45 here (1296x846 logical, 1856x1160 physical).
+  The output scale is fixed at 1 and everything (scene, fx, overlay, capture)
+  is in the window's physical pixels, so clients and the overlay look about
+  1.45x smaller than host apps. Honouring a fractional scale would touch the
+  fx pipeline, which treats geometry as physical; it is not done.
+  Fallback: `AURORA_TEST_NO_SHARED_EGL=1` makes winit behave as if B could
+  not be created (WARNING on start; test only). Run that way it maps clients
+  and runs, and capture fails cleanly with `Unknown`. Whether the window
+  presents in that mode has not been seen.
+  Pacing (300-frame windows, 60 Hz host): frame interval p50 16.67 ms, p99
+  19-21 ms, max 29 ms; B's part 2-5 ms, the A blit plus swap under 0.5 ms.
+  No dropped frames, no stall at the B-to-A switch.
 - The startup log line `eglCreateSyncKHR ... EGL_SYNC_NATIVE_FENCE_FD_ANDROID
   specified valid fd but EGL_SYNC_STATUS is also being set` comes from Smithay
   probing native-fence support on the NVIDIA driver once at init. It is logged
@@ -182,7 +201,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 - Glass and the switcher exist (see "Glass and the switcher"), but no window management beyond smallvil's move and resize grabs, and no animation: the switcher appears and changes between frames.
 - No multi-monitor: one output.
-- No HiDPI: scale is fixed at 1.
+- No HiDPI: scale is fixed at 1 (on winit that means physical pixels; see Known limits).
 - No XWayland.
 - No client-domain binding: clients are not tied to domains or capabilities.
 - No secure attention key, no per-user secret on the prompt, no pointer interaction with it, attribution of a request to a domain only through the bus event (a same-uid process that can run code in any domain can still get that domain attested; otherwise it can only verify that the named domain exists and is attested; see "Trusted path" for what exists and what it does not guarantee).

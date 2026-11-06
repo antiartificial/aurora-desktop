@@ -47,7 +47,7 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
-    output::{Mode, Output, PhysicalProperties, Subpixel},
+    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     utils::{Buffer as BufferCoords, Physical, Rectangle, Size, Transform},
 };
@@ -95,7 +95,16 @@ pub fn init_winit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
     let win_size = backend.window_size();
-    let mut off = match make_offscreen(backend.renderer(), win_size) {
+    // TEST AFFORDANCE: AURORA_TEST_NO_SHARED_EGL=1 behaves as if context B could
+    // not be created, so the direct fallback below can be exercised. Loud, and
+    // only ever makes the compositor LESS capable (no effects, no capture).
+    let forced_fallback = std::env::var_os("AURORA_TEST_NO_SHARED_EGL").is_some_and(|v| !v.is_empty());
+    if forced_fallback {
+        eprintln!("aurora-compositor: WARNING: AURORA_TEST_NO_SHARED_EGL is set: the second EGL context is NOT created; no effects, no capture (test only)");
+    }
+    let made = if forced_fallback { Err("forced by AURORA_TEST_NO_SHARED_EGL".into()) } else { make_offscreen(backend.renderer(), win_size) };
+    tracing::info!("winit: window {}x{} physical, host scale factor {}; output scale fixed at 1 (rendering in physical pixels)", win_size.w, win_size.h, backend.scale_factor());
+    let mut off = match made {
         Ok(o) => Some(o),
         Err(e) => {
             tracing::warn!("winit: no second EGL context ({e}); drawing straight into the window, no effects or capture");
@@ -119,7 +128,9 @@ pub fn init_winit(
     // flip happens in `present_texture`. The direct fallback draws into the
     // window itself and needs Smithay's winit convention, Flipped180.
     let transform = if off.is_some() { Transform::Normal } else { Transform::Flipped180 };
-    output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
+    // Scale is deliberately 1 whatever the host's factor: the compositor
+    // renders and captures in the window's physical pixels (see README).
+    output.change_current_state(Some(mode), Some(transform), Some(Scale::Integer(1)), Some((0, 0).into()));
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
 
@@ -128,7 +139,8 @@ pub fn init_winit(
 
     event_loop.handle().insert_source(winit, move |event, _, state| {
         match event {
-            WinitEvent::Resized { size, .. } => {
+            WinitEvent::Resized { size, scale_factor } => {
+                tracing::debug!("winit: resized to {}x{} physical (host scale {scale_factor})", size.w, size.h);
                 output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
                 state.update_capture_constraints(&output);
             }
@@ -138,6 +150,13 @@ pub fn init_winit(
                 if size.w <= 0 || size.h <= 0 {
                     backend.window().request_redraw();
                     return;
+                }
+                // `window_size()` reads the live window, which can be ahead of
+                // the last Resized event: keep the output mode (and the capture
+                // constraints derived from it) equal to the size drawn now.
+                if output.current_mode().map(|m| m.size) != Some(size) {
+                    output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
+                    state.update_capture_constraints(&output);
                 }
                 let full = Rectangle::<i32, Physical>::from_size(size);
                 let drew = if let Some(o) = off.as_mut() {
@@ -156,8 +175,12 @@ pub fn init_winit(
                         // Make the shared texture complete before A samples it.
                         let _ = o.renderer.with_context(|gl| unsafe { gl.Finish() });
                     }
-                    // 2. Only now A: bind the window, one texture, swap.
-                    match backend.bind() {
+                    // 2. Only now A: bind the window, one texture, swap. If the
+                    // target could not be resized, skip the frame rather than
+                    // sample a texture of the wrong size.
+                    if o.size != size {
+                        false
+                    } else { match backend.bind() {
                         Ok((renderer, mut window)) => {
                             if let Err(e) = present_texture(renderer, &mut window, &o.target, size) {
                                 tracing::error!("winit: drawing the frame into the window failed: {e}");
@@ -169,7 +192,7 @@ pub fn init_winit(
                             state.loop_signal.stop();
                             false
                         }
-                    }
+                    } }
                 } else {
                     // One bind, one render, one swap, and nothing in between that
                     // could make the context current without the surface.
