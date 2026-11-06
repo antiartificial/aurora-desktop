@@ -212,7 +212,7 @@ cat <<EOF
 == Aurora is up
    busd          pid $(pidn busd)   $AURORA_BUS_SOCK
    controllerd   pid $(pidn controllerd)   registry service on the bus; approvals via $APPROVER
-   indexd        pid $(pidn indexd)   live queries over provenance (no capability filter; see index/README.md)
+   indexd        pid $(pidn indexd)   live queries over provenance; a domain sees only its own files (index/README.md)
    supervisor    pid $(pidn supervisord)   restarts busd/controllerd/indexd on failure: auroractl status | restart NAME | stop NAME | start NAME
 EOF
 [ $COMPOSITOR = 1 ] && cat <<EOF
