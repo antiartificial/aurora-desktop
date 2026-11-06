@@ -29,6 +29,9 @@ public:
 	bool IsEmpty() const;
 	int32 CountNames(type_code type) const;
 	status_t GetInfo(const char *name, type_code *type, int32 *count = NULL) const;
+	/* By index, in insertion order (Haiku's signature). *nameFound points into the message. */
+	status_t GetInfo(type_code typeRequested, int32 index, char **nameFound, type_code *typeFound,
+		int32 *countFound = NULL) const;
 	status_t RemoveName(const char *name);
 	status_t MakeEmpty();
 	void PrintToStream() const;

@@ -31,3 +31,30 @@ add_test(NAME app COMMAND test_app)
 add_executable(haiku_app demo/haiku_app.cpp)
 target_link_libraries(haiku_app kitsapp)
 add_test(NAME haiku_app COMMAND haiku_app)
+
+# Bus bridge: a C++ bus client and the BLooper <-> bus bridge (decision 0008's untested claim).
+add_library(kitsbus STATIC src/bus/Json.cpp src/bus/BusClient.cpp src/bus/BusConvert.cpp src/bus/BusBridge.cpp)
+target_include_directories(kitsbus PUBLIC include)
+target_link_libraries(kitsbus PUBLIC kitsapp)
+
+add_executable(haiku_ledger demo/haiku_ledger.cpp)
+target_link_libraries(haiku_ledger kitsbus)
+
+add_executable(test_bus tests/test_bus.cpp)
+target_link_libraries(test_bus kitsbus)
+# The real-busd tests need the Go toolchain; they build busd themselves into the build tree.
+find_program(GO_EXE go)
+if(GO_EXE)
+  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus
+    COMMAND ${CMAKE_COMMAND} -E env ${GO_EXE} build -o ${CMAKE_BINARY_DIR}/busd ./cmd/busd
+    COMMAND ${CMAKE_COMMAND} -E env ${GO_EXE} build -o ${CMAKE_BINARY_DIR}/bus ./cmd/bus
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/../bus
+    COMMENT "building busd and bus (Go)")
+  add_custom_target(bus_binaries ALL DEPENDS ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus)
+  add_dependencies(test_bus bus_binaries)
+  add_test(NAME bus_bridge COMMAND test_bus ${CMAKE_BINARY_DIR}/busd)
+  add_test(NAME bus_demo COMMAND ${CMAKE_SOURCE_DIR}/demo/bus_demo.sh ${CMAKE_BINARY_DIR})
+  set_tests_properties(bus_demo PROPERTIES TIMEOUT 60)
+else()
+  add_test(NAME bus_bridge COMMAND test_bus)   # busd tests skip without Go
+endif()

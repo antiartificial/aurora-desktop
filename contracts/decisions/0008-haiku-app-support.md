@@ -158,3 +158,35 @@ Run in `kits/haiku-compat/` (full detail and gap inventory in its README). Haiku
 - Phase 4 and Phase 6 gain later dependents. Neither phase's scope changes now.
 - The plan's open question on Haiku compatibility is answered. The plan text has not been edited by this record.
 - No code from the VOS tree enters Aurora until the sourcing question is settled.
+
+## Result: does BeOS messaging fit the bus? (2026-11-06)
+
+0008 claimed the bus accommodates BeOS messaging, and listed the reasons as untested intuitions. `kits/src/bus` tests it by connecting a `BLooper` to a real `busd`. A `BApplication` subclass (`kits/demo/haiku_ledger.cpp`) with an ordinary `BHandler` and `switch (message->what)` serves `add@v1`, `list@v1` and `total@v1`; the Go `bus send haiku-ledger add@v1 '{"label":"coffee","cents":350}'` returns the handler's reply (`{"total":350,...}`), and the handler's `Publish` reaches `bus sub`. Design, type mapping and lossy cases: `kits/README.md` "Bus bridge". `kits/tests/test_bus.cpp` (206 checks, real busd) passes; the demo passed 10 of 10 runs.
+
+**Verdict: mixed. The serving case fits. The claim as 0008 stated it (a looper's port is a bus endpoint) does not hold, and I did not make it hold.**
+
+What I built is an adapter, not ports on the bus. The `BLooper` still owns its shared-memory port. A reader thread and a serving thread sit in front of it and do a synchronous `BMessenger::SendMessage` into that port per bus request, with a private reply port created and deleted each time. A bus request therefore crosses a socket, two threads and a ring buffer before the handler sees it. The port stays reachable by any same-uid process, so nothing the bus enforces (identity, capabilities, the log) covers messages that bypass the bridge. Latency was not measured.
+
+**Where it fit well**
+
+- *Typed, self-describing fields.* `BMessage` maps onto a JSON payload without contortion for strings, integers, floats, bools, nested messages and repeated fields. The handler uses `FindString`/`FindInt32` and never sees JSON.
+- *`BHandler` as a dispatch target.* A bus service name maps to a handler token; `MapVerb` turns a verb into a `what`, and the handler is unmodified. A verb nobody handles falls through `BHandler::MessageReceived` to the looper's default and returns a typed bus error immediately instead of hanging.
+- *Request and reply.* `SendReply` maps onto a bus response with `corr`, and `B_MESSAGE_NOT_UNDERSTOOD` onto a typed error.
+- *Publish and subscribe.* A `BMessage` published becomes an event and an event becomes a `B_BUS_EVENT` message. Not a BeOS idiom (BeOS used `StartWatching`) but cheap.
+- *Identity.* The handler learns who called from the daemon (`uid1000:bus`), not from anything the sender wrote. I found and fixed a hole while writing this: a payload key `bus:from` was item 0 of the identity field the handler reads. Metadata now has the prefix stripped from payloads first (tested).
+
+**Where it fit badly**
+
+- *Ports and `BMessenger` are not capabilities here.* A `BMessenger` is a (port, token) pair meaningful only inside a namespace, and it is forgeable. Nothing in it maps to a bus service name or capability handle, which was the 0008 intuition. The only addressing that crosses the bus is a service name string plus a verb, and every verb must be mapped by hand.
+- *The return address does not persist.* A handler that remembers `message->ReturnAddress()` and messages the sender later (a common BeOS pattern) cannot work: the reply port is private to one request and gone after the reply. Server push has to be a topic, which is a different program.
+- *Replies must be synchronous within `MessageReceived`.* Our looper answers `B_NO_REPLY` when the handler returns without replying, and the bridge turns that into an error. A bus service may reply late, and Haiku lets a handler detach a message and reply later (`DetachCurrentMessage`, not implemented here). That is a gap in the kit as much as in the mapping, but a deferred-reply handler cannot be bridged today.
+- *Timeouts mean different things.* BeOS timeouts are per call on the sender (`SendMessage(..., replyTimeout)`); the bus has no deadline field and the service side has no notion of one. The bridge invents a service-side reply timeout (default 10 s). When it fires the handler is still running, its late `SendReply` goes to a deleted port, and the work is not cancelled.
+- *Head-of-line blocking.* The bridge serves one request at a time because a looper is single-threaded anyway. A slow handler stalls every other bus caller for as long as it runs. This follows from the serial design; the `slow@v1` test exercises the timeout, not a second concurrent caller. BeOS had the same property inside one team, but bus callers are independent processes that did not agree to share a queue.
+- *Ordering.* Requests from one connection reached the handler in order (41 sent, 41 in order, tested). Across connections order is arrival order, as with a port. The bus outbox is strict priority across QoS classes (bus README), so a `user-interactive` request will overtake an earlier `background` one to the same service. BeOS ports are FIFO with no classes. I did not test this; it follows from the bus's documented delivery policy.
+- *QoS has no BeOS equivalent.* The bridge hands the class to the handler as a string field (`bus:qos`) and then ignores it: the looper port is FIFO. Priority is advisory only.
+- *Types.* JSON cannot carry null, empty arrays distinct from absent fields, mixed-type arrays, int8/16 vs int32, `uint*`, pointers, refs, messengers, or a message's `what`. Mixed arrays are rejected (`bad_payload`); null and empty arrays vanish; a one-item array looks like a scalar unless the handler calls `BusMarkArray`. A `BMessage` full of `BRect`, `BPoint` and refs (nothing drawing-related exists in our kits yet) would be mostly `$raw` base64.
+- *Scale of the per-request cost.* One port created and deleted per request in a 128-port table, plus two extra threads per bridged app.
+- *Not carried at all:* segments (bus fd passing; the C++ client does not do `SCM_RIGHTS`, so areas and bus segments are still unconnected), capability handles, replay.
+- *Startup race.* A bridge started before `ReadyToRun` can deliver into a half-wired application (the same window the Stage A demo hit). The demo starts it in `ReadyToRun`.
+
+**What this does and does not establish.** It shows that a Haiku handler can serve and publish on the bus with correct typed replies and clean errors, from a real `busd`, repeatedly. It does not show that BeOS messaging in general maps onto the bus: scripting suites, `BMessenger` persistence, deferred replies, `BMessageRunner`, `BRoster` and the registrar were not touched, and the bridge ran against our reimplemented `BLooper`, not Haiku's. The cost of the "ports are bus endpoints" design, as opposed to this edge adapter, is still unknown; this result argues that it would have to give up either port semantics (blocking, timed waits, `port_count`, delete-wakeups) or the bus's guarantees, because they differ in kind. Open question 7 (latency) is still open.

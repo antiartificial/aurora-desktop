@@ -58,6 +58,20 @@ status_t BMessage::GetInfo(const char *name, type_code *type, int32 *count) cons
 	return B_OK;
 }
 
+status_t BMessage::GetInfo(type_code want, int32 index, char **name, type_code *type, int32 *count) const
+{
+	if (index < 0) return B_BAD_INDEX;
+	for (const Field &f : fFields) {
+		if (want != B_ANY_TYPE && f.type != want) continue;
+		if (index-- > 0) continue;
+		if (name) *name = const_cast<char *>(f.name.c_str());
+		if (type) *type = f.type;
+		if (count) *count = (int32)f.items.size();
+		return B_OK;
+	}
+	return B_BAD_INDEX;
+}
+
 status_t BMessage::RemoveName(const char *name)
 {
 	for (size_t i = 0; name && i < fFields.size(); i++)

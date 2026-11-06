@@ -21,6 +21,7 @@ Signatures follow Haiku's MIT-licensed public API (`headers/os/kernel/OS.h`, `su
 - `tests/test_app.cpp` 9 test groups, 151 checks, messaging core (includes two re-exec'd child processes)
 - `demo/demo_two_process.cpp` the primitives proof
 - `demo/haiku_app.cpp` the Haiku-style two-process application (below)
+- `src/bus/`, `include/Bus*.h` the bus client, JSON, and the BLooper-to-bus bridge ("Bus bridge" below); `demo/haiku_ledger.cpp`, `demo/bus_demo.sh`, `tests/test_bus.cpp`
 
 Build and run: `cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build --output-on-failure`, or run `build/demo_two_process`, `build/test_app`, `build/haiku_app`.
 
@@ -121,3 +122,53 @@ One binary, three modes. With no arguments it forks two processes: `--serve` is 
 ## Next step
 
 Compile Haiku's own `Message.cpp`, `Looper.cpp`, `Handler.cpp` and `Messenger.cpp` (sourcing question, 0008 open question 1, is still undecided) against the primitives, in place of this reimplementation, and run Haiku's own messaging tests. Expect gaps. Then deciding whether ports should move onto the bus, and the app_server question for Stage B.
+
+## Bus bridge: a Haiku application on the Aurora bus
+
+`libkitsbus.a` (`src/bus/`, headers `BusJson.h BusClient.h BusBridge.h`) makes a `BLooper` a bus participant. It tests the claim in decision 0008 that the bus accommodates BeOS messaging. Findings are in 0008's section "Result: does BeOS messaging fit the bus?". Short version: the serving direction works with an unmodified idiomatic handler; ports are still not bus endpoints, and the bridge is an adapter at the edge.
+
+- **`BusJson`** (288 lines): a JSON value, reader and writer. Int64 stays int, `1.0` stays double, depth cap 64, `\u` escapes with surrogates. Rejects malformed input with a message.
+- **`BusClient`**: Unix socket, a reader thread, `Connect`, `Register`, `Subscribe`, `Publish`, `Call` (blocking with timeout, error envelopes reported as `B_ERROR`), `Reply`, `ReplyError`. Not supported: segments (`SCM_RIGHTS`), `caps`, replay `origin`; unknown envelope fields are dropped; an fd the daemon passes would be left unread.
+- **`BusBridge(looper, handler, service)`**: `MapVerb("add@v1", MSG_ADD)`, `Start()`, `Publish(topic, msg)`, `Subscribe(glob)`, `Call(service, verb, msg, &reply)` (the other direction, a BMessenger-shaped synchronous call; works, tested), `Stop()`.
+
+### How a request flows
+
+1. The reader thread parses the line and queues a request. A second thread serves the queue **one request at a time**, so requests reach the looper in arrival order. (A separate thread so the reader stays free to read responses to `Call()`s made by handlers.)
+2. The payload becomes a `BMessage` (mapping below). `what` is the `MapVerb` code, or `B_BUS_REQUEST` for an unmapped verb. Fields `bus:verb`, `bus:from` (the daemon's identity of the caller, not forgeable by the payload: tested) and `bus:qos` are added.
+3. The serving thread does `BMessenger(looper port, handler token).SendMessage(msg, &reply, ...)`: the existing synchronous send with a private reply port per request. The looper dispatches to `BHandler::MessageReceived` on its own thread, and `SendReply` goes back through that reply port.
+4. The reply becomes a response envelope. `B_MESSAGE_NOT_UNDERSTOOD` (including the looper's automatic answer to an unhandled `what`) becomes error `not_understood`; `B_NO_REPLY` (handler returned without replying) becomes error `no_reply`; no reply within `SetReplyTimeout` (default 10 s) becomes `timeout`; an unrepresentable payload becomes `bad_payload` without reaching the handler.
+
+So the real path is bus -> reader thread -> queue -> serving thread -> **shared-memory port** -> looper thread. The looper's port is untouched and still reachable by any same-uid process in the namespace, around the bus.
+
+### JSON to BMessage
+
+| JSON | BMessage field |
+|---|---|
+| string | `B_STRING_TYPE` |
+| integer that fits int32 | `int32`; otherwise `int64` (anything past int64 becomes a double) |
+| number with `.`/`e` | `double` |
+| `true`/`false` | `bool` |
+| object | nested `BMessage` (`what` 0) |
+| array | repeated field of one name. Numbers: all ints, widest of int32/int64; any double makes all doubles. Strings, bools, objects: one type each. |
+| top-level non-object payload | field `value` |
+| absent payload | empty message |
+
+BMessage to JSON: int8/16/32/64 to integer, float/double to number, bool, string, nested message to object, a field with more than one item to an array, anything else (raw data, unknown types) to `{"$raw":{"type":"BLOB","base64":"..."}}`. Fields named `bus:*` never leave. `BusMarkArray(&msg, "name")` writes a one-item field as an array.
+
+### Lossy cases (all of them I know of)
+
+- **Null** is dropped: a BMessage cannot hold it, so `{"a":null}` is the same as `{}`. A `NaN`/`Inf` double leaves as `null`.
+- **Empty arrays** vanish. **One-item arrays** arrive indistinguishable from scalars (inbound there is no marker; outbound `BusMarkArray` is the handler's job).
+- **Mixed arrays are refused** (`bad_payload`): `[1,"a"]`, `[true,1]`, `[null]`, nested arrays, `[{...},2]`. BMessage has one type per name. Int and double mix is promoted to double.
+- **int8/int16/int32 are one JSON number**: a reply field sent as int8 returns as int32 if it round-trips. `float` goes out as the double nearest the float (`0.1f` prints 0.10000000149011612).
+- **Integers past 2^53** are exact through this bridge but not through consumers that parse JSON numbers as doubles.
+- **A reply's `what` is lost** apart from the three special values above. A nested message's `what` is lost. Field order is kept; duplicate JSON keys keep the last.
+- **Embedded NUL in a string** truncates it. Unflattened BMessage types we do not have (pointer, ref, messenger, point, rect) cannot be added; `AddData` with an unknown type is the only escape and goes out as `$raw`.
+- **Ugly compromises, stated:** the verb table (`MapVerb`) must be written by hand, because a verb is a string and `what` is a uint32; unmapped verbs share one `what` plus a string field. Metadata rides in-band as `bus:*` fields. `B_NO_REPLY` becomes an error because a bus requester would otherwise wait forever. The reply timeout is a policy this bridge made up; neither side specifies one.
+- `BusBridge::Call` from a handler of the service being called deadlocks until the timeout (the serving thread waits on the looper, the looper on the response). `Subscribe` posts events from the reader thread with `PostMessage`, which can block if the looper's port is full.
+
+### Run it
+
+`cmake --build build && ctest --test-dir build` builds `busd` and `bus` with Go into the build directory (skipped if Go is absent: the `bus_bridge` test then runs only the pure groups). `demo/bus_demo.sh [build-dir]` starts busd, starts `haiku_ledger` (a `BApplication` subclass with a `BHandler`, idiomatic `switch (message->what)`), drives it with `bus send haiku-ledger add@v1 '{"label":"coffee","cents":350}'` and `bus sub 'ledger.**'`, checks the replies and events, and cleans up. `tests/test_bus.cpp` has 206 checks: JSON round trips and malformed input, conversion in both directions, and, against a real busd, request/reply, unhandled `what`, `no_reply`, `timeout`, malformed payloads and raw garbage on the socket, ordering of 41 requests, publish to a subscriber, event to the handler, `Call`, and a duplicate service name refused.
+
+Not done: latency is unmeasured; concurrent callers are serialised (a slow handler blocks every bus caller; by design, not measured); segments and caps are not carried; the bridge was exercised with our `BLooper`, not Haiku's own.
