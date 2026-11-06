@@ -453,3 +453,83 @@ fn legacy_scene_still_opens_the_menu() {
     assert_ne!(img.at((m.panel[0] + 6) as usize, (m.panel[1] + 6) as usize), [25, 25, 25]);
     let _ = Command::new("true");
 }
+
+// ---- moving the panel -------------------------------------------------------
+
+/// Grab the panel by its title band at `(dx, dy)` device pixels inside it, drag
+/// by `(mx, my)` device pixels, release. Uses the held-button test commands,
+/// because `click` presses and releases in one call and a drag needs the
+/// pointer to move between the two.
+fn drag(c: &Comp, from: [i32; 4], inside: (i32, i32), by: (i32, i32), s: f64) {
+    let (gx, gy) = (from[0] + inside.0, from[1] + inside.1);
+    pointer_to(c, gx as f64 / s, gy as f64 / s);
+    c.inject("press");
+    pointer_to(c, (gx + by.0) as f64 / s, (gy + by.1) as f64 / s);
+    c.inject("release");
+}
+
+#[test]
+fn settings_panel_moves_with_a_title_drag_and_its_handle_cannot_leave_the_screen() {
+    for sc in SCALES {
+        let t = Theme::new();
+        t.append(BASE);
+        let c = comp(&t, sc, &[]);
+        let opened = open_settings(&c, sc.parse().unwrap());
+        let s = opened.scale;
+        let before = opened.panel;
+
+        // 1. A drag on the title band moves the panel by exactly the pointer's
+        //    delta: the point grabbed stays under the pointer.
+        let n = count(&c, "settings");
+        drag(&c, before, (120, 12), (180, 90), s);
+        let moved = wait_relayout(&c, "settings", n);
+        let want = [before[0] + 180, before[1] + 90];
+        assert!(
+            (moved.panel[0] - want[0]).abs() <= 3 && (moved.panel[1] - want[1]).abs() <= 3,
+            "scale {s}: dragged the title band by 180,90 device px from {before:?}; panel is at {:?},{:?}, wanted {want:?} (within 3 px of logical->device rounding)",
+            moved.panel[0], moved.panel[1]
+        );
+        assert_eq!([moved.panel[2], moved.panel[3]], [before[2], before[3]], "scale {s}: a move must not resize the panel");
+
+        // 2. The logged hotspots moved with it, so the panel is still clickable
+        //    where it is drawn (the two used to be computed separately).
+        let tab_before = hot(&opened, "Desktop");
+        let tab_after = hot(&moved, "Desktop");
+        assert_eq!(
+            [tab_after[0] - moved.panel[0], tab_after[1] - moved.panel[1]],
+            [tab_before[0] - before[0], tab_before[1] - before[1]],
+            "scale {s}: the Desktop tab's offset inside the panel changed when the panel moved"
+        );
+
+        // 4. A press in the body, below the title band, does NOT move the panel.
+        let base = parse(&c.log(), "settings").unwrap().panel;
+        let (bx, by) = (base[0] + 5, base[1] + base[3] / 2);
+        pointer_to(&c, bx as f64 / s, by as f64 / s);
+        c.inject("press");
+        pointer_to(&c, (bx + 150) as f64 / s, (by - 150) as f64 / s);
+        c.inject("release");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            parse(&c.log(), "settings").unwrap().panel,
+            base,
+            "scale {s}: a press in the panel body moved it; only the title band is a handle"
+        );
+
+        // 3. Dragged hard off the top-left, the title band stays reachable.
+        let n = count(&c, "settings");
+        let (gx, gy) = (moved.panel[0] + 120, moved.panel[1] + 12);
+        pointer_to(&c, gx as f64 / s, gy as f64 / s);
+        c.inject("press");
+        pointer_to(&c, -4000.0, -4000.0);
+        c.inject("release");
+        let off = wait_relayout(&c, "settings", n);
+        assert!(off.panel[1] >= 0, "scale {s}: panel dragged above the top of the screen: y={}", off.panel[1]);
+        let on = (140.0 * s) as i32;
+        assert!(
+            off.panel[0] + off.panel[2] >= on - 2,
+            "scale {s}: panel dragged off the left: right edge at {} but {on} device px of the handle must stay on screen",
+            off.panel[0] + off.panel[2]
+        );
+
+    }
+}

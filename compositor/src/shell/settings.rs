@@ -219,6 +219,10 @@ pub struct Built {
     pub hots: Vec<Hot>,
     /// The rows' rectangles (for the keyboard selection highlight).
     pub rows: Vec<Rt>,
+    /// Height of the title band, the panel's drag handle: a press anywhere in
+    /// `y < drag_h` that misses a hotspot starts a move. Set before any early
+    /// return from `build`, so a panel with no page is still draggable.
+    pub drag_h: f32,
 }
 
 pub fn clip(t: &mut TextSystem, s: &str, spec: &FontSpec, max: f32, scale: f64) -> String {
@@ -255,6 +259,9 @@ pub fn build(pages: &[Page], page: usize, status: &str, font: f32, scale: f64, m
 
     // tabs
     let ty = 16.0 + th + 10.0;
+    // Everything above the tabs is the drag handle: the title, and the gap
+    // beside it. The close button is a hotspot and wins the press.
+    b.drag_h = ty;
     let mut x = M;
     for (i, p) in pages.iter().enumerate() {
         let w = (t.string_width(p.title, &spec, scale) + 26.0).ceil();

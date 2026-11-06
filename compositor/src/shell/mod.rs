@@ -55,6 +55,20 @@ pub struct SettingsState {
     /// Keyboard goes to the panel while it is focused (opened, or last clicked).
     pub focused: bool,
     pub appear: motion::Appear,
+    /// Where the panel's top-left is, in LOGICAL units. `None` means centred,
+    /// which is where it opens; a drag pins it. Logical, not device, so the
+    /// panel keeps its place across a scale change (src/scale.rs).
+    pub pos: Option<(f64, f64)>,
+    /// A move in progress: the offset in device pixels from the panel's
+    /// top-left to the point the pointer grabbed it by.
+    pub grab: Option<(f64, f64)>,
+    /// Where the panel was last placed, device pixels. Only so a move can
+    /// re-log without re-rasterising; not the source of truth (that is
+    /// `place_settings`).
+    rect: Option<Rect>,
+    /// The text `settings::draw` placed, panel-relative device pixels, kept so
+    /// a move can re-log a complete layout line without re-rasterising.
+    placed: Vec<(String, i32, i32, i32)>,
     logged: bool,
     pages: Vec<Page>,
     built: Built,

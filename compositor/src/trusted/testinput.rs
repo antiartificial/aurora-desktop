@@ -151,6 +151,23 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         state.pointer_button(0x110, smithay::backend::input::ButtonState::Released, t);
         return "ok".into();
     }
+    if cmd == "press" || cmd == "release" || cmd == "rpress" || cmd == "rrelease" {
+        // A held button, which `click` (press and release in one call) cannot
+        // express. Needed by anything that polls the button between the two:
+        // dragging a settings panel, and Haiku's BMenu tracker.
+        if state.overlay_up() { return "err overlay up".into(); }
+        // Matched exactly, not by prefix: "release".starts_with('r') is true,
+        // so a prefix test sends the RIGHT button when asked to let the left up.
+        let (btn, down) = match cmd {
+            "press" => (0x110, true),
+            "release" => (0x110, false),
+            "rpress" => (0x111, true),
+            _ => (0x111, false),
+        };
+        let s = if down { smithay::backend::input::ButtonState::Pressed } else { smithay::backend::input::ButtonState::Released };
+        state.pointer_button(btn, s, t);
+        return "ok".into();
+    }
     if cmd == "rclick" {
         // Right button (BTN_RIGHT) press and release: the desktop menu's trigger.
         if state.overlay_up() { return "err overlay up".into(); }

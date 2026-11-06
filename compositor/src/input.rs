@@ -61,7 +61,7 @@ impl Aurora {
         let l = self.dock_layout();
         let dp = self.to_physical_point(pos);
         let out = self.output_physical();
-        let on_chrome = self.shell.chrome_contains((dp.x, dp.y), (out.w, out.h));
+        let on_chrome = self.shell.chrome_contains((dp.x, dp.y), (out.w, out.h)) || self.shell.chrome_grabbing();
         self.shell.chrome_motion((dp.x, dp.y), (out.w, out.h));
         let on_dock = l.panel.contains(dp.x, dp.y) || on_chrome;
         let hover = if on_dock && !on_chrome { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
@@ -82,6 +82,7 @@ impl Aurora {
         // The menu and the settings panel are compositor chrome: a click they take goes to nobody else,
         // and neither does its release.
         if button_state == ButtonState::Released && self.chrome_buttons.remove(&button) {
+            self.shell.chrome_release();
             return;
         }
         if button_state == ButtonState::Pressed {

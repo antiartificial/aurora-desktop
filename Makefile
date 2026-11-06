@@ -41,7 +41,7 @@ desktop: build ## open the desktop in a window on this host, with the stack behi
 	trap '[ -n "$$up" ] && kill $$up 2>/dev/null' EXIT; \
 	[ -d '$(RUN)/theme' ] || cp -r contracts/theme '$(RUN)/theme'; \
 	echo "make: the desktop is a host window. Right-click it for the menu; close it to stop."; \
-	XDG_RUNTIME_DIR='$(RUN)/xdg' ./$(COMP) \
+	./$(COMP) \
 	  --bus-socket '$(RUN)/bus.sock' \
 	  --trusted-socket '$(RUN)/xdg/aurora-trusted.sock' \
 	  --theme '$(RUN)/theme'

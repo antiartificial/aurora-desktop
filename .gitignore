@@ -43,3 +43,6 @@ go.work.sum
 
 # Built app binaries (rebuilt via go build; see each app README)
 apps/*/bin/
+
+# agent worktrees: real git repos, never part of this one
+.claude/worktrees/

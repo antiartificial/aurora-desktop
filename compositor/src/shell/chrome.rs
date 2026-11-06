@@ -33,6 +33,35 @@ fn d(v: f32, s: f64) -> i32 {
     (v as f64 * s).round() as i32
 }
 
+/// How much of the panel's title band must stay on screen, logical pixels.
+const ON_SCREEN: f64 = 140.0;
+
+/// Where the settings panel goes. The single source of truth: `settings_rect`
+/// hit-tests with it, `chrome_draws` draws with it, and `prepare_settings`
+/// logs it. It used to be computed twice, and a dragged panel then drew in one
+/// place and logged another.
+///
+/// `pos` is the dragged top-left in LOGICAL units, or `None` for centred.
+/// `size` and the result are device pixels. Clamping happens here, at read
+/// time rather than at drag time, so a resize or a scale change cannot strand
+/// a panel that was legally placed before it: the title band is the only way
+/// to move the panel, so the invariant is that the band stays reachable.
+fn place_settings(pos: Option<(f64, f64)>, size: (i32, i32), drag_h: f32, out: Out, s: f64) -> Rect {
+    let (w, h) = size;
+    let (x, y) = match pos {
+        Some((lx, ly)) => ((lx * s).round() as i32, (ly * s).round() as i32),
+        None => ((out.0 - w) / 2, ((out.1 - h) / 2).max(0)),
+    };
+    let on = (ON_SCREEN * s).round() as i32;
+    let band = (drag_h as f64 * s).round() as i32;
+    Rect {
+        x: x.clamp((on - w).min(0), (out.0 - on).max(0)),
+        y: y.clamp(0, (out.1 - band).max(0)),
+        w,
+        h,
+    }
+}
+
 impl Shell {
     fn style(&self) -> Style {
         Style {
@@ -56,7 +85,7 @@ impl Shell {
         let st = self.settings.as_ref()?;
         let s = self.scale;
         let (w, h) = ((st.built.size.0.max(settings::WIDTH) as f64 * s).ceil() as i32, (st.built.size.1 as f64 * s).ceil() as i32);
-        Some(Rect { x: (out.0 - w) / 2, y: ((out.1 - h) / 2).max(0), w, h })
+        Some(place_settings(st.pos, (w, h), st.built.drag_h, out, s))
     }
 
     // ---- opening ---------------------------------------------------------------
@@ -108,6 +137,10 @@ impl Shell {
             status: "Changes are saved to the theme file and apply at once.".into(),
             focused: true,
             appear: Appear::new(PANEL_MS),
+            pos: None,
+            grab: None,
+            rect: None,
+            placed: vec![],
             logged: false,
             pages: vec![],
             built: Default::default(),
@@ -134,6 +167,12 @@ impl Shell {
         self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1)) || self.settings_rect(out).is_some_and(|r| r.contains(dp.0, dp.1))
     }
 
+    /// A panel move is in progress, so the pointer belongs to chrome wherever
+    /// it is: dragging a panel must not also drag through to a client.
+    pub fn chrome_grabbing(&self) -> bool {
+        self.settings.as_ref().is_some_and(|st| st.grab.is_some())
+    }
+
     pub fn menu_contains(&self, dp: (f64, f64)) -> bool {
         self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1))
     }
@@ -150,6 +189,14 @@ impl Shell {
             };
         }
         if let Some(r) = self.settings_rect(out) {
+            // A move in progress owns the pointer: no hover, no hit-testing.
+            if let Some(st) = &mut self.settings {
+                if let Some((gx, gy)) = st.grab {
+                    st.pos = Some(((dp.0 - gx) / s, (dp.1 - gy) / s));
+                    st.hover = None;
+                    return;
+                }
+            }
             if let Some(st) = &mut self.settings {
                 st.hover = if r.contains(dp.0, dp.1) {
                     let (x, y) = Self::local(r, dp, s);
@@ -197,12 +244,32 @@ impl Shell {
                         Press::Swallow
                     }
                     Some((HotKind::Close, _)) => Press::Act(Action::CloseSettings),
-                    None => Press::Swallow,
+                    None => {
+                        // The title band is the handle. Grab it by the offset
+                        // from the panel's top-left, so the point under the
+                        // pointer stays under the pointer for the whole move.
+                        if y <= st.built.drag_h {
+                            st.grab = Some((dp.0 - r.x as f64, dp.1 - r.y as f64));
+                            tracing::debug!("settings: move started, grabbed at {:.0},{:.0} inside the panel", dp.0 - r.x as f64, dp.1 - r.y as f64);
+                        }
+                        Press::Swallow
+                    }
                 };
             }
             st.focused = false;
         }
         Press::Pass
+    }
+
+    /// The button that chrome took came up. Ends a panel move, if one was
+    /// running. Called for every release chrome swallowed, so it must be
+    /// cheap and must not care whether a move was in progress.
+    pub fn chrome_release(&mut self) {
+        if let Some(st) = &mut self.settings {
+            if st.grab.take().is_some() {
+                tracing::info!("settings: moved to {:?} (logical top-left; None would be centred)", st.pos);
+            }
+        }
     }
 
     // ---- keyboard --------------------------------------------------------------
@@ -311,15 +378,20 @@ impl Shell {
             st.tkey = tkey.clone();
         }
         let key = format!("{tkey}|{}|{:?}|{:?}|{}", st.page, st.sel, st.hover, st.status);
+        // A move changes where the panel is but not what it contains, so it
+        // must re-log (tests read the hotspot coordinates off that line) without
+        // re-rasterising and re-importing the texture on every pointer motion.
+        let moved = {
+            let (w, h) = ((st.built.size.0.max(settings::WIDTH) as f64 * scale).ceil() as i32, (st.built.size.1 as f64 * scale).ceil() as i32);
+            let now = place_settings(st.pos, (w, h), st.built.drag_h, (size.w, size.h), scale);
+            st.rect.is_some() && st.rect != Some(now)
+        };
         if st.key != key || self.settings_tex.is_none() {
             st.built = settings::build(&st.pages, st.page, &st.status, font, scale, st.min_h, &mut self.text);
             let style = self.style();
             let accent = oklab_to_u8(self.bg.accent);
             let (c, placed) = settings::draw(&st.built, st.hover, st.sel, &style, accent, &mut self.text);
-            let rect = {
-                let (w, h) = (c.w as i32, c.h as i32);
-                Rect { x: (size.w - w) / 2, y: ((size.h - h) / 2).max(0), w, h }
-            };
+            let rect = place_settings(st.pos, (c.w as i32, c.h as i32), st.built.drag_h, (size.w, size.h), scale);
             let sd = |v: f32| d(v, scale);
             tracing::info!(
                 "settings: layout scale={scale} panel={},{},{},{} page={} hots=[{}] text={}",
@@ -329,6 +401,19 @@ impl Shell {
             );
             self.settings_tex = Some((key.clone(), Self::import(r, &c)?));
             st.key = key;
+            st.rect = Some(rect);
+            st.placed = placed.iter().map(|(t, x, y, w)| (t.clone(), *x, *y, *w)).collect();
+        } else if moved {
+            let (w, h) = ((st.built.size.0.max(settings::WIDTH) as f64 * scale).ceil() as i32, (st.built.size.1 as f64 * scale).ceil() as i32);
+            let rect = place_settings(st.pos, (w, h), st.built.drag_h, (size.w, size.h), scale);
+            st.rect = Some(rect);
+            let sd = |v: f32| d(v, scale);
+            tracing::info!(
+                "settings: layout scale={scale} panel={},{},{},{} page={} hots=[{}] text={}",
+                rect.x, rect.y, rect.w, rect.h, st.page,
+                st.built.hots.iter().map(|h| format!("{},{},{},{}", rect.x + sd(h.r.x), rect.y + sd(h.r.y), sd(h.r.w), sd(h.r.h))).collect::<Vec<_>>().join(";"),
+                st.placed.iter().map(|(t, x, y, w)| format!("{}@{},{},{}", t.replace(' ', "_"), rect.x + x, rect.y + y, w)).collect::<Vec<_>>().join("\u{1f}")
+            );
         }
         self.settings = Some(st);
         Ok(())
