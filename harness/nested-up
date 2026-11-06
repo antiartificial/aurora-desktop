@@ -7,11 +7,10 @@
 # under ${XDG_CACHE_HOME:-$HOME/.cache}/aurora.
 set -euo pipefail
 
-# Smithay revision to build. This is a branch name for now.
-# TODO: pin SMITHAY_REV to an exact commit once the first successful run
-# confirms that smallvil builds and launches at this revision. Until then,
-# builds track whatever the branch points to and are not reproducible.
-SMITHAY_REV="${SMITHAY_REV:-master}"
+# Smithay revision to build. Pinned to the commit whose smallvil was built
+# and launched successfully on this host on 2026-11-06 (v0.7.0-513-g65aa86fa).
+# The example lives at smithay/smallvil, not examples/smallvil.
+SMITHAY_REV="${SMITHAY_REV:-65aa86fa5236e41775c313408102a5d5c2d1e2ca}"
 SMITHAY_URL="${SMITHAY_URL:-https://github.com/Smithay/smithay.git}"
 
 # Terminal inside the nested compositor. Empty means auto-detect; "none" runs

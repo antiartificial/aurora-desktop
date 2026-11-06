@@ -75,23 +75,25 @@ Recorded on 2026-11-06.
 ## How to run things
 
 - `harness/toolchain-report`: works. Exits 0 today.
-- `harness/nested-up`: written, never run. Builds and runs Smithay's smallvil nested and launches a terminal inside it. `AURORA_TERMINAL` selects the terminal; `--no-terminal` runs smallvil alone. `SMITHAY_REV` is an unpinned branch pending the first successful run.
+- `harness/nested-up`: run successfully on 2026-11-06. Builds and runs Smithay's smallvil nested and launches a terminal inside it. `AURORA_TERMINAL` selects the terminal; `--no-terminal` runs smallvil alone. `SMITHAY_REV` is pinned to `65aa86fa` (v0.7.0-513-g65aa86fa), the revision proven by that run.
 - `harness/ginux-up`: written, never run. Builds the Ginux userspace workspace via upstream's `make build`. It stops at step 5 (domain start) with exit 3 because the host-side domain-start invocation is not documented upstream; it names the candidates rather than guessing.
 
 ## Phase 0 tasks
 
 - [x] Repo and folder layout: done.
 - [x] Toolchains installed and versions recorded: done. `capnp` and `zig` are absent, both deliberately deferred.
-- [ ] Build and run smallvil nested, launch a terminal: NOT DONE. Never run.
+- [x] Build and run smallvil nested, launch a terminal: done on 2026-11-06. ghostty ran inside the nested compositor. Evidence in `demos/phase-0/README.md`.
 - [ ] Ginux harness: partly done. `harness/ginux-up` is written and has never run. The goal changed under decision 0005, and the exit demo needs restating.
 - [x] Decision records: done. 0001 bus envelope, 0002 app manifest, 0003 compositor protocol, 0004 Vitruvian reuse, 0005 Ginux retarget. All are `proposed`.
 - [x] Vitruvian reuse decision: done (0004).
 
-The Nvidia check is OUTSTANDING. The driver version is recorded, but the nested compositor has not actually been run on the 4090.
+The Nvidia check is DONE. smallvil ran holding `/dev/dri/card1` and `/dev/dri/renderD128` on the RTX 4090, driver 580.178.04. See `demos/phase-0/README.md`.
+
+Still outstanding for Phase 0: a recorded screen capture as exit evidence. Host screenshots of the nested compositor come out blank because smallvil implements no capture protocol; `harness/capture` is being built to request frames from the compositor directly.
 
 ## Phase 0 exit demo
 
 From the plan: "a terminal typing inside the nested compositor, then `harness/ginux-up` dropping into an Alpine shell on Ginux."
 
-- The first half, a terminal typing inside the nested compositor, is achievable but untried. `harness/nested-up` has never run.
+- The first half, a terminal typing inside the nested compositor, is DONE as a live run; a recorded capture of it is not. See `demos/phase-0/README.md`.
 - The second half, `harness/ginux-up` dropping into an Alpine shell on Ginux, is VOID under decision 0005. Ginux is now a userspace kernel: there is no GINUX.EFI, and domain images are Rocky OCI images, not Alpine. Its replacement has not been defined. The exit demo must be restated before Phase 0 closes.
