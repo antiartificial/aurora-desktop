@@ -41,13 +41,13 @@ What each piece is for:
 - `controllerd`: loads app manifests, registers domains with the bus, runs verbs in domains granted exactly their input and output, writes provenance, gates destructive verbs on approval.
 - `controller`: its command-line client (invoke, decide, provenance --verify).
 - `aurora`: the launcher a person drives: open, chain, verbs, apps, watch, and `--pick` (the powerbox file picker, which needs a terminal).
-- `aurora-compositor`: a headless Wayland compositor: real screen capture, glass, the Flip 3D switcher, and the approval overlay that clients cannot see.
+- `aurora-compositor`: a Wayland compositor: real screen capture, glass, the Flip 3D switcher, and the approval overlay that clients cannot see. It runs windowed (winit) or `--headless`; the test suites and `aurora-up` use headless because it needs no screen.
 - `lumen`: the demo image app (resize, export, histogram), run inside a domain by the controller.
 - `haiku_ledger`: a Haiku-style application on the `kits/` BeOS primitives, exposed on the bus through a bridge.
 
 Troubleshooting on this host:
 
-- **winit is blocked by a locked screen.** The windowed backend stalls when the host does not present its window, so the compositor runs `--headless`. `aurora-up` does that for you; the winit path was never verified to deliver a capture.
+- **winit works; that claim was wrong three times over.** It was blamed on a locked screen, then on a panic, then on a blit. The real cause was that binding an offscreen texture makes Smithay go surfaceless, after which this NVIDIA driver never presents what we draw -- silently, with every call reporting success. It now uses two shared EGL contexts: one that only ever touches the window, one that does the scene, effects and capture. A real `ghostty` runs in it, is visible, and takes typed input. `compositor/README.md` has the bisection evidence. `aurora-up` still uses `--headless`, because the tests do and it needs no screen.
 - **`foot` is absent**, so `ghostty` is the terminal (`harness/nested-up` auto-detects it). Not a bug. To run a terminal in the compositor: `WAYLAND_DISPLAY=$XDG_RUNTIME_DIR/$AURORA_WAYLAND ghostty`, with `DISPLAY` unset.
 - **`capnp` and `zig` are absent on purpose.** The IDL choice (decision 0001) and libghostty are deferred; nothing here needs them.
 - **`domain limit --memory/--cpu` say NOT ENFORCED.** systemd delegates only `pids` to the user manager here; enforcing the rest needs root once.

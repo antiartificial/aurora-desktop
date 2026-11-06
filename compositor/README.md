@@ -165,9 +165,12 @@ The decision comes only from the keyboard, never from the socket: nothing on the
   presents and the blit transform is right. `BISECT_PHASES=AE
   ./target/release/examples/winit_bisect` re-runs that check in isolation:
   RED (direct baseline) then CYAN (two-context path), 3s each, both visible.
-  Still untested on winit: resize, scale factors other than 1, keyboard and
-  pointer input through the host window, the fallback path when B cannot be
-  created, and frame pacing across the B-to-A switch.
+  Input works: a real ghostty runs inside the nested compositor, takes
+  pointer focus on a click and echoes typed keys, with the xkb seat reporting
+  `Loaded Keymap name="English (US)"`. That makes the nested desktop usable
+  and not merely visible.
+  Still untested on winit: resize, scale factors other than 1, the fallback
+  path when B cannot be created, and frame pacing across the B-to-A switch.
 - The startup log line `eglCreateSyncKHR ... EGL_SYNC_NATIVE_FENCE_FD_ANDROID
   specified valid fd but EGL_SYNC_STATUS is also being set` comes from Smithay
   probing native-fence support on the NVIDIA driver once at init. It is logged
