@@ -1,0 +1,32 @@
+# ImageMagick: a wrapped CLI tool.
+#
+# Honest limit (decision 0002): as with ffmpeg, this manifest is only
+# enforceable because the tool runs inside a domain granted exactly its
+# declared inputs and outputs, not because of the manifest itself.
+#
+# image_hash is a placeholder (0002 open question 6).
+
+[app]
+id = "org.imagemagick.imagemagick"
+name = "ImageMagick"
+version = "7.1.1"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+
+[[capabilities.paths]]
+path = "~/Pictures"
+access = "write"
+
+[types]
+opens = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/tiff"]
+creates = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]
+
+[[verb]]
+name = "convert@v1"
+summary = "Convert an image to another format"
+effect = "write"
+accepts = ["image/*"]
+capabilities = ["path:~/Pictures"]
+input = { format = "string", quality = "int?" }
+output = { file = "path" }

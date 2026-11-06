@@ -1,0 +1,47 @@
+# ffmpeg: a wrapped CLI tool.
+#
+# Honest limit (decision 0002): for a wrapped CLI tool this manifest is only
+# enforceable because the tool is run inside a domain granted exactly its
+# declared inputs and outputs, not by the manifest itself. ffmpeg's real effect
+# class is "write wherever the arguments point"; nothing here can show
+# otherwise. A tool that reaches past the grants fails at the domain boundary.
+#
+# image_hash is a placeholder (0002 open question 6).
+
+[app]
+id = "org.ffmpeg.ffmpeg"
+name = "ffmpeg"
+version = "7.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+
+[[capabilities.paths]]
+path = "~/Videos"
+access = "write"
+
+[[capabilities.paths]]
+path = "~/Music"
+access = "write"
+
+[types]
+opens = ["video/mp4", "video/webm", "video/x-matroska", "audio/mpeg", "audio/flac"]
+creates = ["video/mp4", "video/webm", "audio/mpeg", "image/jpeg"]
+
+[[verb]]
+name = "transcode@v1"
+summary = "Re-encode audio or video into another container or codec"
+effect = "write"
+accepts = ["video/*", "audio/*"]
+capabilities = ["path:~/Videos", "path:~/Music"]
+input = { format = "string", video_codec = "string?", audio_codec = "string?" }
+output = { file = "path" }
+
+[[verb]]
+name = "thumbnail@v1"
+summary = "Extract a still frame from a video"
+effect = "write"
+accepts = ["video/*"]
+capabilities = ["path:~/Videos"]
+input = { at_seconds = "float?" }
+output = { image = "image/jpeg" }

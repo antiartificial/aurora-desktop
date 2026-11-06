@@ -1,0 +1,68 @@
+# Lumen: the toy native image app. Manifest only; the app's code comes later.
+# For a native app the manifest is a contract.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
+
+[app]
+id = "org.aurora.lumen"
+name = "Lumen"
+version = "0.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[runtime]]
+name = "go"
+version = "1.27.1"
+
+[capabilities]
+devices = ["gpu"]
+
+[[capabilities.paths]]
+path = "~/Pictures"
+access = "write"
+
+[types]
+opens = ["image/png", "image/jpeg"]
+creates = ["image/png", "image/jpeg", "image/avif"]
+
+[[verb]]
+name = "resize@v1"
+summary = "Resize an image to a given width, keeping aspect ratio"
+effect = "write"
+accepts = ["image/png", "image/jpeg"]
+capabilities = ["path:~/Pictures"]
+input = { width = "int", height = "int?" }
+output = { image = "image/*" }
+
+[[verb]]
+name = "export@v1"
+summary = "Export an image in another format"
+effect = "write"
+accepts = ["image/png", "image/jpeg"]
+capabilities = ["path:~/Pictures"]
+input = { format = "string", quality = "int?" }
+output = { file = "path" }
+
+[[verb]]
+name = "histogram@v1"
+summary = "Compute the colour histogram of an image"
+effect = "read"
+accepts = ["image/png", "image/jpeg"]
+output = { red = "bytes", green = "bytes", blue = "bytes" }
+
+[[event]]
+name = "export.finished"
+payload = { source = "path", output = "path", format = "string" }
+
+[[setting]]
+key = "default_quality"
+type = "int"
+default = 90
+description = "JPEG and AVIF export quality"
+
+[[replicant]]
+name = "recent_exports"
+title = "Recent exports"
+
+[[migration]]
+from = "0.0.9"
+to = "0.1.0"
+description = "Rename quality setting"
