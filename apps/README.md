@@ -7,6 +7,8 @@ App manifests for aurora. Each subdirectory holds one `manifest.toml`, written a
 | `lumen/` | toy native image app | `resize@v1`, `export@v1`, `histogram@v1` |
 | `ffmpeg/` | wrapped CLI tool | `transcode@v1`, `thumbnail@v1` |
 | `imagemagick/` | wrapped CLI tool | `convert@v1` |
+| `browser/`, `controls/`, `text/`, `list/`, `menu/`, `layout/`, `kitchensink/` | windowed Haiku apps (`org.aurora.haiku.*`) | none: launched directly, unsandboxed (decision 0012) |
+| `haiku_ledger/` | Haiku bus service, no window | `add@v1`, `total@v1`, `list@v1` (served on the bus, not through `run`) |
 
 These are manifests only. The toy app's code (Lumen) comes later, in Phase 5. The `image_hash` values are all-zero placeholders because no app images exist yet.
 

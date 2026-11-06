@@ -49,6 +49,9 @@ name = "histogram@v1"
 summary = "Compute the colour histogram of an image"
 effect = "read"
 accepts = ["image/png", "image/jpeg"]
+# The default for both types: read-only and takes no arguments, so opening a file can run it without asking.
+# resize and export are not defaults because each needs a parameter the user has not given.
+default = true
 output = { red = "bytes", green = "bytes", blue = "bytes" }
 
 [[event]]

@@ -162,7 +162,17 @@ func cmdApps(env *Env, args []string) int {
 		return 0
 	}
 	for _, a := range apps {
-		fmt.Fprintf(env.Out, "%s  %s %s\n    verbs: %s\n", a.ID, a.Name, a.Version, strings.Join(a.Verbs, ", "))
+		fmt.Fprintf(env.Out, "%s  %s %s\n", a.ID, a.Name, a.Version)
+		if a.Windowed {
+			if a.ExecProblem != "" {
+				fmt.Fprintf(env.Out, "    windowed: UNAVAILABLE, %s\n", a.ExecProblem)
+			} else {
+				fmt.Fprintf(env.Out, "    windowed: %s\n", a.Exec)
+			}
+		}
+		if len(a.Verbs) > 0 || !a.Windowed {
+			fmt.Fprintf(env.Out, "    verbs: %s\n", strings.Join(a.Verbs, ", "))
+		}
 	}
 	return 0
 }

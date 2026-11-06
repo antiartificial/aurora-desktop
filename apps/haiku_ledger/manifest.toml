@@ -1,0 +1,40 @@
+# Haiku Ledger: a Haiku BApplication that is a bus service (kits/demo/haiku_ledger.cpp).
+# It has NO window: it opens no BWindow, so it is not `windowed`, and it has no `exec`
+# (a non-windowed app with exec is refused). aurora-up starts it as a long-running
+# process; it registers on the bus as the service "haiku-ledger" and answers the verbs
+# below directly. They are NOT run through apps/<app>/run, so there is no run script,
+# and registry.invoke@v1 cannot execute them; call them with
+#   bus send haiku-ledger add@v1 '{"label":"coffee","cents":350}'
+# The ledger lives in memory only: nothing is written to disk, so no path capability.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
+
+[app]
+id = "org.aurora.haiku.ledger"
+name = "Haiku Ledger"
+version = "0.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[verb]]
+name = "add@v1"
+summary = "Add an entry to the in-memory ledger and return the running total"
+effect = "write"
+input = { label = "string", cents = "int" }
+output = { total = "int", handled_by = "string" }
+
+[[verb]]
+name = "total@v1"
+summary = "Return the running total in cents"
+effect = "read"
+output = { total = "int" }
+
+[[verb]]
+name = "list@v1"
+summary = "Return every entry added so far and the total"
+effect = "read"
+# The reply also carries "entries", an array of {label, cents}; the schema has no
+# array type, so only the scalar is declared here.
+output = { total = "int" }
+
+[[event]]
+name = "ledger.entry.added"
+payload = { label = "string", cents = "int", total = "int" }

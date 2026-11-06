@@ -224,6 +224,10 @@ EOF
 EOF
 [ $COMPOSITOR = 1 ] && [ $TESTINPUT = 1 ] && say "                 test-input      $INPUT   (headless has no keyboard; keys go in here)"
 [ $HAIKU_UP = 1 ] && say "   haiku_ledger  a Haiku BApplication serving verbs add@v1 / list@v1 on the bus as service 'haiku-ledger'"
+# Windowed apps (decision 0012) are manifests whose exec is a CMake target; without HAIKU_SRC they do not exist.
+# The registry already reports each one; say so here too instead of leaving it to be discovered at click time.
+MISSING=$("$BIN/aurora" apps 2>/dev/null | grep -c 'windowed: UNAVAILABLE')
+[ "${MISSING:-0}" -gt 0 ] && say "   windowed apps $MISSING listed but NOT launchable (binary not built; needs HAIKU_SRC and cmake/ninja). See: aurora apps"
 say "   isolation     $ISO"
 say "   logs          $RUN/*.log, $RUN/*.out"
 

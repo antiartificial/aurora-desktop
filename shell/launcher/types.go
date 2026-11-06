@@ -21,10 +21,13 @@ const (
 
 // App is one entry of registry.apps@v1.
 type App struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
-	Verbs   []string `json:"verbs"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Version     string   `json:"version"`
+	Verbs       []string `json:"verbs"`
+	Windowed    bool     `json:"windowed,omitempty"`
+	Exec        string   `json:"exec,omitempty"`
+	ExecProblem string   `json:"exec_problem,omitempty"`
 }
 
 // Verb is one entry of registry.verbs@v1.

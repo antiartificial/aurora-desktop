@@ -3,6 +3,8 @@ package manifest
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var validEffects = map[Effect]bool{EffectRead: true, EffectWrite: true, EffectDestructive: true, EffectExternal: true}
@@ -46,6 +48,14 @@ func (v *validator) app() {
 	}
 	if !hashRe.MatchString(a.ImageHash) {
 		v.add("app.image_hash", "app", 0, "image_hash", "%q must be sha256: followed by 64 lowercase hex digits", a.ImageHash)
+	}
+	switch {
+	case a.Windowed && strings.TrimSpace(a.Exec) == "":
+		v.add("app.exec", "app", 0, "windowed", "is required when windowed = true: a windowed app is launched directly, so the manifest must say what to run")
+	case !a.Windowed && a.Exec != "":
+		v.add("app.exec", "app", 0, "exec", "%q is only valid with windowed = true; a non-windowed app is invoked through its verbs", a.Exec)
+	case strings.ContainsRune(a.Exec, 0):
+		v.add("app.exec", "app", 0, "exec", "contains a NUL byte")
 	}
 }
 
@@ -133,8 +143,29 @@ func (m *Manifest) capDeclared(ref string) (known bool, msg string) {
 	return false, "is not among the app's requested capabilities"
 }
 
+const maxGroupLen = 40
+
+// validGroup checks the advisory display group. It reaches the UI, so it gets
+// the standard other untrusted display text gets: no control characters,
+// bounded length.
+func validGroup(g string) string {
+	switch {
+	case strings.TrimSpace(g) == "":
+		return "must not be empty or blank"
+	case utf8.RuneCountInString(g) > maxGroupLen:
+		return fmt.Sprintf("is longer than %d characters", maxGroupLen)
+	}
+	for _, r := range g {
+		if unicode.IsControl(r) {
+			return "contains a control character"
+		}
+	}
+	return ""
+}
+
 func (v *validator) verbs() {
 	seen := map[string]bool{}
+	defaultFor := map[string]string{} // accepted MIME type -> default verb name
 	for i, vb := range v.m.Verbs {
 		f := fmt.Sprintf("verb[%d]", i)
 		if vb.Name != "" {
@@ -165,6 +196,23 @@ func (v *validator) verbs() {
 		for j, a := range vb.Accepts {
 			if !validMIMEOrWild(a) {
 				v.add(fmt.Sprintf("%s.accepts[%d]", f, j), "verb", i, "accepts", "%q is not a valid MIME type or pattern", a)
+			}
+		}
+		if vb.Default {
+			if len(vb.Accepts) == 0 {
+				v.add(f+".default", "verb", i, "default", "a default verb must declare accepts: a verb that takes no document is the default for nothing")
+			}
+			for _, a := range vb.Accepts {
+				if prev, dup := defaultFor[a]; dup {
+					v.add(f+".default", "verb", i, "default", "%s and %s are both default for %s; an app has at most one default per accepted type", prev, vb.Name, a)
+				} else {
+					defaultFor[a] = vb.Name
+				}
+			}
+		}
+		if vb.Group != "" || v.m.lines.has("verb", i, "group") {
+			if msg := validGroup(vb.Group); msg != "" {
+				v.add(f+".group", "verb", i, "group", "%q %s", vb.Group, msg)
 			}
 		}
 		v.schema(f+".input", "verb", i, "input", vb.Input)

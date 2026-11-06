@@ -31,10 +31,10 @@ func TestVerbsAcceptingLumen(t *testing.T) {
 
 func TestVerbsAcceptingWildcards(t *testing.T) {
 	ff := mustLoad(t, string(example(t, "ffmpeg")))
-	if got := names(ff.VerbsAccepting("video/mp4")); !reflect.DeepEqual(got, []string{"transcode@v1", "thumbnail@v1"}) {
+	if got := names(ff.VerbsAccepting("video/mp4")); !reflect.DeepEqual(got, []string{"extract_audio@v1", "transcode_audio@v1", "poster@v1", "scale_video@v1", "probe@v1"}) {
 		t.Errorf("video/mp4: %v", got)
 	}
-	if got := names(ff.VerbsAccepting("audio/flac")); !reflect.DeepEqual(got, []string{"transcode@v1"}) {
+	if got := names(ff.VerbsAccepting("audio/flac")); !reflect.DeepEqual(got, []string{"extract_audio@v1", "transcode_audio@v1", "probe@v1"}) {
 		t.Errorf("audio/flac: %v", got)
 	}
 	im := mustLoad(t, string(example(t, "imagemagick")))
