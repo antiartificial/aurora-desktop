@@ -59,3 +59,9 @@ The bus is the one way apps, the shell, the compositor and agents talk to each o
 - Ephemeral messages are never logged, so pointer motion and frame timing cannot be replayed.
 - The evolution rules rule out removing or retyping a field. Deprecated fields stay in the schema.
 - Hybrid logical clocks in the envelope mean federation does not need a format change later.
+
+## Addendum: handles on the controller's grant path
+
+The controller now mints a handle (`bus.mint@v1`) per grant of an invoke, naming `file:<path>:<mode>`, presents them in `caps` so the daemon's holder check runs, records the ids in the provenance event and xattr, and revokes them when the invoke ends. `controller provenance --verify` checks the ids against the daemon's table. This is handles as unforgeable daemon-issued names for a grant, not "passed in messages" to the app: the app holds nothing, and the controller, which performs the access, is the holder.
+
+It proves that the daemon issued the id to the controller's identity for that resource (independently only while the handle is live; after revocation the daemon cannot list it, so the resource comparison rests on the controller's own ledger) and it is an exact answer to "was this id ever minted by this daemon's current life". It does not prove the access happened, stop a controller lying about what it did, or authorise minting (any identity may mint any resource name, per the MVP minting policy). Handles are in memory: after a daemon restart verification is inconclusive, not negative. Details: `controller/README.md`.

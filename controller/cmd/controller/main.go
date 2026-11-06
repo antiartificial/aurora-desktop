@@ -24,7 +24,9 @@ const usage = `usage: controller [--socket S] <command>
   invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]
                                              run a verb (values: JSON if valid, else string)
   decide <request_id> allow|deny             answer an approval.requested (from the session socket)
-  provenance <file>                          read back the file's provenance xattr
+  provenance <file> [--verify]               read back the file's provenance xattr; --verify asks the
+                                             daemon about the record's handle ids (exit 0 verified,
+                                             3 not verified, 4 inconclusive)
 `
 
 func die(f string, a ...any) {
@@ -123,15 +125,19 @@ func main() {
 		}
 		call(sock, "approval.decide@v1", map[string]any{"request_id": pos[0], "decision": pos[1]})
 	case "provenance":
+		verify := fs.Bool("verify", false, "check the record's handle ids against the daemon")
 		pos := split(fs, rest)
 		if len(pos) != 1 {
-			die("usage: controller provenance <file>")
+			die("usage: controller provenance <file> [--verify]")
 		}
 		r, err := prov.Read(pos[0])
 		if err != nil {
 			die("%v", err)
 		}
 		show(r)
+		if *verify {
+			os.Exit(verifyRecord(sock, r))
+		}
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -167,4 +173,41 @@ func call(sock, verb string, payload any) {
 		return
 	}
 	show(v)
+}
+
+// verifyRecord asks controllerd to check the record's handles and prints the
+// report. Exit status: 0 verified (or the record names no handles), 3 not
+// verified, 4 inconclusive.
+func verifyRecord(sock string, r prov.Record) int {
+	c, err := client.Dial(sock)
+	if err != nil {
+		die("%v", err)
+	}
+	defer c.Close()
+	b, _ := json.Marshal(map[string]any{"record": r})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.Call(ctx, proto.Envelope{To: config.Service, Verb: "registry.verify@v1", Payload: b})
+	if err != nil {
+		die("verify: %v", err)
+	}
+	var rep prov.CapReport
+	if err := json.Unmarshal(resp.Payload, &rep); err != nil {
+		die("verify: unreadable reply: %v", err)
+	}
+	fmt.Println("-- handle verification")
+	show(rep)
+	switch rep.Status {
+	case prov.StatusNotVerified:
+		fmt.Println("RESULT: NOT VERIFIED")
+		return 3
+	case prov.StatusInconclusive:
+		fmt.Println("RESULT: INCONCLUSIVE (not a negative: see detail)")
+		return 4
+	case prov.StatusNoHandles:
+		fmt.Println("RESULT: no handles in this record; nothing to verify")
+		return 0
+	}
+	fmt.Println("RESULT: VERIFIED (what this proves is narrow: see controller/README.md)")
+	return 0
 }

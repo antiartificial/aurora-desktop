@@ -47,9 +47,11 @@ type Result struct {
 	NeedsApproval bool `json:"needs_approval,omitempty"`
 	// Approval is set for external and destructive verbs only: whether it was
 	// required, the route (interactive, auto-approve, ambient) and when.
-	Approval   *prov.Approval `json:"approval,omitempty"`
-	Log        string         `json:"log,omitempty"` // tail of the app's stderr
-	Provenance *prov.Record   `json:"provenance,omitempty"`
+	Approval *prov.Approval `json:"approval,omitempty"`
+	// CapNote says why a grant has no handle, when that is so.
+	CapNote    string       `json:"cap_note,omitempty"`
+	Log        string       `json:"log,omitempty"` // tail of the app's stderr
+	Provenance *prov.Record `json:"provenance,omitempty"`
 }
 
 // Error is the failure reply: {"ok":false,"error":...,"detail":...}.
@@ -90,6 +92,8 @@ type Invoker struct {
 	// Bus, if set, gets each app domain registered when it is ensured so the
 	// bus attributes the domain's connections to it; nil disables that.
 	Bus DomainBus
+	// Caps, if set, mints a daemon handle per grant and revokes it afterwards.
+	Caps CapBus
 	// Execs overrides executable lookup: app id to host path.
 	Execs map[string]string
 
@@ -214,6 +218,9 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		defer cancel()
 	}
 
+	cs := iv.mintCaps(grants)
+	defer cs.release(iv.logf)
+
 	if writes {
 		created, e := prepareOutput(output)
 		if e != nil {
@@ -235,7 +242,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if res.Exit != 0 {
 		return nil, fail("app_failed", "%s exited with status %d", tail(res.Stderr), req.Verb, res.Exit)
 	}
-	out := &Result{OK: true, Isolated: isolated, Grants: grants, NeedsApproval: approval != nil && approval.Required, Approval: approval, Log: tail(res.Stderr)}
+	out := &Result{OK: true, Isolated: isolated, Grants: grants, CapNote: cs.note, NeedsApproval: approval != nil && approval.Required, Approval: approval, Log: tail(res.Stderr)}
 	if t := bytes.TrimSpace(res.Stdout); len(t) > 0 && json.Valid(t) {
 		out.Result = json.RawMessage(t)
 	}
@@ -246,7 +253,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
-		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, Approval: approval, TS: iv.clock.Now().String()}
+		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, Approval: approval, CapEpoch: cs.epoch, CapNote: cs.note, TS: iv.clock.Now().String()}
 	set := iv.SetProvenance
 	if set == nil {
 		set = prov.Write
@@ -254,11 +261,9 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if err := set(output, rec); err != nil {
 		iv.logf("WARNING: could not write provenance xattr on %s: %v (event still published)", output, err)
 	}
-	if iv.Publish != nil {
-		b, _ := json.Marshal(rec)
-		if err := iv.Publish(prov.Topic, b); err != nil {
-			iv.logf("WARNING: could not publish %s: %v", prov.Topic, err)
-		}
+	b, _ := json.Marshal(rec)
+	if err := iv.publishRecord(cs, b); err != nil {
+		iv.logf("WARNING: could not publish %s: %v", prov.Topic, err)
 	}
 	out.Output, out.Provenance = output, &rec
 	succeeded = true

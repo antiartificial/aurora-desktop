@@ -60,6 +60,9 @@ type Grant struct {
 	Path   string `json:"path"`
 	Mode   string `json:"mode"` // "ro" or "rw"
 	Source string `json:"source"`
+	// Cap is the id (cap:...) of the daemon-minted handle that named this
+	// grant for this invoke; empty when none was issued (see Record.CapNote).
+	Cap string `json:"cap,omitempty"`
 }
 
 // Record says where a file came from.
@@ -78,7 +81,13 @@ type Record struct {
 	Isolated       bool            `json:"isolated"`
 	Grants         []Grant         `json:"grants"`
 	Approval       *Approval       `json:"approval,omitempty"`
-	TS             string          `json:"ts"`
+	// CapEpoch is the id of a handle the controller minted when it connected
+	// to the daemon. If the daemon still knows it, the daemon has not
+	// restarted since this record was written (see verify.go).
+	CapEpoch string `json:"cap_epoch,omitempty"`
+	// CapNote says why a grant has no Cap, or that presenting them failed.
+	CapNote string `json:"cap_note,omitempty"`
+	TS      string `json:"ts"`
 }
 
 // Write stores the record on path as an extended attribute.

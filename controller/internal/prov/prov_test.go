@@ -27,3 +27,13 @@ func TestXattrRoundTrip(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestResourceNamesFitTheDaemonSyntaxAndAreStable(t *testing.T) {
+	if got := Resource("/tmp/a.png", "rw"); got != "file:/tmp/a.png:rw" {
+		t.Fatal(got)
+	}
+	odd := Resource("/tmp/my pics/\u00e9.png", "ro")
+	if !resourceOK.MatchString(odd) || odd != Resource("/tmp/my pics/\u00e9.png", "ro") || odd == Resource("/tmp/my pics/\u00e9.png", "rw") {
+		t.Fatal(odd)
+	}
+}

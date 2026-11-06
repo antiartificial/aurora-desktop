@@ -65,6 +65,21 @@ sleep 0.5; cat "$W/events.log"
 
 step "xattr read back: controller provenance"
 $C provenance "$OUT" || echo "(no xattr: filesystem may not support user xattrs)"
+step "handle verification: the record's cap ids checked against busd's table"
+$C provenance "$OUT" --verify | sed -n '/"grants"/,$p'
+echo "exit status: ${PIPESTATUS[0]}"
+step "same, on a TAMPERED copy (the output grant's cap id replaced by one the controller never minted)"
+cp --preserve=xattr "$OUT" "$OUT.tampered"
+python3 - "$OUT.tampered" <<'PY'
+import os, sys, json
+f = sys.argv[1]
+r = json.loads(os.getxattr(f, "user.aurora.provenance"))
+r["grants"][-1]["cap"] = "cap:0123456789abcdef"
+os.setxattr(f, "user.aurora.provenance", json.dumps(r).encode())
+PY
+$C provenance "$OUT.tampered" --verify | sed -n '/-- handle verification/,$p'
+echo "exit status: ${PIPESTATUS[0]}"
+rm -f "$OUT.tampered"
 step "raw xattr (getfattr, if installed)"
 command -v getfattr >/dev/null && getfattr -n user.aurora.provenance "$OUT" || echo "(getfattr not installed)"
 

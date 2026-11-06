@@ -125,6 +125,23 @@ What it does not: anything of the same uid that is not in a domain connects as `
 
 The fixture app's `delete@v1` (`testdata/apps/demo`, effect `destructive`; it writes a tombstone file, it deletes nothing) exists to test this. `demo.sh` ends with the block, deny, allow, timeout and ambient cases against a real busd, controllerd and bwrap domain, decided by `controller decide` (a script cannot drive `/dev/tty`).
 
+## Capability handles on the grant path
+
+For each grant of an invoke the controller mints a daemon handle (`bus.mint@v1`) naming the resource, `file:<abs path>:<ro|rw>` (a path that does not fit the daemon's resource syntax, or exceeds 128 characters, is named `filehash:<sha256 of path>:<mode>`; `prov.Resource` computes both). The TTL is the invoke timeout plus 10s. The controller is minter and holder. It then presents all handles in `caps` of a `bus.ping@v1`, which the daemon rejects unless the sender holds every one (`cap_unknown`, `cap_not_held`, `cap_revoked`, `cap_expired`), and attaches them to the `provenance.created` event, so the bus log's `cap_ids` for that message names them independently of the xattr. They are revoked (`bus.revoke@v1`) when the invoke returns, on success and on every failure path after minting. The record carries the id per grant, plus `cap_epoch`:
+
+    "grants":[{"path":"/abs/in.png","mode":"ro","source":"gesture","cap":"cap:03b2c31cd45eb509"},{"path":"/abs/out.png","mode":"rw","source":"gesture","cap":"cap:292a3ccebb605905"}],"cap_epoch":"cap:47afdf610964e873"
+
+If there is no bus, minting fails, or the daemon refuses the presentation, the invoke still runs and the record has no `cap` (or an unaccepted one) and a `cap_note` saying why (`cap_note` is also in the reply). Capability bookkeeping never fails an invoke. The event is delivered to subscribers with the live tokens; only the holder can use them, and they are revoked at the end of the invoke.
+
+`controller provenance <file> --verify` sends the record to controllerd (`registry.verify@v1`, session-socket callers only), which asks busd:
+
+- **Outstanding** (listed by `bus inspect`): the minter must be the controller's identity and the resource must equal the one recomputed from the record's path and mode. Independent evidence from the daemon.
+- **No longer outstanding** (revoked or expired; the daemon does not list them): `bus.revoke@v1` by id is idempotent for the minter, so success proves the daemon has the row and the controller minted it. The resource is then compared with the controller's in-memory ledger, which is not independent evidence. Without a ledger entry (controllerd restarted, daemon did not) the result is inconclusive.
+- **Unknown to the daemon**: not verified only if the daemon is shown to have been running when the record was written, which is what `cap_epoch` is for: the daemon never prunes rows, so if it still knows the epoch handle it never restarted and an unknown id was never minted. If the epoch is unknown too, the result is **inconclusive**: handles are in memory, a restart forgets all of them, and a forged id cannot be told from a forgotten one. Removing or altering `cap_epoch` degrades a result to inconclusive; it never produces verified.
+- A handle minted by a different identity: not verified.
+
+What a `verified` proves: the daemon issued that handle id to the controller's bus identity (still live, or, for dead ones, at some point), for the resource the record states (independent only while live), and the record's ids were not swapped between grants. What it does not prove: that the app held or used anything (it holds nothing); that the file named was in fact accessed (the controller says what it did, and a controller that lies can mint a handle and not use it, or use none); that the record is unmodified in other fields (`args`, `inputs`, `approval` are not covered); that the xattr is genuine (the controller's bus identity is the MVP `uid:comm`, so any same-uid process named `controllerd` is the same identity as far as the daemon can tell); or anything about a record older than the daemon's current life. Minting policy is the MVP's: any identity may mint any resource name, so the resource string is a name, not a binding to the file. Verification after a daemon restart is inconclusive, not negative.
+
 ## CLI
 
     controller [--socket S] apps
@@ -132,11 +149,11 @@ The fixture app's `delete@v1` (`testdata/apps/demo`, effect `destructive`; it wr
     controller describe <app> <verb>
     controller invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]   # v is parsed as JSON, else a string
     controller decide <request_id> allow|deny
-    controller provenance <file>
+    controller provenance <file> [--verify]   # --verify: exit 0 verified, 3 NOT verified, 4 inconclusive
 
 ## Not implemented
 
-- Capability handles: not wired. A handle minted for the input would be held by the controller, and `bus.transfer@v1` needs the domain to have a live connection at invoke time, which a one-shot app does not have yet. A recorded handle that nothing checks would be decoration, so provenance does not name one.
+- The app does not hold a capability. Handles (below) are minted, held and revoked by the controller; a one-shot app has no live connection for `bus.transfer@v1`, and none is transferred.
 
 - The manifest's `capabilities.paths` are consulted only to classify grants (ambient or gesture). By default a gesture grant is given on request, so a verb declaring `~/Pictures` can still be asked to write anywhere the caller names; only `--no-gesture-grants` refuses that. The powerbox v0 tickets make a gesture distinguishable from a bare request but are not a trusted path (see above), and the approval behind destructive/external verbs is a terminal prompt, not a trusted path (see "Approval"). The `net`/`device` capabilities are never granted.
 - No consent, no installation step, no signature or `image_hash` check, no hot reload of manifests: apps are read once at start.

@@ -10,6 +10,7 @@ import (
 	"github.com/antiartificial/aurora/contracts/manifest"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
+	"github.com/antiartificial/aurora/controller/internal/prov"
 )
 
 // Service answers registry requests.
@@ -52,6 +53,8 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 	switch req.Verb {
 	case "approval.decide@v1":
 		return s.decide(req)
+	case "registry.verify@v1":
+		out, e = s.verify(req)
 	case "registry.apps@v1":
 		out = s.listApps()
 	case "registry.verbs@v1":
@@ -166,4 +169,25 @@ func (s *Service) describe(appID, verb string) (any, *invoke.Error) {
 		"app": appID, "verb": v.Name, "effect": v.Effect, "summary": v.Summary,
 		"accepts": acc, "input": nz(v.Input), "output": nz(v.Output), "capabilities": caps,
 	}, nil
+}
+
+// verify serves registry.verify@v1 {"record": <provenance record>}: it asks
+// the daemon about the record's handle ids. Same caller rule as approvals,
+// because the check probes with bus.revoke@v1 and that is the controller's
+// own power to use.
+func (s *Service) verify(req proto.Envelope) (any, *invoke.Error) {
+	if !mayDecide(req.From) {
+		return nil, &invoke.Error{Code: "not_permitted", Msg: "registry.verify@v1 may only be called from the session socket"}
+	}
+	var q struct {
+		Record prov.Record `json:"record"`
+	}
+	if e := decode(req, &q); e != nil {
+		return nil, e
+	}
+	rep, err := s.Inv.VerifyCaps(q.Record)
+	if err != nil {
+		return nil, &invoke.Error{Code: "caps_unavailable", Msg: err.Error()}
+	}
+	return rep, nil
 }
