@@ -38,6 +38,39 @@ fn capture_bin() -> PathBuf {
     p
 }
 
+/// How many compositors may run at once, across every test in this binary.
+///
+/// Each `Comp` is a real compositor process with its own EGL contexts on the
+/// one GPU, and cargo runs up to `num_cpus` tests at a time. Above a handful,
+/// startup slows past the fixed timeouts in `wait_for` and unrelated tests
+/// fail -- on this machine a full run failed four tests that each passed on
+/// their own, which made "the suite is green" an unreliable statement. Cap it
+/// so a pass means something. `AURORA_TEST_COMPOSITORS` overrides.
+fn permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
+    static P: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let n = std::env::var("AURORA_TEST_COMPOSITORS").ok().and_then(|v| v.parse().ok()).filter(|n: &usize| *n > 0).unwrap_or_else(|| {
+            std::thread::available_parallelism().map(|p| p.get().min(4)).unwrap_or(2)
+        });
+        (std::sync::Mutex::new(n), std::sync::Condvar::new())
+    })
+}
+
+fn acquire() {
+    let (m, cv) = permits();
+    let mut n = m.lock().unwrap();
+    while *n == 0 {
+        n = cv.wait(n).unwrap();
+    }
+    *n -= 1;
+}
+
+fn release() {
+    let (m, cv) = permits();
+    *m.lock().unwrap() += 1;
+    cv.notify_one();
+}
+
 pub struct Comp {
     child: Child,
     pub dir: tempfile::TempDir,
@@ -64,6 +97,7 @@ impl Comp {
     }
 
     fn start_inner(prep: impl FnOnce(&Path), extra: &[&str], legacy: bool) -> Comp {
+        acquire();
         let dir = tempfile::tempdir().unwrap();
         // the runtime dir must be 0700 or wayland sockets are refused
         fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
@@ -158,6 +192,7 @@ impl Drop for Comp {
         for c in &mut self.clients { let _ = c.kill(); let _ = c.wait(); }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        release();
     }
 }
 
