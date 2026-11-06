@@ -362,7 +362,13 @@ impl Aurora {
             return;
         }
         self.deco.unplaced.remove(&key);
-        if self.shell.legacy_scene || self.is_maximized(&w) || self.persist.as_ref().is_some_and(|p| p.was_restored(&root.id())) {
+        if self.shell.legacy_scene || self.is_maximized(&w) {
+            return;
+        }
+        if self.persist.as_ref().is_some_and(|p| p.was_restored(&root.id())) {
+            // It was put back where it was left. It still takes its slot in the cascade, so where the NEXT window
+            // goes does not depend on whether the placement memory got to this one before its first commit or after.
+            self.deco.cascade += 1;
             return;
         }
         let parent = w.toplevel().and_then(|t| t.parent()).and_then(|p| self.window_for_surface(&p));

@@ -238,7 +238,7 @@ sleep 1; frames 3
 RESTORED=$(inj state); WA=$(wins_of "$RESTORED"); echo "   windows after: $WA"
 has "$WA" "demo.alpha:Alpha@210,90" "alpha is back at 210,90"
 has "$WA" "demo.beta:Beta@333,177" "beta is back at 333,177"
-has "$WA" "demo.gamma:Gamma@0,0" "a window the layout never saw is NOT moved (default spot 0,0 with the dock hidden)"
+has "$WA" "demo.gamma:Gamma@96,118" "a window the layout never saw is NOT moved: it sits in its cascade slot, the third (32+2*32, 24+30+2*32), where alpha and beta took the first two"
 eq "$(jf "$RESTORED" 'j["restored"]')" 2 "exactly two placements were applied"
 mv demo.gamma 20 300; frames 3   # gamma out of the way so the frame can be compared with the earlier one
 snap "$W/after.png"; A1=$(png "$W/after.png"); echo "   capture after: $A1"

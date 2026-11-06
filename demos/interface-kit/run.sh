@@ -49,8 +49,11 @@ done
 out=$("$BUILD/test_controls" 2>&1); rc=$?
 [ $rc = 0 ] && ok "test_controls: $(echo "$out" | tail -1)" || { bad "test_controls"; echo "$out" | grep FAIL; }
 
+# --legacy-scene: this demo compares window pixels at fixed window coordinates (a click at 60,43; a frame found at 0,0), so it runs
+# on the pre-shell scene: no title bars, new windows at the origin. The shell with its decorations is exercised by
+# demos/kitchen-sink and compositor/tests/decoration.rs.
 step "start the compositor headless (private socket dir $RUN)"
-env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUN" "$COMP" --headless=1280x800 --test-input "$RUN/ti" >"$W/comp.log" 2>&1 & PIDS+=($!)
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUN" "$COMP" --headless=1280x800 --legacy-scene --test-input "$RUN/ti" >"$W/comp.log" 2>&1 & PIDS+=($!)
 SOCK=
 for _ in $(seq 100); do
   for s in "$RUN"/wayland-[0-9]*; do case $s in *.lock) ;; *) [ -S "$s" ] && SOCK=$(basename "$s");; esac; done
@@ -412,7 +415,7 @@ edge=$(python3 -I "$HERE/imgcheck.py" --px "$W/lay-1/window-0.ppm" "$al" "$((at 
 step "KEYMAP HOT RELOAD: the compositor's [input] layout changes while the app runs; the same physical key types a different letter"
 HR=$RUN/hr; mkdir -p "$HR/theme"; chmod 700 "$HR"
 printf '[input]\nlayout = "us"\nvariant = "dvorak"\n' > "$HR/theme/aurora-glass.toml"
-env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$HR" "$COMP" --headless=1280x800 --test-input "$HR/ti" --theme "$HR/theme" >"$W/comp2.log" 2>&1 & PIDS+=($!)
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$HR" "$COMP" --headless=1280x800 --legacy-scene --test-input "$HR/ti" --theme "$HR/theme" >"$W/comp2.log" 2>&1 & PIDS+=($!)
 HSOCK=; for _ in $(seq 100); do for s in "$HR"/wayland-[0-9]*; do case $s in *.lock) ;; *) [ -S "$s" ] && HSOCK=$(basename "$s");; esac; done; [ -n "$HSOCK" ] && break; sleep 0.1; done
 [ -n "$HSOCK" ] || bad "second compositor never bound its socket"
 env XDG_RUNTIME_DIR="$HR" WAYLAND_DISPLAY="$HSOCK" HELLO_QUIT_AFTER_MS=12000 "$BUILD/iface_keys" >"$W/hr.out" 2>&1 & HR_PID=$!; PIDS+=($HR_PID)

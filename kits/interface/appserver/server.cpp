@@ -155,11 +155,14 @@ struct SApp {
 // they are xdg_popups of the application's main window, since a Wayland client cannot place a toplevel.
 bool IsMenu(const SWindow* w) { return w->feel == 1025; }
 
+// B_MODAL_APP_WINDOW_FEEL (1), B_MODAL_SUBSET_WINDOW_FEEL (2), B_MODAL_ALL_WINDOW_FEEL (3): headers/os/interface/Window.h.
+bool IsModal(const SWindow* w) { return w->feel >= 1 && w->feel <= 3; }
+
 SWindow* PopupParent(SWindow* menu)
 {
 	SWindow* best = NULL;
 	for (SWindow* o : gWindows)
-		if (o != menu && o->app == menu->app && !IsMenu(o) && o->visible && o->wl && (!best || o->active)) best = o;
+		if (o != menu && o->app == menu->app && !IsMenu(o) && !IsModal(o) && o->visible && o->wl && (!best || o->active)) best = o;
 	return best;
 }
 
@@ -607,6 +610,9 @@ void Show(SWindow* w, bool show)
 			int lw = (int)w->frame.IntegerWidth() + 1, lh = (int)w->frame.IntegerHeight() + 1;
 			w->wl = au_wl_win_create(gWl, w->title.c_str(), lw, lh, WlEvent, w);
 			if (w->wl) au_wl_win_set_key_fn(w->wl, WlKey);
+			// A modal window (a BAlert is B_MODAL_APP_WINDOW_FEEL) is a dialog of the application's main window: say so,
+			// and the compositor centres it on that window instead of cascading it like a new document.
+			if (w->wl && IsModal(w)) if (SWindow* p = PopupParent(w)) au_wl_win_set_parent(w->wl, p->wl);
 		}
 		// No compositor means no keyboard focus, so no B_WINDOW_ACTIVATED. AURORA_APPSERVER_ACTIVE=1 sends it, so a
 		// reference render of a focused window (blue focus ring, caret, selection) can be made without a seat.
