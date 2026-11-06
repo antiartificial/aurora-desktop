@@ -16,11 +16,16 @@ import (
 // client, draws it and reads the keystroke.
 //
 // What the connection proves to the compositor: this process's uid and
-// cgroup (SO_PEERCRED). What the answer proves to the controller: the peer on
-// the socket path it dialled said so. It is not a signature: whoever can
-// replace the socket file with their own listener can answer "allow".
+// cgroup (SO_PEERCRED). What the answer proves to the controller: it was made
+// by a process that held the approval key (compositor_sig.go). The reply is
+// HMAC-signed over the request id, the decision, the key pressed, the domain
+// shown, its source and whether it differed from our claim; an unsigned, badly
+// signed or replayed reply is refused (a *SignatureError) and the caller falls
+// back to the bus route. This is key possession, like the powerbox ticket: any
+// process that can read the key file can sign. It is not kernel authentication
+// of the compositor.
 //
-// The controller checks the peer too (compositor_peer.go): SO_PEERCRED uid
+// The controller also checks the peer (compositor_peer.go): SO_PEERCRED uid
 // must be the expected one and the peer must not be inside a domain cgroup,
 // else nothing is sent and Ask returns a *PeerError.
 type CompositorPrompt struct {
@@ -34,12 +39,20 @@ type CompositorPrompt struct {
 	DenyCgroupComponents []string
 	// DenyCgroupPrefixes refuses a peer at or below one of these cgroup paths.
 	DenyCgroupPrefixes []string
+	// Key verifies replies. If nil, the file at KeyPath is loaded (and created
+	// if absent) on each Ask; an unusable key refuses the compositor route.
+	Key []byte
+	// KeyPath defaults to ticket.ApprovalKeyPath().
+	KeyPath string
 	// Logf, if set, records the credentials of each accepted peer.
 	Logf func(format string, args ...any)
 }
 
 // CompositorAnswer is the compositor's reply.
 type CompositorAnswer struct {
+	RequestID string `json:"request_id"`
+	// Sig is the hex HMAC-SHA256 over the fields in replyFields.
+	Sig      string `json:"sig"`
 	Decision string `json:"decision"`
 	Key      string `json:"key"`
 	Reason   string `json:"reason"` // "key" or "timeout"
@@ -88,6 +101,10 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 	dt := c.DialTimeout
 	if dt <= 0 {
 		dt = time.Second
+	}
+	key, err := c.approvalKey()
+	if err != nil {
+		return nil, &SignatureError{c.Socket, err.Error() + "; nothing was sent"}
 	}
 	conn, err := (&net.Dialer{Timeout: dt}).DialContext(ctx, "unix", c.Socket)
 	if err != nil {
@@ -139,6 +156,9 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 		}
 		if r.a.Error != "" {
 			return nil, fmt.Errorf("compositor refused the request: %s", r.a.Error)
+		}
+		if err := verifyReply(key, r.a, req.RequestID, c.Socket); err != nil {
+			return nil, err
 		}
 		if r.a.Decision != Allow && r.a.Decision != Deny {
 			return nil, fmt.Errorf("compositor answered %q", r.a.Decision)

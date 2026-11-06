@@ -12,15 +12,24 @@ import (
 // KeyPath is where the controller and the picker share the signing key:
 // $AURORA_POWERBOX_KEY, else $XDG_RUNTIME_DIR/aurora/powerbox.key (the same
 // directory convention as the bus socket).
-func KeyPath() string {
-	if p := os.Getenv("AURORA_POWERBOX_KEY"); p != "" {
+func KeyPath() string { return keyPath("AURORA_POWERBOX_KEY", "powerbox.key") }
+
+// ApprovalKeyPath is where the controller and the compositor share the key the
+// compositor signs its approval replies with: $AURORA_APPROVAL_KEY, else
+// $XDG_RUNTIME_DIR/aurora/approval.key. A different file from the powerbox
+// key, loaded and created by the same LoadKey (compositor/src/trusted/sign.rs
+// computes the same path).
+func ApprovalKeyPath() string { return keyPath("AURORA_APPROVAL_KEY", "approval.key") }
+
+func keyPath(env, name string) string {
+	if p := os.Getenv(env); p != "" {
 		return p
 	}
 	rt := os.Getenv("XDG_RUNTIME_DIR")
 	if rt == "" {
 		rt = filepath.Join(os.TempDir(), fmt.Sprintf("aurora-%d", os.Getuid()))
 	}
-	return filepath.Join(rt, "aurora", "powerbox.key")
+	return filepath.Join(rt, "aurora", name)
 }
 
 // LoadKey reads the 32-byte key. It refuses a file that is not a regular

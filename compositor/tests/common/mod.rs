@@ -50,9 +50,15 @@ pub struct Comp {
 
 impl Comp {
     pub fn start(extra: &[&str]) -> Comp {
+        Comp::start_with(|_| {}, extra)
+    }
+
+    /// Like `start`, after `prep` has seen the (empty) runtime dir.
+    pub fn start_with(prep: impl FnOnce(&Path), extra: &[&str]) -> Comp {
         let dir = tempfile::tempdir().unwrap();
         // the runtime dir must be 0700 or wayland sockets are refused
         fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        prep(dir.path());
         let (trusted, input, dump) = (dir.path().join("trusted.sock"), dir.path().join("input.sock"), dir.path().join("overlay.png"));
         let mut child = Command::new(env!("CARGO_BIN_EXE_aurora-compositor"))
             .args(["--headless=1280x800", "--trusted-socket"]).arg(&trusted)

@@ -13,6 +13,7 @@ import (
 	"github.com/antiartificial/aurora/contracts/manifest"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/prov"
+	"github.com/antiartificial/aurora/controller/ticket"
 )
 
 // Bus topics of the approval flow.
@@ -33,11 +34,20 @@ const (
 // ApprovalRequest is the approval.requested payload: everything a prompt
 // needs to show what is about to happen, exactly as the controller will run it.
 type ApprovalRequest struct {
-	RequestID      string          `json:"request_id"`
-	App            string          `json:"app"`
-	Domain         string          `json:"domain,omitempty"` // bus identity of the app's domain, if the adapter reported one
-	DomainName     string          `json:"domain_name"`
-	DomainAttested bool            `json:"domain_attested"`
+	RequestID  string `json:"request_id"`
+	App        string `json:"app"`
+	Domain     string `json:"domain,omitempty"` // bus identity of the app's domain, if the adapter reported one
+	DomainName string `json:"domain_name"`
+	// DomainAttested is true only when Domain was read from an
+	// approval.preflight event busd stamped from inside the domain (bus route;
+	// the compositor route does that check itself). Otherwise Domain is the
+	// controller's unverified claim. DomainSource says the same in a word.
+	DomainAttested bool   `json:"domain_attested"`
+	DomainSource   string `json:"domain_source,omitempty"` // "bus" or "claim"
+	// DomainMismatch: the bus attested a different domain than the one the
+	// controller expected, which is DomainClaim. Domain is the bus's.
+	DomainMismatch bool            `json:"domain_mismatch,omitempty"`
+	DomainClaim    string          `json:"domain_claim,omitempty"`
 	Verb           string          `json:"verb"`
 	Effect         manifest.Effect `json:"effect"`
 	Grants         []prov.Grant    `json:"grants"`
@@ -58,8 +68,8 @@ type Approver struct {
 	// Compositor, if set, is tried first: the compositor draws the prompt.
 	// When it cannot be reached or refuses us, the bus route below is used.
 	Compositor *CompositorPrompt
-	// Preflight, if set (and Compositor is), runs a helper inside the app's
-	// domain before the prompt so the bus attests which domain asked.
+	// Preflight, if set, runs a helper inside the app's domain before the
+	// prompt so the bus attests which domain asked. Both routes use it.
 	Preflight *Preflight
 
 	mu      sync.Mutex
@@ -150,20 +160,22 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	}
 	dname := DomainName(app.ID())
 	req := ApprovalRequest{App: app.ID(), DomainName: dname, Verb: name, Effect: verb.Effect, Grants: grants, Args: argsJSON}
-	if ap.Preflight != nil && ap.Compositor != nil && !ap.AutoApprove && iv.Runner.Available() == nil {
+	if ap.Preflight != nil && !ap.AutoApprove && iv.Runner.Available() == nil {
 		// The helper runs in the domain, so the domain must exist (and be
 		// registered with busd, below) before the prompt rather than at execute.
 		if err := iv.Runner.Ensure(dname); err != nil {
 			iv.logf("WARNING: cannot create domain %s for the approval pre-flight: %v", dname, err)
 		}
 	}
+	registered := false
 	if id, _, err := iv.Runner.Identity(dname); err == nil {
 		req.Domain = id
 		// The domain exists, so make sure busd has it registered: the
 		// compositor will ask busd about this identity. (A domain that does
 		// not exist yet has no identity; the prompt then names none and shows
 		// as unverified, which is true.)
-		_, req.DomainAttested = iv.domainIdentity(dname)
+		_, registered = iv.domainIdentity(dname)
+		req.DomainAttested = registered
 	}
 	if ap.AutoApprove {
 		id := newID()
@@ -190,6 +202,8 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 			return nil, fail("approval_denied", "%s was not approved: the invoke was canceled while waiting", "request "+req.RequestID+"; nothing was run", name)
 		case isPeerErr(err):
 			iv.logf("WARNING: REFUSING THE COMPOSITOR ROUTE: %v. Nothing was sent to it. A same-uid impostor may be squatting the socket %s, or --compositor-uid is wrong; falling back to the bus route (approval.requested / approval.decide@v1)", err, ap.Compositor.Socket)
+		case isSigErr(err):
+			iv.logf("WARNING: REFUSING THE COMPOSITOR'S REPLY: %v. Whatever it said (allow included) was discarded and nothing was run on it. Something other than the compositor may be answering on %s, or the approval key differs (%s); falling back to the bus route (approval.requested / approval.decide@v1)", err, ap.Compositor.Socket, ticket.ApprovalKeyPath())
 		case err != nil:
 			iv.logf("compositor prompt unavailable (%v); falling back to the bus route (approval.requested / approval.decide@v1)", err)
 		case ans.Decision != Allow:
@@ -208,6 +222,7 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	id, ch := ap.open()
 	defer ap.forget(id)
 	req.RequestID, req.TimeoutSeconds = id, int(wait.Round(time.Second)/time.Second)
+	bd := iv.attestForBus(ctx, ap, dname, &req, registered)
 	req.ExpiresAt = time.Now().Add(wait).UTC().Format(time.RFC3339)
 	b, _ := json.Marshal(req)
 	if iv.Publish == nil {
@@ -238,12 +253,17 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 		return nil, fail("approval_denied", "%s was denied by %s", "request "+id+"; nothing was run", name, v.by)
 	}
 	iv.logf("approval %s: allowed by %s", id, v.by)
-	return &prov.Approval{Required: true, Route: prov.RouteInteractive, Decision: Allow, RequestID: id, By: v.by, At: now()}, nil
+	return interactiveApproval(id, v, req, bd, now()), nil
 }
 
 func isPeerErr(err error) bool {
 	var pe *PeerError
 	return errors.As(err, &pe)
+}
+
+func isSigErr(err error) bool {
+	var se *SignatureError
+	return errors.As(err, &se)
 }
 
 func (iv *Invoker) publishDecided(id string, v verdict, reason, route string) {

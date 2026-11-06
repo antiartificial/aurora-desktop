@@ -10,6 +10,7 @@ pub mod attest;
 pub mod draw;
 pub mod dump;
 mod font;
+pub mod sign;
 pub mod socket;
 pub mod testinput;
 pub mod verify;
@@ -66,6 +67,8 @@ pub struct Trusted {
     pub bus_sock: Option<PathBuf>,
     /// Request ids that already attested a prompt from a bus event.
     pub used: attest::Used,
+    /// Key the reply is signed with (sign.rs); without one no reply can be accepted.
+    pub sign_key: Option<Vec<u8>>,
     /// Keys pressed while an overlay was up. Their releases are swallowed
     /// too, even after the overlay is gone, so a client never sees half a keystroke.
     swallowed: std::collections::HashSet<u32>,
@@ -88,14 +91,22 @@ fn decide(sym: xkb::Keysym) -> Option<(bool, String)> {
     }
 }
 
-fn reply(mut out: &UnixStream, req: &Request, allow: bool, key: &str, reason: &str) {
-    let body = serde_json::json!({
+/// The reply, signed over every field of the decision (sign.rs). The order here
+/// is the order controller/internal/invoke/compositor_sig.go verifies.
+fn reply(mut out: &UnixStream, key: Option<&[u8]>, req: &Request, allow: bool, pressed: &str, reason: &str) {
+    let v = &req.verification;
+    let (decision, source, mismatch) = (if allow { "allow" } else { "deny" }, if v.bus_attested { "bus" } else { "claim" }, v.mismatch.is_some().to_string());
+    let mut body = serde_json::json!({
         "v": 1, "request_id": req.request_id,
-        "domain_verified": req.verification.verdict.wire(), "domain_verify_detail": req.verification.detail,
-        "domain_source": if req.verification.bus_attested { "bus" } else { "claim" },
-        "domain_identity": req.domain_identity, "domain_mismatch": req.verification.mismatch.is_some().to_string(),
-        "decision": if allow { "allow" } else { "deny" }, "key": key, "reason": reason,
+        "domain_verified": v.verdict.wire(), "domain_verify_detail": v.detail,
+        "domain_source": source,
+        "domain_identity": req.domain_identity, "domain_mismatch": mismatch,
+        "decision": decision, "key": pressed, "reason": reason,
     });
+    if let Some(k) = key {
+        let fields = [req.request_id.as_str(), decision, pressed, reason, v.verdict.wire(), v.detail.as_str(), source, req.domain_identity.as_str(), mismatch.as_str()];
+        body["sig"] = sign::sign_fields(k, &fields).into();
+    }
     let _ = writeln!(out, "{body}");
     let _ = out.shutdown(std::net::Shutdown::Both);
 }
@@ -130,7 +141,7 @@ impl Aurora {
         let Some(i) = self.trusted.queue.iter().position(|p| p.id == id) else { return };
         let p = self.trusted.queue.remove(i).unwrap();
         tracing::info!("trusted: approval {} -> {} (key {key:?}, {reason})", p.req.request_id, if allow { "allow" } else { "deny" });
-        reply(&p.out, &p.req, allow, key, reason);
+        reply(&p.out, self.trusted.sign_key.as_deref(), &p.req, allow, key, reason);
         if !self.trusted.active() {
             let saved = self.trusted.saved_focus.take().filter(|s| s.is_alive());
             self.seat.get_keyboard().unwrap().set_focus(self, saved, SERIAL_COUNTER.next_serial());

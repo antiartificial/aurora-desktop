@@ -84,6 +84,7 @@ func main() {
 	approver := &invoke.Approver{Timeout: *apprTimeout, AutoApprove: *autoApprove}
 	if !*noComp {
 		approver.Compositor = &invoke.CompositorPrompt{Socket: *compSock, Logf: log.Printf}
+		log.Printf("compositor replies must be signed with the key %s (shared with the compositor; anything that can read it can forge a reply)", ticket.ApprovalKeyPath())
 		if *compUID >= 0 {
 			u := uint32(*compUID)
 			approver.Compositor.ExpectedUID = &u
@@ -97,13 +98,11 @@ func main() {
 			log.Printf("approvals are drawn by the compositor via %s when it answers; otherwise the bus route", *compSock)
 		}
 	}
-	if approver.Compositor != nil {
-		if pb := locateHelper(*preflightBin, "aurora-preflight"); pb != "" {
-			approver.Preflight = &invoke.Preflight{Bin: pb}
-			log.Printf("approval pre-flight: %s runs inside the domain before each compositor prompt", pb)
-		} else {
-			log.Printf("WARNING: no aurora-preflight helper found: compositor prompts will show the domain as an unverified claim (build ./cmd/aurora-preflight, pass --preflight-bin)")
-		}
+	if pb := locateHelper(*preflightBin, "aurora-preflight"); pb != "" {
+		approver.Preflight = &invoke.Preflight{Bin: pb}
+		log.Printf("approval pre-flight: %s runs inside the domain before each prompt, on both routes", pb)
+	} else {
+		log.Printf("WARNING: no aurora-preflight helper found: prompts will show the domain as an unverified claim (build ./cmd/aurora-preflight, pass --preflight-bin)")
 	}
 	if *autoApprove {
 		log.Printf("WARNING: --auto-approve: destructive and external verbs on non-ambient grants will be APPROVED WITHOUT ASKING. This is a test affordance and defeats the point of approval.")

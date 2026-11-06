@@ -59,7 +59,9 @@ type Approval struct {
 	By        string `json:"by,omitempty"`  // bus identity that decided; "controllerd" for auto-approve; "compositor" for route compositor
 	Key       string `json:"key,omitempty"` // route compositor: the keystroke the compositor read
 	At        string `json:"at"`            // RFC3339Nano, when decided (or when the invoke was checked)
-	// DomainVerified, route compositor only: what the compositor itself found
+	// DomainVerified, routes compositor and interactive: what the compositor itself found (compositor route) or
+	// "true" when the controller read the bus's own pre-flight event (interactive route), else "unknown". On the
+	// compositor route: what the compositor itself found
 	// when it checked the domain identity it was shown against busd, at the
 	// time it drew the prompt. "true": busd has that domain registered with a
 	// cgroup it attests. "false": busd answered and does not vouch for it.
@@ -67,7 +69,7 @@ type Approval struct {
 	// exists and is attested. It does NOT prove this invoke ran in it.
 	DomainVerified     string `json:"domain_verified,omitempty"`
 	DomainVerifyDetail string `json:"domain_verify_detail,omitempty"`
-	// DomainSource, route compositor only: "bus" when the domain the user was
+	// DomainSource, routes compositor and interactive: "bus" when the domain the user was
 	// shown came from an event busd stamped from inside that domain (the
 	// requester did not choose it), "claim" when it was only the controller's
 	// word. DomainShown is the identity displayed. DomainMismatch is true when

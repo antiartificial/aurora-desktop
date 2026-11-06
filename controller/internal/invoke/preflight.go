@@ -16,7 +16,9 @@ import (
 // which domain the request came from without taking the controller's word.
 //
 // The helper needs no grants and no secret. If it cannot run, the prompt is
-// still shown, and the compositor shows the controller's claim as unverified.
+// still shown, and the domain is shown as the controller's unverified claim.
+// Both routes use it: the compositor reads the event itself; the controller
+// reads it for the bus route (preflight_log.go).
 type Preflight struct {
 	Bin     string        // host path of the aurora-preflight binary (static)
 	Timeout time.Duration // default 5s
@@ -47,10 +49,7 @@ func (p *Preflight) run(ctx context.Context, r domain.Runner, dname string, req 
 	}
 	ctx, cancel := context.WithTimeout(ctx, t)
 	defer cancel()
-	argv := []string{path, req.RequestID, req.App, req.Verb, string(req.Effect)}
-	for _, g := range req.Grants {
-		argv = append(argv, fmt.Sprintf("%s %s (%s)", g.Mode, g.Path, g.Source))
-	}
+	argv := append([]string{path, req.RequestID, req.App, req.Verb, string(req.Effect)}, grantArgs(req)...)
 	res, err := r.Run(ctx, dname, argv, nil)
 	if err != nil {
 		return 0, err

@@ -39,6 +39,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => eprintln!("aurora-compositor: domain claims are checked against busd at {}", p.display()),
         None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown)"),
     }
+    let kp = trusted::sign::key_path();
+    match trusted::sign::load_key(&kp, true) {
+        Ok(k) => {
+            state.trusted.sign_key = Some(k);
+            eprintln!("aurora-compositor: replies are signed with {} (anything that can read it can forge a reply)", kp.display());
+        }
+        Err(e) => eprintln!("aurora-compositor: WARNING: approval key {} unusable ({e}): replies are unsigned and the controller will refuse them", kp.display()),
+    }
     let tsock = args.trusted_socket.clone().unwrap_or_else(default_trusted_socket);
     match trusted::socket::listen(&event_loop.handle(), &tsock) {
         Ok(()) => println!(

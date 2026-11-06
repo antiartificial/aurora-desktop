@@ -4,6 +4,7 @@ package busreg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -56,4 +57,16 @@ func (b Client) RemoveDomain(identity string) error {
 		return nil
 	}
 	return err
+}
+
+// Log reads the bus log (bus.log@v1) for one topic since a duration like "2m".
+// The reply is busd's own: each message's `from` was stamped by the daemon.
+func (b Client) Log(topic, since string, limit int) (json.RawMessage, error) {
+	t := b.Timeout
+	if t == 0 {
+		t = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), t)
+	defer cancel()
+	return b.C.Control(ctx, "bus.log@v1", map[string]any{"topic": topic, "since": since, "limit": limit})
 }

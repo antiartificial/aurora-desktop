@@ -94,6 +94,19 @@ Closes the second half of "which domain asked", up to a stated ceiling. Before e
 - The bus attests where the helper ran, not where the payload runs. The controller chooses both and could run them in different domains; it is still in the trusted base for that link. Verb, grants and args are the controller's text; the compositor cross-checks them against the event but both come from the controller.
 - The domain is cgroup-attested only (the controller does not request namespace or uid attestation), so busd's caveats for that mode apply. The compositor trusts busd, its log and its `bus.inspect@v1` reply over the session socket, as same-uid.
 - A malicious app inside the domain can publish its own `approval.preflight` events but cannot make a different domain look like the sender; at worst it causes a conflict and a fall back to the claim.
-- The bus route (no compositor) has no pre-flight. Secure attention and a user-held secret remain open.
+- Secure attention and a user-held secret remain open.
 
 Tests: `compositor/tests/attest.rs`, `compositor/src/trusted/attest.rs`, `controller/internal/invoke/preflight_test.go`. End to end with real busd, controllerd, headless compositor, bwrap domains and the real helper: `controller/demo-attested.sh`.
+
+## Amendment: signed replies and the bus-route pre-flight
+
+Two gaps in the approval path, closed as far as stated.
+
+**Signed replies.** The compositor's reply carries `sig`, an HMAC-SHA256 over the request id, decision, key, reason, `domain_verified`, `domain_verify_detail`, `domain_source`, `domain_identity` and `domain_mismatch`, under a 32-byte key file shared with the controller (`$AURORA_APPROVAL_KEY` or `$XDG_RUNTIME_DIR/aurora/approval.key`; created atomically, 0600, by whichever starts first; refused on load unless a regular file, this uid, mode 0600). It is the powerbox ticket's scheme. The controller refuses an unsigned, mis-signed or replayed (other request id) reply and uses the bus route, logging why. Code: `compositor/src/trusted/sign.rs`, `controller/internal/invoke/compositor_sig.go`.
+
+- **Met:** a process that binds the trusted socket first and has not read the key cannot make the controller act on an `allow`; a signature cannot be replayed for another request nor survive a changed field. Shown on the real stack by `controller/demo-signed.sh`.
+- **Not met:** any process that can read the key file can sign. Same-uid processes can, by default, so a same-uid squatter that reads the file is accepted (the demo shows it, and a controller test asserts it). This is key possession, not kernel authentication of the compositor. The signature does not cover the verb, grants or args displayed. A squatter still receives the request text, because the controller verifies after sending. Real separation needs another uid for the compositor and key, or kernel-attested identity.
+
+**Bus-route pre-flight.** The controller now runs the helper for the bus route too and reads `approval.preflight` from the bus log itself, with the compositor's rules except the `bus.inspect@v1` re-check. `approval.requested` carries the attested identity (`domain_source: bus`, `domain_attested: true`) or the claim; provenance records `domain_source` on both routes. The same ceiling applies: the bus attests where the helper ran. The launcher (`shell/`, not changed) shows the identity and `domain_attested`, not yet `domain_source` or the mismatch.
+
+Tests: `compositor/tests/signed.rs`, `controller/internal/invoke/compositor_sig_test.go`, `approval_bus_test.go`.

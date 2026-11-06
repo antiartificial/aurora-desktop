@@ -27,7 +27,7 @@ func TestControllerAcceptsALegitimateCompositorAndLogsItsCredentials(t *testing.
 	inv, dir, _, _, recs := withApprover(t)
 	sock, got := fakeCompositor(t, `{"v":1,"decision":"allow","key":"a","reason":"key","domain_verified":"true","domain_verify_detail":"registered and cgroup-attested by busd; 1 live connection(s) now"}`)
 	var logs []string
-	cp := &CompositorPrompt{Socket: sock, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }}
+	cp := &CompositorPrompt{Key: testKey, Socket: sock, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }}
 	inv.Approvals.Compositor = cp
 	if _, e := inv.Invoke(testCtx(), gesture(t, dir)); e != nil {
 		t.Fatal(e, e.Detail)
@@ -54,7 +54,7 @@ func TestProvenanceCarriesFalseAndUnknownVerification(t *testing.T) {
 	} {
 		inv, dir, _, _, recs := withApprover(t)
 		sock, _ := fakeCompositor(t, reply)
-		inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+		inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 		if _, e := inv.Invoke(testCtx(), gesture(t, dir)); e != nil {
 			t.Fatal(e, e.Detail)
 		}
@@ -77,7 +77,7 @@ func TestControllerRefusesAnImpostorAndFallsBackWithTheReasonLogged(t *testing.T
 		inv, dir, _, reqs, recs := withApprover(t)
 		// An impostor that would say "allow" if it were ever asked.
 		sock, got := fakeCompositor(t, `{"v":1,"decision":"allow","key":"a","reason":"key","domain_verified":"true"}`)
-		cp.Socket = sock
+		cp.Socket, cp.Key = sock, testKey
 		inv.Approvals.Compositor = cp
 		var logs []string
 		inv.Logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
@@ -107,7 +107,7 @@ func TestControllerRefusesAnImpostorAndFallsBackWithTheReasonLogged(t *testing.T
 func TestPeerErrorIsTypedAndNothingIsSent(t *testing.T) {
 	sock, got := fakeCompositor(t, `{"v":1,"decision":"allow"}`)
 	other := uint32(os.Geteuid()) + 1
-	_, err := (&CompositorPrompt{Socket: sock, ExpectedUID: &other}).Ask(testCtx(), ApprovalRequest{RequestID: "r"}, 1e9)
+	_, err := (&CompositorPrompt{Key: testKey, Socket: sock, ExpectedUID: &other}).Ask(testCtx(), ApprovalRequest{RequestID: "r"}, 1e9)
 	if !isPeerErr(err) || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("%v", err)
 	}

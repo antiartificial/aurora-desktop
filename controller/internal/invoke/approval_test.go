@@ -209,9 +209,12 @@ func TestNonDestructiveInvokeUnaffected(t *testing.T) {
 
 func testCtx() context.Context { return context.Background() }
 
-// fakeCompositor listens like the compositor's trusted socket and answers
-// each request with reply (a JSON line); got receives the decoded requests.
-func fakeCompositor(t *testing.T, reply string) (string, chan map[string]any) {
+// testKey is the approval key the fakes sign with and the prompts verify with.
+var testKey = []byte("0123456789abcdef0123456789abcdef")
+
+// fakeCompositorFn listens like the compositor's trusted socket; each request
+// line is decoded into got and answered with whatever answer returns for it.
+func fakeCompositorFn(t *testing.T, answer func(m map[string]any) string) (string, chan map[string]any) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "trusted.sock")
 	ln, err := net.Listen("unix", path)
@@ -232,17 +235,38 @@ func fakeCompositor(t *testing.T, reply string) (string, chan map[string]any) {
 				var m map[string]any
 				json.Unmarshal(line, &m)
 				got <- m
-				fmt.Fprintln(c, reply)
+				fmt.Fprintln(c, answer(m))
 			}()
 		}
 	}()
 	return path, got
 }
 
+// signedAs returns reply with the request id of m and a signature made with
+// key, as the real compositor does.
+func signedAs(key []byte, reply string, m map[string]any) string {
+	var a CompositorAnswer
+	json.Unmarshal([]byte(reply), &a)
+	if a.RequestID == "" {
+		a.RequestID, _ = m["request_id"].(string)
+	}
+	a.Sig = SignReply(key, a)
+	var raw map[string]any
+	json.Unmarshal([]byte(reply), &raw)
+	raw["request_id"], raw["sig"] = a.RequestID, a.Sig
+	b, _ := json.Marshal(raw)
+	return string(b)
+}
+
+// fakeCompositor answers every request with reply (a JSON line), signed with testKey.
+func fakeCompositor(t *testing.T, reply string) (string, chan map[string]any) {
+	return fakeCompositorFn(t, func(m map[string]any) string { return signedAs(testKey, reply, m) })
+}
+
 func TestCompositorRouteAllowRecordsRouteAndKey(t *testing.T) {
 	inv, dir, _, reqs, recs := withApprover(t)
 	sock, got := fakeCompositor(t, `{"v":1,"decision":"allow","key":"a","reason":"key"}`)
-	inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+	inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 	req := gesture(t, dir)
 	res, e := inv.Invoke(testCtx(), req)
 	if e != nil {
@@ -279,7 +303,7 @@ func TestCompositorRouteDenyAndTimeoutRunNothing(t *testing.T) {
 	} {
 		inv, dir, _, reqs, recs := withApprover(t)
 		sock, _ := fakeCompositor(t, reply)
-		inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+		inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 		req := gesture(t, dir)
 		_, e := inv.Invoke(testCtx(), req)
 		if e == nil || e.Code != code {
@@ -301,7 +325,7 @@ func TestFallsBackToBusRouteWhenCompositorAbsentOrRefuses(t *testing.T) {
 		"refused": refuse,
 	} {
 		inv, dir, _, reqs, recs := withApprover(t)
-		inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+		inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 		var logs []string
 		inv.Logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 		done := invokeAsync(inv, gesture(t, dir))
@@ -325,7 +349,7 @@ func TestFallsBackToBusRouteWhenCompositorAbsentOrRefuses(t *testing.T) {
 func TestCompositorRouteDoesNotBypassAmbientOrAutoApprove(t *testing.T) {
 	inv, _, pics, _, _ := withApprover(t)
 	sock, got := fakeCompositor(t, `{"v":1,"decision":"deny","key":"d","reason":"key"}`)
-	inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+	inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 	res, e := inv.Invoke(testCtx(), Request{App: "org.aurora.demo", Verb: "delete@v1", Input: putPNG(t, pics, "in.png"), Output: filepath.Join(pics, "gone.png")})
 	if e != nil || res.Approval.Route != prov.RouteAmbient || len(got) != 0 {
 		t.Fatalf("ambient grants must not prompt: %+v %+v", e, res)

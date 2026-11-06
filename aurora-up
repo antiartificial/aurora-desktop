@@ -41,7 +41,11 @@ build() {
   mkdir -p "$BIN"
   (cd "$ROOT/bus" && go build -o "$BIN/" ./cmd/busd ./cmd/bus) || die "bus build failed"
   (cd "$ROOT/adapter/linux" && go build -o "$BIN/domain" ./cmd/domain) || die "domain build failed"
-  (cd "$ROOT/controller" && go build -o "$BIN/" ./cmd/controllerd ./cmd/controller) || die "controller build failed"
+  # aurora-preflight runs INSIDE a domain, so it is built static (CGO_ENABLED=0):
+  # it publishes the approval request over the domain's own bus socket, which is
+  # what lets busd stamp the identity instead of the controller asserting it.
+  (cd "$ROOT/controller" && go build -o "$BIN/" ./cmd/controllerd ./cmd/controller \
+     && CGO_ENABLED=0 go build -o "$BIN/aurora-preflight" ./cmd/aurora-preflight) || die "controller build failed"
   (cd "$ROOT/shell" && GOWORK=off go build -o "$BIN/aurora" ./cmd/aurora && GOWORK=off go build -o "$BIN/powerbox" ./cmd/powerbox) || die "shell build failed"
   (cd "$ROOT/apps/lumen" && go build -o bin/lumen ./cmd/lumen && go build -o "$BIN/genimage" ./cmd/genimage) || die "lumen build failed"
   if [ $COMPOSITOR = 1 ]; then
@@ -55,7 +59,7 @@ build() {
 }
 if [ $BUILD = 1 ] || [ $BUILD_ONLY = 1 ]; then build; fi
 [ $BUILD_ONLY = 1 ] && { say "built into $BIN"; exit 0; }
-for b in busd bus domain controllerd controller aurora; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
+for b in busd bus domain controllerd controller aurora aurora-preflight; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
 [ $COMPOSITOR = 0 ] || { [ -x "$COMP" ] || die "compositor not built: run without --no-build, or pass --no-compositor"; }
 [ $HAIKU = 0 ] || [ -x "$LEDGER" ] || HAIKU=0
 

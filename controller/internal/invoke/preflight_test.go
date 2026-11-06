@@ -20,7 +20,7 @@ func preflightSetup(t *testing.T, reply string) (*Invoker, *domain.Fake, string,
 	fk := inv.Runner.(*domain.Fake)
 	inv.Bus = okBus{}
 	sock, got := fakeCompositor(t, reply)
-	inv.Approvals.Compositor = &CompositorPrompt{Socket: sock}
+	inv.Approvals.Compositor = &CompositorPrompt{Key: testKey, Socket: sock}
 	inv.Approvals.Preflight = &Preflight{Bin: "/host/bin/aurora-preflight"}
 	return inv, fk, dir, got
 }
