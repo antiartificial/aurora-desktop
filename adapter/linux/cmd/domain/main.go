@@ -28,6 +28,7 @@ const usage = `usage: domain <command> [args]
   destroy <name> [--keep-data]          remove the domain
   exec-id <name>                        print the attested domain identity
   cgroup <name>                         print the domain's cgroup (as /proc/<pid>/cgroup shows it); the bus attests membership
+  nsid <name>                           print the namespaces (type:inode) of the domain's live run; the bus attests them too
   sockpath <name>                       print the host path of the domain's bus socket
 
 data dir: $AURORA_DOMAINS_DIR or ${XDG_DATA_HOME:-~/.local/share}/aurora/domains
@@ -196,6 +197,14 @@ func main() {
 			die("no attestable cgroup on this host: %v", err)
 		}
 		fmt.Println(p)
+	case "nsid":
+		pos := parse(fs, args)
+		need(pos, 1, "nsid <name>")
+		ids, err := st.NSID(pos[0])
+		if err != nil {
+			die("%v", err)
+		}
+		fmt.Println(strings.Join(ids, "\n"))
 	case "sockpath":
 		pos := parse(fs, args)
 		need(pos, 1, "sockpath <name>")

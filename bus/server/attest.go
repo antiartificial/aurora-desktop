@@ -58,6 +58,7 @@ type attestState struct {
 	pidfd   int // SO_PEERPIDFD, or -1 where the kernel lacks it
 	start   uint64
 	want    string
+	ns      nsIDs // namespaces matched at admission; nil if not attested on them
 	checked time.Time
 }
 
@@ -186,6 +187,11 @@ func (a *attestState) recheck() error {
 	if !inCgroup(got, a.want) {
 		return &mismatch{got}
 	}
+	if a.ns != nil {
+		if now, err := readNS(a.pid); err == nil && !now.equal(a.ns) && a.alive() {
+			return fmt.Errorf("peer namespaces changed: %s, were %s", now, a.ns)
+		}
+	}
 	return nil
 }
 
@@ -197,9 +203,19 @@ func peerComm(pid int32) string {
 	return strings.TrimSpace(string(b))
 }
 
-// admit decides one connection on domain socket d. A nil state with a nil
-// error means "accepted without attestation" (already logged). Not for the session socket.
+// admit is admitDomain for a domain known only by identity and cgroup (no
+// namespace ids), kept for callers and tests that have no domainSock.
 func (s *Server) admit(nc net.Conn, cred Cred, d string, cg string) (*attestState, error) {
+	return s.admitDomain(nc, cred, &domainSock{identity: d, cgroup: cg})
+}
+
+// admitDomain decides one connection on domain socket d. A nil state with a nil
+// error means "accepted without attestation" (already logged). Not for the
+// session socket. Two signals are checked and both are named in the log:
+// cgroup membership, then (if the domain registered namespace attestation)
+// that the peer's namespaces are those of a live registered run.
+func (s *Server) admitDomain(nc net.Conn, cred Cred, dom *domainSock) (*attestState, error) {
+	d, cg := dom.identity, dom.cgroup
 	who := fmt.Sprintf("pid %d uid %d comm %q", cred.PID, cred.UID, peerComm(cred.PID))
 	degrade := func(why string) (*attestState, error) {
 		if s.cfg.AttestDomains == AttestRequire {
@@ -220,15 +236,26 @@ func (s *Server) admit(nc net.Conn, cred Cred, d string, cg string) (*attestStat
 	case errors.Is(err, errNoCgroup2):
 		return degrade(err.Error())
 	case errors.As(err, &mm):
-		return nil, fmt.Errorf("attestation REFUSED for %s on %s: %v, domain cgroup is %q; the socket is not the identity", who, d, err, cg)
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s: signals cgroup=MISMATCH (%v, domain cgroup is %q) namespaces=not checked; the socket is not the identity", who, d, err, cg)
 	case err != nil:
 		return nil, fmt.Errorf("attestation FAILED for %s on %s (mode %s): %w", who, d, s.cfg.AttestDomains, err)
 	}
-	s.cfg.Logf("attested %s on %s: cgroup %s (pidfd %v)", who, d, got, a.pidfd >= 0)
+	if !dom.nsOn {
+		s.cfg.Logf("WARNING: %s on %s: signals cgroup=ok namespaces=NOT CHECKED (no namespace ids registered for this domain): cgroup membership alone is forgeable by a same-uid process", who, d)
+		s.cfg.Logf("attested %s on %s: cgroup %s (pidfd %v)", who, d, got, a.pidfd >= 0)
+		return a, nil
+	}
+	ns, run, err := attestNS(a, cred.PID, dom)
+	if err != nil {
+		a.close()
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s (mode %s): signals cgroup=ok namespaces=FAILED: %w", who, d, s.cfg.AttestDomains, err)
+	}
+	a.ns = ns
+	s.cfg.Logf("attested %s on %s: signals cgroup=ok (%s) namespaces=ok (%s, run init pid %d) (pidfd %v)", who, d, got, ns, run.pid, a.pidfd >= 0)
 	return a, nil
 }
 
-// stillAttested re-verifies c; on failure it logs and hangs up (no error line:
+// stillAttested re-verifies c (cgroup and, if attested on them, namespaces); on failure it logs and hangs up (no error line:
 // the write loop may be mid-message).
 func (s *Server) stillAttested(c *conn) bool {
 	err := c.att.recheck()

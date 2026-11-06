@@ -37,6 +37,7 @@ type Meta struct {
 	Subvolumes bool      `json:"subvolumes"` // data/config/cache are btrfs subvolumes
 	Grants     []Grant   `json:"grants"`
 	Limits     Limits    `json:"limits"`
+	NS         *NSRecord `json:"ns,omitempty"` // namespaces of the latest run (see nsrun.go)
 }
 
 // Subdirs are the three trees every domain owns.

@@ -121,7 +121,22 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 			}
 		}
 	}
-	cmd := exec.Command(bw, append(append(s.BwrapArgs(m), "--"), argv...)...)
+	// --info-fd reports the sandbox init pid as soon as its namespaces exist;
+	// --block-fd holds the payload until we have recorded (and, with a bus,
+	// registered) those namespaces. fds 3 and 4 in the child.
+	infoR, infoW, err := os.Pipe()
+	if err != nil {
+		return 0, err
+	}
+	blockR, blockW, err := os.Pipe()
+	if err != nil {
+		return 0, err
+	}
+	defer infoR.Close()
+	defer blockW.Close()
+	args := append([]string{"--info-fd", "3", "--block-fd", "4"}, s.BwrapArgs(m)...)
+	cmd := exec.Command(bw, append(append(args, "--"), argv...)...)
+	cmd.ExtraFiles = []*os.File{infoW, blockR}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.Env = []string{} // bwrap itself needs nothing; the domain env is set via --setenv
 	if m.Limits != (Limits{}) {
@@ -141,7 +156,16 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 		defer syscall.Close(fd)
 		cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: fd}
 	}
-	err = cmd.Run()
+	err = cmd.Start()
+	infoW.Close()
+	blockR.Close()
+	if err != nil {
+		return 0, err
+	}
+	unregister := s.recordRun(name, infoR, stderr)
+	blockW.Close() // release the payload
+	err = cmd.Wait()
+	unregister()
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil

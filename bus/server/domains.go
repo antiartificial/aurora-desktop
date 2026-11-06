@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/antiartificial/aurora/bus/proto"
@@ -22,6 +23,9 @@ type domainSock struct {
 	identity, path string
 	cgroup         string // "" = none registered, connections cannot be attested
 	ln             net.Listener
+	nsOn           bool // namespace attestation enabled (see ns.go)
+	nsMu           sync.Mutex
+	runs           []*nsRun // live sandbox runs the daemon was told of
 }
 
 // AddDomain makes the daemon also listen on path. Every connection accepted
@@ -39,10 +43,10 @@ func (s *Server) AddDomain(identity, path string) error {
 func (s *Server) AddDomainCgroup(identity, path, cgroup string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.addDomainLocked(identity, path, cgroup)
+	return s.addDomainLocked(identity, path, cgroup, false)
 }
 
-func (s *Server) addDomainLocked(identity, path, cgroup string) error {
+func (s *Server) addDomainLocked(identity, path, cgroup string, ns bool) error {
 	if !identityRE.MatchString(identity) {
 		return fmt.Errorf("identity %q must look like domain:<name>:<hex id> (see `domain exec-id`)", identity)
 	}
@@ -74,10 +78,13 @@ func (s *Server) addDomainLocked(identity, path, cgroup string) error {
 	if err != nil {
 		return err
 	}
-	s.doms[identity] = &domainSock{identity, path, cgroup, ln}
+	d := &domainSock{identity: identity, path: path, cgroup: cgroup, ln: ln, nsOn: ns}
+	s.doms[identity] = d
 	switch {
+	case cgroup != "" && ns && s.cfg.AttestDomains != AttestOff:
+		s.cfg.Logf("domain %s: connections must come from cgroup %s AND from the namespaces of a registered live run (attest mode %s)", identity, cgroup, s.cfg.AttestDomains)
 	case cgroup != "" && s.cfg.AttestDomains != AttestOff:
-		s.cfg.Logf("domain %s: connections must come from cgroup %s (attest mode %s)", identity, cgroup, s.cfg.AttestDomains)
+		s.cfg.Logf("domain %s: connections must come from cgroup %s (attest mode %s); NO namespace ids registered, a same-uid process that joins the cgroup would pass", identity, cgroup, s.cfg.AttestDomains)
 	case s.cfg.AttestDomains == AttestOff:
 		s.cfg.Logf("WARNING: domain %s: attestation is OFF, any same-uid process that opens %s is this domain", identity, path)
 	case s.cfg.AttestDomains == AttestRequire:
@@ -85,7 +92,7 @@ func (s *Server) addDomainLocked(identity, path, cgroup string) error {
 	default:
 		s.cfg.Logf("WARNING: domain %s has no cgroup registered: its connections are UNATTESTED (mode prefer)", identity)
 	}
-	go s.acceptLoop(ln, identity, cgroup)
+	go s.acceptLoop(ln, identity, d)
 	return nil
 }
 
@@ -123,7 +130,7 @@ func (s *Server) removeDomainLocked(identity string) error {
 
 // acceptLoop serves one listener. identity "" is the session socket, whose
 // clients are named by Config.Resolver; otherwise by the listener's domain.
-func (s *Server) acceptLoop(ln net.Listener, identity, cgroup string) error {
+func (s *Server) acceptLoop(ln net.Listener, identity string, d *domainSock) error {
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
@@ -137,7 +144,7 @@ func (s *Server) acceptLoop(ln net.Listener, identity, cgroup string) error {
 		}
 		var att *attestState
 		if identity != "" {
-			if att, err = s.admit(nc, cred, identity, cgroup); err != nil {
+			if att, err = s.admitDomain(nc, cred, d); err != nil {
 				s.cfg.Logf("%v", err)
 				refuse(nc, err)
 				continue
@@ -196,15 +203,17 @@ func (s *Server) closeDomains() {
 
 // InspectDomain is a registered domain socket in bus.inspect@v1.
 type InspectDomain struct {
-	Identity string `json:"identity"`
-	Socket   string `json:"socket"`
-	Cgroup   string `json:"cgroup,omitempty"`
+	Identity string  `json:"identity"`
+	Socket   string  `json:"socket"`
+	Cgroup   string  `json:"cgroup,omitempty"`
+	NS       bool    `json:"ns,omitempty"`   // namespace attestation on
+	RunPIDs  []int32 `json:"runs,omitempty"` // live registered sandbox runs (init pids)
 }
 
 func (s *Server) inspectDomains() []InspectDomain {
 	out := []InspectDomain{}
 	for _, d := range s.doms {
-		out = append(out, InspectDomain{d.identity, d.path, d.cgroup})
+		out = append(out, InspectDomain{d.identity, d.path, d.cgroup, d.nsOn, d.liveRunPIDs()})
 	}
 	return out
 }

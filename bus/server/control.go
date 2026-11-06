@@ -40,6 +40,8 @@ func (s *Server) control(c *conn, e proto.Envelope, clientID string) {
 		out, err = s.ctlRevoke(c, e.Payload)
 	case "bus.domain.add@v1", "bus.domain.remove@v1":
 		out, err = s.ctlDomain(c, e.Verb, e.Payload)
+	case "bus.domain.ns@v1":
+		out, err = s.ctlDomainNS(c, e.Payload)
 	default:
 		err = fmt.Errorf("unknown control verb %q", e.Verb)
 	}
@@ -196,13 +198,16 @@ func (s *Server) ctlDomain(c *conn, verb string, raw json.RawMessage) (any, erro
 	if c.viaDomain {
 		return nil, cerr("forbidden", "domain sockets are managed from the session socket only")
 	}
-	var p struct{ Identity, Path, Cgroup string }
+	var p struct {
+		Identity, Path, Cgroup string
+		NS                     bool
+	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.Identity == "" {
-		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>","cgroup":"<optional, /proc/<pid>/cgroup form>"}`)
+		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>","cgroup":"<optional, /proc/<pid>/cgroup form>","ns":<optional bool: attest namespaces too>}`)
 	}
 	if verb == "bus.domain.remove@v1" {
 		return map[string]string{"removed": p.Identity}, s.removeDomainLocked(p.Identity)
 	}
 	// AddDomain takes s.mu, which control's caller already holds.
-	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path, p.Cgroup)
+	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path, p.Cgroup, p.NS)
 }

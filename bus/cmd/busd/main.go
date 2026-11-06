@@ -48,6 +48,8 @@ func main() {
 	fs.Var(&doms, "domain", "listen for a domain: IDENTITY=SOCKET (identity as printed by `domain exec-id`, socket by `domain sockpath`); repeatable")
 	var cgs domFlags
 	fs.Var(&cgs, "domain-cgroup", "cgroup of a --domain: IDENTITY=CGROUP (as printed by `domain cgroup`); repeatable. Connections are accepted only from processes in it")
+	var nss idFlags
+	fs.Var(&nss, "domain-ns", "IDENTITY of a --domain whose connections must ALSO come from the namespaces of a live run registered with bus.domain.ns@v1 (`domain run` does this when AURORA_BUS_SOCK is set); repeatable")
 	attest := fs.String("attest-domains", "prefer", "domain socket attestation: require (refuse anything unattestable), prefer (attest when a cgroup is registered and the host can; otherwise accept loudly), off (socket is the identity)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: busd [flags]\n\nThe Aurora message bus daemon. Sender identity comes from SO_PEERCRED.")
@@ -80,9 +82,19 @@ func main() {
 			log.Fatalf("--domain-cgroup %s: no --domain with that identity", id)
 		}
 	}
+	for _, id := range nss {
+		if !doms.has(id) {
+			srv.Close()
+			log.Fatalf("--domain-ns %s: no --domain with that identity", id)
+		}
+	}
 	for _, d := range doms {
 		id, path, _ := strings.Cut(d, "=")
-		if err := srv.AddDomainCgroup(id, path, cgroups[id]); err != nil {
+		add := srv.AddDomainCgroup
+		if nss.has(id) {
+			add = srv.AddDomainNS
+		}
+		if err := add(id, path, cgroups[id]); err != nil {
 			srv.Close()
 			log.Fatalf("--domain %s: %v", d, err)
 		}
@@ -118,6 +130,20 @@ func (d *domFlags) Set(v string) error {
 func (d domFlags) has(id string) bool {
 	for _, v := range d {
 		if strings.HasPrefix(v, id+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// idFlags is a repeatable flag whose values are bare identities.
+type idFlags []string
+
+func (d *idFlags) String() string     { return strings.Join(*d, ",") }
+func (d *idFlags) Set(v string) error { *d = append(*d, v); return nil }
+func (d idFlags) has(id string) bool {
+	for _, v := range d {
+		if v == id {
 			return true
 		}
 	}

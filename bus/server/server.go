@@ -141,7 +141,7 @@ func listen(path string) (net.Listener, error) {
 
 // Serve accepts clients on the session socket until Close is called.
 func (s *Server) Serve() error {
-	err := s.acceptLoop(s.ln, "", "")
+	err := s.acceptLoop(s.ln, "", nil)
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
