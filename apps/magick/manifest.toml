@@ -58,4 +58,6 @@ name = "identify@v1"
 summary = "Report an image's format, size, colorspace, bit depth and frame count"
 effect = "read"
 accepts = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+# The default for every accepted type: read-only and takes no arguments, so opening a file can run it without asking.
+default = true
 output = { format = "string", width = "int", height = "int", colorspace = "string", depth = "int", frames = "int" }

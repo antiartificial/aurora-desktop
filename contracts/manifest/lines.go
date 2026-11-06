@@ -82,3 +82,12 @@ func (li *lineIndex) findKey(table, key string) int {
 	}
 	return best
 }
+
+// has reports whether the key itself (not just its table) appears in the source.
+func (li *lineIndex) has(table string, idx int, key string) bool {
+	if li == nil {
+		return false
+	}
+	_, ok := li.at[lineKey{table, idx, key}]
+	return ok
+}

@@ -92,3 +92,24 @@ func (r *Registry) Apps() []*App { return r.apps }
 
 // App looks an app up by id.
 func (r *Registry) App(id string) (*App, bool) { a, ok := r.byID[id]; return a, ok }
+
+// ExecStatus resolves a windowed app's executable and says whether it can be
+// launched. A windowed app whose binary was never built (the Haiku targets are
+// skipped without HAIKU_SRC) must be reported as such, never listed as
+// launchable. For a non-windowed app it returns "", "".
+func (a *App) ExecStatus() (path, problem string) {
+	if !a.Manifest.App.Windowed {
+		return "", ""
+	}
+	path = a.Manifest.App.ExecPath(a.Dir)
+	fi, err := os.Stat(path)
+	switch {
+	case os.IsNotExist(err):
+		return path, "not built: " + path + " does not exist"
+	case err != nil:
+		return path, "cannot stat exec: " + err.Error()
+	case fi.IsDir() || fi.Mode()&0o111 == 0:
+		return path, "exec is not an executable file: " + path
+	}
+	return path, ""
+}

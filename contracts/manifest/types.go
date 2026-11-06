@@ -2,6 +2,8 @@
 // a TOML parser, a validator, MIME queries, and the consent diff.
 package manifest
 
+import "path/filepath"
+
 // Effect is a verb's effect class.
 type Effect string
 
@@ -32,6 +34,25 @@ type App struct {
 	Name      string `toml:"name"`
 	Version   string `toml:"version"`
 	ImageHash string `toml:"image_hash"`
+
+	// Windowed marks an app that opens its own window and is launched
+	// directly, not invoked as a verb (decision 0012). Exec is the
+	// executable to launch; a relative path is resolved against the app's
+	// directory. Exec is required when Windowed is true and refused otherwise.
+	Windowed bool   `toml:"windowed,omitempty"`
+	Exec     string `toml:"exec,omitempty"`
+}
+
+// ExecPath resolves App.Exec: an absolute path is cleaned, a relative one is
+// joined to appDir. It returns "" when Exec is unset.
+func (a App) ExecPath(appDir string) string {
+	switch {
+	case a.Exec == "":
+		return ""
+	case filepath.IsAbs(a.Exec):
+		return filepath.Clean(a.Exec)
+	}
+	return filepath.Join(appDir, a.Exec)
 }
 
 type Runtime struct {
@@ -60,13 +81,24 @@ type Types struct {
 // capabilities it uses as "path:<p>", "net:<host>" or "device:<d>".
 // Accepts is the MIME patterns of objects the verb can take.
 type Verb struct {
-	Name         string            `toml:"name"`
-	Summary      string            `toml:"summary,omitempty"`
-	Effect       Effect            `toml:"effect"`
-	Accepts      []string          `toml:"accepts,omitempty"`
-	Capabilities []string          `toml:"capabilities,omitempty"`
-	Input        map[string]string `toml:"input,omitempty"`
-	Output       map[string]string `toml:"output,omitempty"`
+	Name         string   `toml:"name"`
+	Summary      string   `toml:"summary,omitempty"`
+	Effect       Effect   `toml:"effect"`
+	Accepts      []string `toml:"accepts,omitempty"`
+	Capabilities []string `toml:"capabilities,omitempty"`
+	// Default marks this as the verb run when the user simply opens a file
+	// of one of its Accepts types. At most one default per accepted type per
+	// app. It is a convenience, not a grant: the verb's Effect and
+	// capabilities still apply unchanged.
+	Default bool `toml:"default,omitempty"`
+	// Group is ADVISORY, PRESENTATION ONLY: a heading for organising a long
+	// verb menu. It is not semantic and not security-relevant. Nothing may
+	// make an access decision, an approval decision or any other policy
+	// choice from it. Effect is the only authority signal (decision 0012).
+	Group string `toml:"group,omitempty"`
+
+	Input  map[string]string `toml:"input,omitempty"`
+	Output map[string]string `toml:"output,omitempty"`
 }
 
 type Event struct {

@@ -102,6 +102,11 @@ type appInfo struct {
 	Name    string   `json:"name"`
 	Version string   `json:"version"`
 	Verbs   []string `json:"verbs"`
+	// Windowed apps are launched directly (decision 0012). Exec is the resolved
+	// path; ExecProblem is non-empty when it cannot be launched (e.g. not built).
+	Windowed    bool   `json:"windowed,omitempty"`
+	Exec        string `json:"exec,omitempty"`
+	ExecProblem string `json:"exec_problem,omitempty"`
 }
 
 func (s *Service) listApps() any {
@@ -109,6 +114,8 @@ func (s *Service) listApps() any {
 	for _, a := range s.Reg.Apps() {
 		m := a.Manifest
 		info := appInfo{ID: m.App.ID, Name: m.App.Name, Version: m.App.Version, Verbs: []string{}}
+		info.Windowed = m.App.Windowed
+		info.Exec, info.ExecProblem = a.ExecStatus()
 		for _, v := range m.Verbs {
 			info.Verbs = append(info.Verbs, v.Name)
 		}
