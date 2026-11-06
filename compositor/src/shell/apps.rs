@@ -17,6 +17,17 @@ pub struct AppEntry {
     pub name: String,
     /// Verb names exactly as the manifest spells them (`resize@v1`), in manifest order.
     pub verbs: Vec<String>,
+    /// Whether a click can do anything, and why not. Decided by the registry
+    /// (`apps.App.Launchable`), not here: the shell must not stat app
+    /// directories to work out what it may offer. An older registry that does
+    /// not send the field is treated as launchable, so the dock does not grey
+    /// out every app when talking to one.
+    pub launchable: bool,
+    pub problem: String,
+    /// A windowed app (decision 0012) is launched directly: it opens its own
+    /// window and has no verb to pick. `exec` is the resolved binary.
+    pub windowed: bool,
+    pub exec: String,
 }
 
 /// One verb as `registry.verbs@v1` describes it. Text here is untrusted
@@ -78,7 +89,11 @@ pub fn parse(reply: &Value) -> Result<Vec<AppEntry>, String> {
             let id = a["id"].as_str().filter(|i| !i.is_empty())?;
             let name = a["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id);
             let verbs = a["verbs"].as_array().map(|v| v.iter().filter_map(|n| n.as_str().filter(|n| !n.is_empty()).map(String::from)).collect()).unwrap_or_default();
-            Some(AppEntry { id: id.to_string(), name: display_name(name), verbs })
+            let launchable = a["launchable"].as_bool().unwrap_or(true);
+            let problem = display_name(a["launch_problem"].as_str().unwrap_or(""));
+            let windowed = a["windowed"].as_bool().unwrap_or(false);
+            let exec = a["exec"].as_str().unwrap_or("").to_string();
+            Some(AppEntry { id: id.to_string(), name: display_name(name), verbs, launchable, problem, windowed, exec })
         })
         .take(MAX_APPS)
         .collect())
@@ -158,7 +173,19 @@ mod tests {
         let v = json!({"apps": [{"id": "org.aurora.lumen", "name": "Lumen", "version": "0.1.0", "verbs": ["resize@v1"]}, {"id": "x.y", "name": "bad\u{1b}name"}, {"name": "no id"}]});
         let a = parse(&v).unwrap();
         assert_eq!(a.len(), 2);
-        assert_eq!(a[0], AppEntry { id: "org.aurora.lumen".into(), name: "Lumen".into(), verbs: vec!["resize@v1".into()] });
+        assert_eq!(
+            a[0],
+            AppEntry {
+                id: "org.aurora.lumen".into(),
+                name: "Lumen".into(),
+                verbs: vec!["resize@v1".into()],
+                // a reply without the field means an older registry: assume launchable
+                launchable: true,
+                problem: String::new(),
+                windowed: false,
+                exec: String::new(),
+            }
+        );
         assert!(a[1].verbs.is_empty());
         assert_eq!(a[1].name, "bad?name");
         assert!(parse(&json!({})).is_err());

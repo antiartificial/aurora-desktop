@@ -56,7 +56,26 @@ fn permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
     })
 }
 
+// One permit per TEST, not per compositor. A test that starts a second
+// compositor -- the clipboard tests stand up a host Aurora as well as the
+// guest under test -- must not queue behind the cap for it: with a cap of N,
+// N such tests would each hold one permit and block forever waiting for a
+// second. That deadlock is not hypothetical; it is what the first version of
+// this did. So the count is re-entrant per thread, and cargo gives each test
+// its own thread.
+//
+// The assumption is that a `Comp` is dropped on the thread that made it,
+// which is true for every test here. A `Comp` sent to another thread and
+// dropped there would mis-account; `release` therefore never pushes the pool
+// above its ceiling.
+thread_local! {
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn acquire() {
+    if HELD.with(|h| { let n = h.get(); h.set(n + 1); n }) > 0 {
+        return; // this test already holds the pool's permit
+    }
     let (m, cv) = permits();
     let mut n = m.lock().unwrap();
     while *n == 0 {
@@ -66,6 +85,10 @@ fn acquire() {
 }
 
 fn release() {
+    let last = HELD.with(|h| { let n = h.get().saturating_sub(1); h.set(n); n == 0 });
+    if !last {
+        return;
+    }
     let (m, cv) = permits();
     *m.lock().unwrap() += 1;
     cv.notify_one();

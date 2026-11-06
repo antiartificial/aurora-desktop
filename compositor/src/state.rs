@@ -124,7 +124,13 @@ impl Aurora {
         // bridge's tests) use. Every client of this user may use data control, as with the
         // other privileged globals here.
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
-        let data_control_state = DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_| true);
+        // Not `|_| true`: ext_data_control reads the clipboard with no focus, so a
+        // client inside a domain must not get it (crate::clipboard docs). The
+        // verdict was reached at connect; the filter only reads it, because
+        // asking for credentials in here deadlocks.
+        let data_control_state = DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |c| {
+            c.get_data::<ClientState>().is_some_and(|d| d.may_read_clipboard)
+        });
 
         // A seat is a group of keyboards, pointer and touch devices.
         // A seat typically has a pointer and maintains a keyboard focus and a pointer focus.
@@ -211,9 +217,14 @@ impl Aurora {
                 // Inside the callback, you should insert the client into the display.
                 //
                 // You may also associate some data with the client when inserting the client.
+                // Decide clipboard access HERE, from the socket's own peer
+                // credentials, not later from inside the global filter:
+                // `Client::get_credentials` there re-enters a lock the backend
+                // already holds and deadlocks every connecting client.
+                let clip = crate::clipboard::peer_may_read_clipboard(&client_stream);
                 state
                     .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                    .insert_client(client_stream, Arc::new(ClientState::new(clip)))
                     .unwrap();
             })
             .expect("Failed to init the wayland event source.");
@@ -249,6 +260,18 @@ impl Aurora {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// May this client bind `ext_data_control_manager_v1` and so read
+    /// everything the user copies, with no focus and no gesture? Decided once,
+    /// at connect, from the peer credentials of its socket (see
+    /// `clipboard::peer_may_read_clipboard`). Defaults to false, so a client
+    /// whose data is some other type is refused rather than trusted.
+    pub may_read_clipboard: bool,
+}
+
+impl ClientState {
+    pub fn new(may_read_clipboard: bool) -> Self {
+        ClientState { compositor_state: CompositorClientState::default(), may_read_clipboard }
+    }
 }
 
 impl ClientData for ClientState {

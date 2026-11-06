@@ -128,7 +128,7 @@ impl Aurora {
             if button_state == ButtonState::Pressed {
                 let out = self.output_physical();
                 if let Some(i) = l.item_at(dp.x, dp.y) {
-                    self.shell.open_verb_menu(i, (out.w, out.h));
+                    self.shell.dock_click(i, (out.w, out.h));
                 }
             }
             return;

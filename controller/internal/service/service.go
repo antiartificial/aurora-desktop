@@ -104,9 +104,13 @@ type appInfo struct {
 	Verbs   []string `json:"verbs"`
 	// Windowed apps are launched directly (decision 0012). Exec is the resolved
 	// path; ExecProblem is non-empty when it cannot be launched (e.g. not built).
-	Windowed    bool   `json:"windowed,omitempty"`
-	Exec        string `json:"exec,omitempty"`
-	ExecProblem string `json:"exec_problem,omitempty"`
+	Windowed bool `json:"windowed,omitempty"`
+	// Whether a dock click can do anything, and why not. Decided in
+	// apps.App.Launchable, next to the filesystem.
+	Launchable    bool   `json:"launchable"`
+	LaunchProblem string `json:"launch_problem,omitempty"`
+	Exec          string `json:"exec,omitempty"`
+	ExecProblem   string `json:"exec_problem,omitempty"`
 }
 
 func (s *Service) listApps() any {
@@ -116,6 +120,7 @@ func (s *Service) listApps() any {
 		info := appInfo{ID: m.App.ID, Name: m.App.Name, Version: m.App.Version, Verbs: []string{}}
 		info.Windowed = m.App.Windowed
 		info.Exec, info.ExecProblem = a.ExecStatus()
+		info.Launchable, info.LaunchProblem = a.Launchable()
 		for _, v := range m.Verbs {
 			info.Verbs = append(info.Verbs, v.Name)
 		}

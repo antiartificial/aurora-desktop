@@ -84,7 +84,7 @@ impl Allowlist {
     }
 }
 
-fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, i32)> {
+pub fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, i32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: cred and len are valid for the call; the fd is a live socket.

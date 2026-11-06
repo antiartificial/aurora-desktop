@@ -44,6 +44,11 @@ pub struct Item {
     pub id: String,
     pub label: String,
     pub clickable: bool,
+    /// Why a click cannot launch this, from the registry. Empty means it can.
+    /// A non-empty reason greys the item and makes its menu say so, rather
+    /// than hiding an installed app or leaving a dead icon with no
+    /// explanation.
+    pub problem: String,
 }
 
 /// The settings panel's live state. What it shows is rebuilt from the theme.
@@ -215,7 +220,17 @@ impl Shell {
 
     fn rebuild_items(&mut self) {
         use apps::Status;
-        self.items = self.registry.apps.iter().map(|a| Item { id: a.id.clone(), label: a.name.clone(), clickable: true }).collect();
+        // An app the registry says cannot be launched is shown, not hidden: it is
+        // installed, and a dock that silently omits it is harder to understand
+        // than one that shows it greyed with the reason. Kitchen Sink (binary
+        // never built) and Haiku Ledger (verbs served on the bus, no run script)
+        // are both this case today.
+        self.items = self
+            .registry
+            .apps
+            .iter()
+            .map(|a| Item { id: a.id.clone(), label: a.name.clone(), clickable: true, problem: a.problem.clone() })
+            .collect();
         if self.items.is_empty() {
             let msg = match &self.registry.status {
                 Status::NoBus => "no registry (no --bus-socket)",
@@ -223,7 +238,7 @@ impl Shell {
                 Status::Failed(_) => "registry unreachable",
                 Status::Ok => "no apps installed",
             };
-            self.items.push(Item { id: String::new(), label: msg.into(), clickable: false });
+            self.items.push(Item { id: String::new(), label: msg.into(), clickable: false, problem: String::new() });
         }
         let spec = FontSpec::new(self.font.size);
         let scale = self.scale;
@@ -275,7 +290,45 @@ impl Shell {
     /// Run `verb` of `app`: the launcher does the rest (arguments, then the
     /// powerbox for the file). Which verb is already decided, by the verb menu,
     /// so no terminal is spent on asking that. Returns the argv it ran.
+    /// Launch a windowed app: its own binary, directly, with WAYLAND_DISPLAY
+    /// pointing at Aurora -- the same way the desktop menu starts a terminal.
+    ///
+    /// Not a domain. Decision 0012 is blunt about what that costs: a windowed
+    /// app runs outside the sandbox that is this project's whole security
+    /// argument, because the Wayland socket is not yet a grantable capability.
+    /// Nothing here pretends otherwise.
+    pub fn run_windowed(&mut self, app: &str, exec: &str) -> Option<Vec<String>> {
+        if exec.is_empty() {
+            tracing::warn!("dock: {app:?} is windowed but the registry sent no exec path");
+            return None;
+        }
+        let mut cmd = std::process::Command::new(exec);
+        cmd.stdin(std::process::Stdio::null());
+        if let Some(s) = &self.registry.sock {
+            cmd.env("AURORA_BUS_SOCK", s);
+        }
+        match cmd.spawn() {
+            Ok(mut child) => {
+                tracing::info!("dock: launched windowed app {app:?} ({exec}), unsandboxed (decision 0012)");
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                Some(vec![exec.to_string()])
+            }
+            Err(e) => {
+                tracing::error!("dock: cannot launch {app:?} ({exec}): {e}");
+                None
+            }
+        }
+    }
+
     pub fn run_verb(&mut self, app: &str, verb: &str) -> Option<Vec<String>> {
+        // The menu should never offer a verb for an unlaunchable app, but a
+        // spawn is not the place to find out it did.
+        if let Some(p) = self.registry.apps.iter().find(|a| a.id == app).filter(|a| !a.launchable) {
+            tracing::warn!("dock: refusing to launch {app:?}: {}", p.problem);
+            return None;
+        }
         let term = resolve_terminal(&self.dock.terminal);
         let argv = launch_argv(&self.aurora_bin, term.as_deref(), app, verb);
         let mut cmd = std::process::Command::new(&argv[0]);
@@ -468,10 +521,11 @@ impl Shell {
         for (i, r) in l.items.iter().enumerate() {
             let Some(item) = self.items.get(i) else { break };
             let (lx, ly) = (r.x - l.panel.x, r.y - l.panel.y);
-            if self.hover == Some(i) && item.clickable {
+            let dim = !item.clickable || !item.problem.is_empty();
+            if self.hover == Some(i) && !dim {
                 c.round_rect(lx, ly, r.w, r.h, item_h as f32 * 0.3, [hov[0], hov[1], hov[2], (self.dock.hover_strength * 255.0) as u8]);
             }
-            if !item.clickable {
+            if dim {
                 let y = ((ly as f32 + r.h as f32 / 2.0) / s as f32) - (met.ascent + met.descent) / 2.0;
                 self.text.draw(&mut c, (lx + m) as f32 / s as f32, y, &item.label, &spec, [text[0], text[1], text[2], 150], s);
                 continue;

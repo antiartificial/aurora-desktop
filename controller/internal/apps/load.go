@@ -97,6 +97,39 @@ func (r *Registry) App(id string) (*App, bool) { a, ok := r.byID[id]; return a, 
 // launched. A windowed app whose binary was never built (the Haiku targets are
 // skipped without HAIKU_SRC) must be reported as such, never listed as
 // launchable. For a non-windowed app it returns "", "".
+// Launchable reports whether a dock click on this app can do anything, and
+// why not when it cannot. The decision belongs here, next to the filesystem,
+// rather than in the compositor: the shell should not be stat-ing app
+// directories to work out what it may offer.
+//
+// Three ways to be unlaunchable, all of them real cases in this tree:
+// a windowed app whose binary was never built (the Haiku apps need HAIKU_SRC
+// and cmake), an app declaring no verbs at all, and a verb-only app with no
+// run script -- Haiku Ledger serves its verbs directly on the bus, so the
+// controller cannot invoke them even though the manifest lists them.
+func (a *App) Launchable() (ok bool, problem string) {
+	if a.Manifest.App.Windowed {
+		if _, p := a.ExecStatus(); p != "" {
+			return false, p
+		}
+		return true, ""
+	}
+	if len(a.Manifest.Verbs) == 0 {
+		return false, "declares no verbs and is not windowed"
+	}
+	run := filepath.Join(a.Dir, "run")
+	fi, err := os.Stat(run)
+	switch {
+	case os.IsNotExist(err):
+		return false, "no run script: its verbs are served on the bus, not invocable through the controller"
+	case err != nil:
+		return false, "cannot stat run: " + err.Error()
+	case fi.IsDir() || fi.Mode()&0o111 == 0:
+		return false, "run is not an executable file"
+	}
+	return true, ""
+}
+
 func (a *App) ExecStatus() (path, problem string) {
 	if !a.Manifest.App.Windowed {
 		return "", ""

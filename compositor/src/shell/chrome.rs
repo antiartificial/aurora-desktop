@@ -146,6 +146,20 @@ impl Shell {
     /// item (above a bottom dock, and so on), with each verb's summary and its
     /// effect class. An app is only ever asked for through one of its verbs, so
     /// this is the whole of "launching" it. `out` is the output in device pixels.
+    /// A dock click. A windowed app (decision 0012) opens its own window and
+    /// has no verb to choose, so it is launched directly and no menu appears.
+    /// Everything else gets the verb menu.
+    pub fn dock_click(&mut self, i: usize, out: Out) {
+        let Some(item) = self.items.get(i).filter(|it| it.clickable) else { return };
+        let id = item.id.clone();
+        if let Some(a) = self.registry.apps.iter().find(|a| a.id == id).filter(|a| a.windowed && a.launchable) {
+            let exec = a.exec.clone();
+            self.run_windowed(&id, &exec);
+            return;
+        }
+        self.open_verb_menu(i, out);
+    }
+
     pub fn open_verb_menu(&mut self, i: usize, out: Out) {
         let Some(item) = self.items.get(i).filter(|it| it.clickable) else { return };
         let (id, label) = (item.id.clone(), item.label.clone());
@@ -176,6 +190,12 @@ impl Shell {
     fn verb_entries(&self, app: &str, name: &str) -> Vec<Entry> {
         let reg = &self.registry;
         let mut e = vec![Entry::Header(name.to_string())];
+        // Installed but not launchable: say why instead of listing verbs that
+        // cannot run. The registry decided this (apps.App.Launchable).
+        if let Some(a) = reg.apps.iter().find(|a| a.id == app).filter(|a| !a.launchable) {
+            e.push(Entry::item("Cannot launch", Action::CloseSettings).disabled(&a.problem));
+            return e;
+        }
         let names: &[String] = reg.apps.iter().find(|a| a.id == app).map_or(&[], |a| &a.verbs);
         if names.is_empty() {
             let why = match &reg.status {
@@ -533,7 +553,7 @@ mod tests {
 
     fn shell(status: Status, verbs: Vec<String>, details: Option<Vec<VerbEntry>>) -> Shell {
         let mut s = Shell::new();
-        s.registry.apps = vec![AppEntry { id: "a.b".into(), name: "Ab".into(), verbs }];
+        s.registry.apps = vec![AppEntry { id: "a.b".into(), name: "Ab".into(), verbs, launchable: true, problem: String::new(), windowed: false, exec: String::new() }];
         s.registry.verbs = details;
         s.registry.status = status;
         s

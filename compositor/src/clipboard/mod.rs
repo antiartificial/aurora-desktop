@@ -7,6 +7,22 @@
 //! tools that read and write the selection without keyboard focus). All three are Smithay's;
 //! `handlers/mod.rs` wires them to the seat. Guest-to-guest copy needs nothing else.
 //!
+//! # Who may bind `ext_data_control_manager_v1`
+//!
+//! Not everyone. The protocol deliberately hands a client the whole clipboard with no focus
+//! requirement -- that is the point of it, and it is what lets `wl-paste` and clipboard managers
+//! work at all. The consequence is that any client which can bind it reads everything the user
+//! copies, silently, forever. A confined app must not be able to do that: it would be a hole
+//! straight through the thing this project argues for.
+//!
+//! So `allow_data_control` refuses any client whose cgroup sits inside a domain, reusing the
+//! same fail-closed test the trusted socket already applies to approval peers
+//! (`trusted::socket::Allowlist`, which denies the `aurora-domains` component and refuses
+//! outright when the cgroup cannot be read). Ordinary session clients are unaffected.
+//!
+//! This does not make the clipboard safe against a same-user process outside a domain -- nothing
+//! here can, and the README says so. It closes the case the sandbox is supposed to cover.
+//!
 //! # The host bridge
 //!
 //! Aurora runs nested as a winit client of the host, and winit does not expose its connection
@@ -216,5 +232,66 @@ pub fn guest_pastes(state: &mut Aurora, t: SelectionTarget, mime: String, fd: Ow
         if !hc.host.receive(t, &mime, fd) {
             tracing::debug!("clipboard: guest pasted {t:?} but the host offer is gone");
         }
+    }
+}
+
+
+/// Whether the peer on this socket may bind `ext_data_control_manager_v1`.
+///
+/// Called once, when the client connects, because the obvious place -- the
+/// global filter -- cannot ask: `Client::get_credentials` there re-enters a
+/// lock the wayland backend is already holding, and every connecting client
+/// hangs. Deciding at connect is better anyway: one `/proc` read per client
+/// instead of one per bind.
+///
+/// Fail-closed: credentials or cgroup unreadable means no.
+pub fn peer_may_read_clipboard(stream: &std::os::unix::net::UnixStream) -> bool {
+    let allow = crate::trusted::socket::Allowlist::default();
+    // SO_PEERCRED, the same read the trusted socket does; std's peer_cred() is
+    // still unstable.
+    let Ok((uid, pid)) = crate::trusted::socket::peer_cred(stream) else {
+        tracing::warn!("clipboard: refusing ext_data_control to a client whose peer credentials cannot be read");
+        return false;
+    };
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok();
+    match allow.check(uid, pid, cgroup.as_deref()) {
+        Ok(()) => true,
+        Err(why) => {
+            tracing::info!("clipboard: refusing ext_data_control to pid {pid} ({why})");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod clipboard_policy_tests {
+    use crate::trusted::socket::Allowlist;
+
+    /// The policy `peer_may_read_clipboard` applies, exercised directly: the
+    /// socket read is the only part a unit test cannot reach, and it is three
+    /// lines of SO_PEERCRED shared with the trusted socket.
+    fn decide(uid: u32, cgroup: Option<&str>) -> bool {
+        Allowlist::default().check(uid, 1234, cgroup).is_ok()
+    }
+
+    #[test]
+    fn a_client_inside_a_domain_is_refused_the_clipboard() {
+        // What a bubblewrap domain's cgroup looks like (adapter/linux cgroup.go).
+        assert!(!decide(unsafe { libc::geteuid() }, Some("0::/user.slice/user-1000.slice/aurora-domains/magick-1\n")));
+    }
+
+    #[test]
+    fn an_ordinary_session_client_gets_the_clipboard() {
+        assert!(decide(unsafe { libc::geteuid() }, Some("0::/user.slice/user-1000.slice/session.scope\n")));
+    }
+
+    #[test]
+    fn an_unreadable_cgroup_is_refused_not_trusted() {
+        assert!(!decide(unsafe { libc::geteuid() }, None));
+    }
+
+    #[test]
+    fn another_users_client_is_refused() {
+        assert!(!decide(unsafe { libc::geteuid() } + 1, Some("0::/user.slice/user-1001.slice/session.scope\n")));
     }
 }
