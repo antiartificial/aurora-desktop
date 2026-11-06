@@ -39,6 +39,12 @@ type Log struct {
 	segs []*segment
 	cur  *os.File
 	size int64
+
+	// Hash chain tip (chain.go): sequence number and line hash of the last
+	// record written. head is the anchor file, rewritten after every append.
+	tipSeq  uint64
+	tipHash string
+	head    *os.File
 }
 
 // CapID is the stable identity of a capability handle: a hash, not the value.
@@ -69,9 +75,12 @@ func Open(dir string, maxBytes int64) (*Log, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	l := &Log{dir: dir, maxBytes: maxBytes}
+	l := &Log{dir: dir, maxBytes: maxBytes, tipHash: genesis}
 	paths, err := segmentPaths(dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := l.recoverTip(paths); err != nil {
 		return nil, err
 	}
 	for _, p := range paths {
@@ -121,13 +130,16 @@ func (l *Log) Append(e proto.Envelope) error {
 	if e.Ephemeral {
 		return nil
 	}
-	b, err := json.Marshal(LogForm(e))
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	le := LogForm(e)
+	le.Seq, le.Prev = l.tipSeq+1, l.tipHash
+	b, err := json.Marshal(le)
 	if err != nil {
 		return err
 	}
+	lineHash := hashLine(b)
 	b = append(b, '\n')
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.cur == nil || l.size >= l.maxBytes {
 		if l.cur == nil && len(l.segs) > 0 {
 			// Reopening: append to the last segment if it has room.
@@ -149,6 +161,10 @@ func (l *Log) Append(e proto.Envelope) error {
 	n, err := l.cur.Write(b)
 	l.size += int64(n)
 	if err != nil {
+		return err
+	}
+	l.tipSeq, l.tipHash = le.Seq, lineHash
+	if err := l.writeHead(); err != nil {
 		return err
 	}
 	if ts, err := hlc.Parse(e.TS); err == nil {
@@ -206,6 +222,10 @@ func (l *Log) Query(q Query) ([]proto.Envelope, error) {
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.head != nil {
+		l.head.Close()
+		l.head = nil
+	}
 	if l.cur != nil {
 		err := l.cur.Close()
 		l.cur = nil

@@ -87,6 +87,11 @@ type Envelope struct {
 	Origin    *Origin         `json:"origin,omitempty"`
 	Segments  []Segment       `json:"segments,omitempty"` // descriptors; fds travel out of band
 
+	// Seq and Prev are the log's hash chain. Only buslog.Append sets them
+	// (the daemon clears whatever a client sent); see buslog/chain.go.
+	Seq  uint64 `json:"seq,omitempty"`
+	Prev string `json:"prev,omitempty"`
+
 	// Attach holds the open fds that accompany Segments (SCM_RIGHTS). They
 	// exist only in memory: never marshalled, never logged.
 	Attach []*os.File `json:"-"`
@@ -98,6 +103,7 @@ var knownFields = map[string]bool{
 	"id": true, "ts": true, "from": true, "to": true, "kind": true, "verb": true,
 	"topic": true, "qos": true, "corr": true, "payload": true, "caps": true,
 	"cap_ids": true, "ephemeral": true, "origin": true, "segments": true,
+	"seq": true, "prev": true,
 }
 
 type plain Envelope // no methods: avoids recursion

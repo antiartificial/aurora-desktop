@@ -196,7 +196,7 @@ func TestLogNeverContainsCapabilityValues(t *testing.T) {
 	if len(got.Caps) != 1 || got.Caps[0] != "SECRET-HANDLE-123" {
 		t.Fatalf("recipient must receive the handle, got %v", got.Caps)
 	}
-	files, _ := filepath.Glob(filepath.Join(dataDir, "*"))
+	files, _ := filepath.Glob(filepath.Join(dataDir, "seg-*.jsonl"))
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
 		if strings.Contains(string(b), "SECRET-HANDLE-123") {

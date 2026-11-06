@@ -167,6 +167,7 @@ func cmdReplay(args []string) int {
 			"  default   re-deliver to the daemon at --socket (start it with\n"+
 			"            `busd --allow-replay` so original ids/senders are kept as origin).")
 	check := fs.Bool("check", false, "verify invariants against a fresh in-process daemon")
+	requireChain := fs.Bool("require-chain", false, "with --check: fail (not just warn) when the log has no hash chain")
 	speed := fs.Float64("speed", 0, "pace by recorded timestamps at this multiple (0 = as fast as possible)")
 	pos, code, done := parse(fs, args, 1, 1)
 	if done {
@@ -191,8 +192,20 @@ func cmdReplay(args []string) int {
 			fmt.Printf("note: %d segment(s) were carried; their CONTENTS are not in the log and are not replayed.\n"+
 				"      replay re-sends descriptors (id, size, mime, sha256) marked absent, and the check compares those.\n", n)
 		}
+		// The chain is checked on the ORIGINAL log's raw bytes, which the
+		// parsed messages above no longer have.
+		rep, err := buslog.Verify(pos[0], "")
+		if err != nil {
+			return fail("%v", err)
+		}
+		chain := replay.ChainCheck(rep, *requireChain)
+		res.Report.Checks = append(res.Report.Checks, chain)
+		res.Report.OK = res.Report.OK && chain.OK
 		for _, c := range res.Report.Checks {
 			mark := "PASS"
+			if c.Unverified {
+				mark = "UNVERIFIED"
+			}
 			if !c.OK {
 				mark = "FAIL"
 			}
@@ -201,6 +214,10 @@ func cmdReplay(args []string) int {
 		if !res.Report.OK {
 			fmt.Println("replay check: FAIL")
 			return 1
+		}
+		if chain.Unverified {
+			fmt.Println("replay check: PASS (log integrity NOT verified: no hash chain)")
+			return 0
 		}
 		fmt.Println("replay check: PASS")
 		return 0
@@ -224,4 +241,42 @@ func countSegments(msgs []proto.Envelope) (n int) {
 		n += len(m.Segments)
 	}
 	return n
+}
+
+// cmdVerify checks the hash chain of a log. It is separate from replay
+// --check because it needs no daemon and answers a different question (was
+// the log altered?) from replay's (is the log self-consistent?); replay
+// --check also runs it. Exit 0 verified, 1 broken, 2 not chained.
+func cmdVerify(args []string) int {
+	fs, _ := cmdFlags("verify", "[flags] <logdir|logfile>",
+		"Verify the hash chain of a log: every record commits to the one before,\n"+
+			"across segments, up to the tip recorded in chain.head. Detects deleted,\n"+
+			"reordered, edited, spliced and truncated records, and missing segments.\n"+
+			"Exit 0 verified, 1 tampered, 2 not chained (legacy log: cannot be verified).\n"+
+			"The hash is unkeyed: pin the printed tip elsewhere and pass it back with --tip.")
+	tip := fs.String("tip", "", "expected tip hash (from an earlier verify, kept outside the log directory)")
+	pos, code, done := parse(fs, args, 1, 1)
+	if done {
+		return code
+	}
+	rep, err := buslog.Verify(pos[0], *tip)
+	if err != nil {
+		return fail("%v", err)
+	}
+	for _, p := range rep.Problems {
+		fmt.Println("  TAMPERED:", p)
+	}
+	for _, n := range rep.Notes {
+		fmt.Println("  note:", n)
+	}
+	switch rep.Status {
+	case buslog.ChainVerified:
+		fmt.Printf("verify: OK  %d records chained, tip seq %d\n  tip %s\n", rep.Chained, rep.TipSeq, rep.TipHash)
+		return 0
+	case buslog.ChainUnchained:
+		fmt.Printf("verify: NOT CHAINED  %d of %d records have no hash chain; integrity cannot be verified\n", rep.Legacy, rep.Records)
+		return 2
+	}
+	fmt.Printf("verify: FAIL  log has been altered or damaged (%d problem(s))\n", len(rep.Problems))
+	return 1
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/antiartificial/aurora/bus/buslog"
 	"github.com/antiartificial/aurora/bus/proto"
 )
 
@@ -15,6 +16,10 @@ type CheckResult struct {
 	Name   string
 	OK     bool
 	Detail string
+	// Unverified: the check could not be made (the log has nothing to check
+	// it against). OK is true so that old logs still replay, but it is shown
+	// as UNVERIFIED, never as a pass.
+	Unverified bool
 }
 
 // Report is the full verdict. OK only if every check passed.
@@ -39,6 +44,30 @@ func Check(orig, replayed, delivered []proto.Envelope) Report {
 		r.OK = r.OK && c.OK
 	}
 	return r
+}
+
+// ChainCheck turns a buslog.Verify report into a check result. Broken is a
+// failure; a log with no chain (or only a chained suffix) is Unverified.
+func ChainCheck(rep buslog.ChainReport, require bool) CheckResult {
+	res := CheckResult{Name: "log hash chain"}
+	notes := ""
+	if len(rep.Notes) > 0 {
+		notes = "; " + strings.Join(rep.Notes, "; ")
+	}
+	switch rep.Status {
+	case buslog.ChainVerified:
+		res.OK = true
+		res.Detail = fmt.Sprintf("%d records chained from genesis to tip seq %d, anchored by %s; tip %s%s",
+			rep.Chained, rep.TipSeq, buslog.HeadFile, rep.TipHash, notes)
+	case buslog.ChainUnchained:
+		res.OK = !require
+		res.Unverified = true
+		res.Detail = fmt.Sprintf("NOT CHAINED: %d of %d records carry no hash chain (cannot be verified), so deletion, truncation and splicing cannot be detected%s",
+			rep.Legacy, rep.Records, notes)
+	default:
+		res.Detail = summarize(rep.Problems)
+	}
+	return res
 }
 
 func originID(e proto.Envelope) string {

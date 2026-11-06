@@ -24,6 +24,7 @@ commands:
   log                            query the log
   inspect                        list clients, services, subscriptions
   replay <logfile|dir>           re-deliver a recorded session
+  verify <logdir>                check the log's hash chain (tamper evidence)
 
 Every command takes -h. Socket: --socket or AURORA_BUS_SOCK
 (default $XDG_RUNTIME_DIR/aurora/bus.sock).
@@ -124,6 +125,8 @@ func run(args []string) int {
 		return cmdInspect(rest)
 	case "replay":
 		return cmdReplay(rest)
+	case "verify":
+		return cmdVerify(rest)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 		return 0

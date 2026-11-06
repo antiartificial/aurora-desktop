@@ -326,6 +326,7 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 
 	// Hard rule (0001): identity comes from SO_PEERCRED, never the message.
 	e.From = c.domain
+	e.Seq, e.Prev = 0, "" // the chain is the log's, never a client's
 	e.ID = s.newID()
 	e.TS = s.clock.Now().String()
 	if !replay {
