@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# toolchain-report: read-only check of the toolchains, devices and firmware
+# that the Phase 0 plan depends on. Prints a markdown table with the columns
+# Tool | Needed for | Version | Status. That table is the source for the root
+# README version table: paste it there as printed.
+#
+# Exit status: 0 if nothing in the blocking set is missing, 1 otherwise. The
+# blocking set is the one listed in usage(). QEMU, KVM and OVMF are not blocking.
+# Installs nothing, changes nothing, needs no root.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QEMU_MIN_MAJOR=10
+
+TERMINAL_PREFERENCE=(foot ghostty konsole gnome-terminal xterm)
+
+usage() {
+  cat <<'EOF'
+Usage: harness/toolchain-report [-h|--help]
+
+Prints a markdown table with the columns: Tool | Needed for | Version | Status.
+This table is the source for the root README version table. Paste it as printed.
+
+Status values:
+  present                      found (QEMU: found and at or above the version floor)
+  MISSING (blocks Phase 0)     missing, so the Phase 0 exit demo cannot run
+  missing (advisory)           missing, reported, does not change the exit status
+  missing (needed later)       listed for Phase 0, first needed in a later phase
+  FAIL (below version floor)   QEMU older than 10
+
+Exit status: 0 if nothing in the blocking set is missing, 1 if something is.
+Blocking items: a terminal (or AURORA_TERMINAL=none), a host display session,
+git, cargo, rustc, pkg-config, and the Ginux source (ginux/upstream, or
+GINUX_SRC if set). Nothing else changes the exit status.
+
+Listed as later, not blocking: qemu-system-x86_64, /dev/kvm, both OVMF files,
+and the x86_64-unknown-uefi Rust target. They serve the deferred
+bootable-kernel path (tag bootable-kernel-final) and eventual bare metal, per
+contracts/decisions/0005-ginux-retarget.md. The userspace Ginux build does not
+use them.
+
+QEMU has a version floor of 10+. Below 10, its row reads FAIL (below version
+floor). That is reported as a failure of the floor, but it does not change the
+exit status, because QEMU is not blocking.
+
+The terminal row follows nested-up: AURORA_TERMINAL if set, otherwise the first
+installed of foot, ghostty, konsole, gnome-terminal, xterm.
+
+This script is read-only. It does not install anything.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "toolchain-report: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+rows=()
+blocking_missing=()
+
+# add_row NAME CLASS STATE VERSION NEEDED
+#   CLASS: blocking | advisory | later
+#   STATE: present | missing | fail
+add_row() {
+  local name="$1" class="$2" state="$3" version="$4" needed="$5" status
+  version="${version//|/\/}"
+  case "$state:$class" in
+    present:*)        status="present" ;;
+    fail:*)           status="FAIL (below version floor)" ;;
+    missing:blocking) status="MISSING (blocks Phase 0)" ;;
+    missing:advisory) status="missing (advisory)" ;;
+    missing:later)    status="missing (needed later)" ;;
+  esac
+  rows+=("| $name | $needed | $version | $status |")
+  if [[ "$class" == blocking && "$state" != present ]]; then
+    blocking_missing+=("$name")
+  fi
+}
+
+# find_tool NAME: absolute path of NAME, checking PATH, then /usr/sbin and
+# /sbin (where some tools live without being on a user's PATH). Fails if absent.
+find_tool() {
+  local name="$1" p d
+  if p="$(command -v "$name" 2>/dev/null)" && [[ -n "$p" ]]; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  for d in /usr/sbin /sbin; do
+    if [[ -x "$d/$name" ]]; then
+      printf '%s\n' "$d/$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# probe CMD ARGS...: first line of the command's output, or "unknown".
+# A failing version command must not abort the report, hence the || true.
+probe() {
+  local out
+  out="$("$@" 2>&1 | head -n 1)" || true
+  printf '%s' "${out:-unknown}"
+}
+
+# check_cmd NAME CLASS NEEDED VERSION_ARGS...
+check_cmd() {
+  local name="$1" class="$2" needed="$3"
+  shift 3
+  if command -v "$name" >/dev/null 2>&1; then
+    add_row "$name" "$class" present "$(probe "$name" "$@")" "$needed"
+  else
+    add_row "$name" "$class" missing "not found" "$needed"
+  fi
+}
+
+check_terminal() {
+  local needed="Phase 0 exit demo: a terminal inside smallvil (nested-up)" t
+  if [[ "${AURORA_TERMINAL:-}" == none ]]; then
+    add_row "terminal" blocking present "none (AURORA_TERMINAL=none; smallvil runs alone)" "$needed"
+  elif [[ -n "${AURORA_TERMINAL:-}" ]]; then
+    if command -v "$AURORA_TERMINAL" >/dev/null 2>&1; then
+      add_row "terminal" blocking present "$AURORA_TERMINAL (set by AURORA_TERMINAL)" "$needed"
+    else
+      add_row "terminal" blocking missing "AURORA_TERMINAL=$AURORA_TERMINAL is not on PATH" "$needed"
+    fi
+  else
+    for t in "${TERMINAL_PREFERENCE[@]}"; do
+      if command -v "$t" >/dev/null 2>&1; then
+        add_row "terminal" blocking present "$t (auto-detected)" "$needed"
+        return 0
+      fi
+    done
+    add_row "terminal" blocking missing "none found (tried ${TERMINAL_PREFERENCE[*]})" "$needed"
+  fi
+}
+
+check_display() {
+  local needed="Phase 0 exit demo: a host Wayland or X11 session for smallvil to nest in"
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    add_row "display session" blocking present "Wayland ($WAYLAND_DISPLAY)" "$needed"
+  elif [[ -n "${DISPLAY:-}" ]]; then
+    add_row "display session" blocking present "X11 ($DISPLAY)" "$needed"
+  else
+    add_row "display session" blocking missing "neither WAYLAND_DISPLAY nor DISPLAY is set" "$needed"
+  fi
+}
+
+check_qemu() {
+  local name=qemu-system-x86_64 needed="Later: QEMU ${QEMU_MIN_MAJOR}+ for the deferred bootable-kernel path and eventual bare metal (decision 0005)"
+  local out major=""
+  if ! command -v "$name" >/dev/null 2>&1; then
+    add_row "$name" later missing "not found" "$needed"
+    return 0
+  fi
+  out="$(probe "$name" --version)"
+  if [[ "$out" =~ version[[:space:]]+([0-9]+)\. ]]; then
+    major="${BASH_REMATCH[1]}"
+  fi
+  out="${out%% (*}"
+  if [[ -n "$major" ]] && ((major >= QEMU_MIN_MAJOR)); then
+    add_row "$name" later present "$out" "$needed"
+  else
+    add_row "$name" later fail "$out (need ${QEMU_MIN_MAJOR}+)" "$needed"
+  fi
+}
+
+check_virglrenderer() {
+  local needed="Later: was for the GPU track (G3, virtio-gpu Venus), which decision 0005 drops for userspace Ginux; kept for bare-metal GPU work"
+  local libs="" ldc="" soname=""
+  if ldc="$(find_tool ldconfig)"; then
+    libs="$("$ldc" -p 2>/dev/null || true)"
+  fi
+  if pkg-config --exists virglrenderer 2>/dev/null; then
+    add_row "virglrenderer" later present "$(pkg-config --modversion virglrenderer 2>/dev/null || echo unknown)" "$needed"
+  elif grep -q 'libvirglrenderer\.so' <<<"$libs"; then
+    soname="$(sed -n 's/.*\(libvirglrenderer\.so[0-9.]*\).*/\1/p' <<<"$libs" | sed -n '1p')"
+    add_row "virglrenderer" later present "${soname:-libvirglrenderer} (library; no pkg-config file)" "$needed"
+  else
+    add_row "virglrenderer" later missing "not found" "$needed"
+  fi
+}
+
+check_kvm() {
+  local needed="Later: KVM for QEMU, used only by the deferred bootable-kernel path and eventual bare metal (decision 0005)"
+  if [[ -e /dev/kvm ]]; then
+    if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+      add_row "/dev/kvm" blocking present "present, read/write" "$needed"
+    else
+      add_row "/dev/kvm" blocking missing "present but not read/write for $(id -un)" "$needed"
+    fi
+  else
+    add_row "/dev/kvm" blocking missing "not found" "$needed"
+  fi
+}
+
+check_ovmf() {
+  local f needed="Later: OVMF UEFI firmware, used only by the deferred bootable-kernel path and eventual bare metal (decision 0005)"
+  # Paths match the verified host install.
+  for f in /usr/share/qemu/ovmf-x86_64-4m-code.bin /usr/share/qemu/ovmf-x86_64-4m-vars.bin; do
+    if [[ -r "$f" ]]; then
+      add_row "$f" later present "readable" "$needed"
+    else
+      add_row "$f" later missing "not found or not readable" "$needed"
+    fi
+  done
+}
+
+check_uefi_target() {
+  local target="x86_64-unknown-uefi" needed="Later: builds GINUX.EFI for the deferred bootable-kernel path (tag bootable-kernel-final) and eventual bare metal; not used by the userspace Ginux build (decision 0005)"
+  local sysroot=""
+  if command -v rustc >/dev/null 2>&1; then
+    sysroot="$(rustc --print sysroot 2>/dev/null || true)"
+  fi
+  if [[ -z "$sysroot" ]]; then
+    add_row "rust target $target" later missing "cannot check: rustc not found" "$needed"
+  elif [[ -d "$sysroot/lib/rustlib/$target" ]]; then
+    add_row "rust target $target" later present "installed" "$needed"
+  else
+    add_row "rust target $target" later missing "not installed (rustup target add $target)" "$needed"
+  fi
+}
+
+# Same resolution as ginux-up: GINUX_SRC if set, else ginux/upstream.
+check_ginux_source() {
+  local needed="Phase 0 Ginux workspace the harness builds (a userspace Cargo workspace, not a crate compiled into GINUX.EFI)" src
+  if [[ -n "${GINUX_SRC:-}" ]]; then
+    src="$GINUX_SRC"
+    if [[ -f "$src/Cargo.toml" ]]; then
+      add_row "Ginux source" blocking present "$src (GINUX_SRC)" "$needed"
+    else
+      add_row "Ginux source" blocking missing "GINUX_SRC=$src has no Cargo.toml" "$needed"
+    fi
+    return 0
+  fi
+  if [[ -f "$REPO_ROOT/ginux/upstream/Cargo.toml" ]]; then
+    add_row "Ginux source" blocking present "ginux/upstream/Cargo.toml" "$needed"
+  else
+    add_row "Ginux source" blocking missing "no Cargo.toml at ginux/upstream/ (run: git submodule update --init ginux/upstream)" "$needed"
+  fi
+}
+
+check_dri() {
+  local node dri=() needed="Phase 0 nested compositor on the GPU"
+  shopt -s nullglob
+  for node in /dev/dri/*; do
+    [[ -c "$node" ]] && dri+=("$node")
+  done
+  shopt -u nullglob
+  if ((${#dri[@]})); then
+    add_row "/dev/dri/*" advisory present "${dri[*]}" "$needed"
+  else
+    add_row "/dev/dri/*" advisory missing "not found" "$needed"
+  fi
+}
+
+check_nvidia() {
+  local gpu="" needed="Phase 0 Nvidia check: records the driver version"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    gpu="$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -n 1)" || true
+    add_row "nvidia-smi" advisory present "${gpu:-query failed}" "$needed"
+  else
+    add_row "nvidia-smi" advisory missing "not found" "$needed"
+  fi
+}
+
+# Blocking set (exit 1 if any is missing).
+check_terminal
+check_display
+check_cmd git blocking "Phase 0 repository; nested-up clones Smithay" --version
+check_cmd cargo blocking "Phase 0 Rust builds: smallvil (nested-up) and the Ginux workspace (ginux-up)" --version
+check_cmd rustc blocking "Phase 0 Rust compositor and Ginux workspace" --version
+check_cmd pkg-config blocking "Phase 0 finds system libraries for smithay" --version
+check_ginux_source
+
+# Later: listed, does not change the exit status.
+check_kvm
+check_ovmf
+check_uefi_target
+check_qemu
+
+# Reported, does not change the exit status.
+check_cmd go advisory "Phase 0 Go bus and controller" version
+check_cmd gcc advisory "Phase 0 linker and C build of crate dependencies" --version
+check_dri
+check_nvidia
+
+# Listed for Phase 0, first needed in a later phase.
+check_cmd capnp later "Cap'n Proto compiler for contracts/; decision 0001 leaves Cap'n Proto vs. a custom IDL open until Phase 3" --version
+check_virglrenderer
+check_cmd zig later "Zig, only for the libghostty terminal" version
+check_cmd ninja later "Build helper for virglrenderer from source" --version
+check_cmd cmake later "Build helper for virglrenderer from source" --version
+
+echo "# Toolchain report"
+echo
+echo "Date: $(date -u +%Y-%m-%d) UTC. Host: $(uname -srm). Shell: bash ${BASH_VERSION}."
+echo
+echo "| Tool | Needed for | Version | Status |"
+echo "|---|---|---|---|"
+printf '%s\n' "${rows[@]}"
+echo
+
+if ((${#blocking_missing[@]})); then
+  echo "Blocking items missing (the Phase 0 exit demo cannot run): ${blocking_missing[*]}"
+  echo "Install these yourself. This script does not install anything. Then rerun."
+  exit 1
+fi
+echo "Nothing that blocks the Phase 0 exit demo is missing."

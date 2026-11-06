@@ -1,0 +1,1 @@
+The Ginux backend of the kernel adapter: native domains and capability handles. The plan keeps this backend a sketch until milestone G4 of the Ginux track. The plan does not fix the language for this directory yet.

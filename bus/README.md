@@ -1,0 +1,1 @@
+The message bus, written in Go: the durable, typed, replayable log that apps, the shell, the compositor and agents use to talk to each other. Phase 3 fills it. Message shapes come from contracts/, not from this directory.

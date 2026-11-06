@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# nested-up: build Smithay's smallvil example and run it as a window on the
+# current desktop, then start a terminal inside it when one is available.
+#
+# Needs: git, cargo, pkg-config, and a running Wayland or X11 session to nest
+# inside. A terminal is optional. Installs nothing. Source and build output go
+# under ${XDG_CACHE_HOME:-$HOME/.cache}/aurora.
+set -euo pipefail
+
+# Smithay revision to build. This is a branch name for now.
+# TODO: pin SMITHAY_REV to an exact commit once the first successful run
+# confirms that smallvil builds and launches at this revision. Until then,
+# builds track whatever the branch points to and are not reproducible.
+SMITHAY_REV="${SMITHAY_REV:-master}"
+SMITHAY_URL="${SMITHAY_URL:-https://github.com/Smithay/smithay.git}"
+
+# Terminal inside the nested compositor. Empty means auto-detect; "none" runs
+# smallvil alone. Auto-detect takes the first of TERMINAL_PREFERENCE on PATH.
+AURORA_TERMINAL="${AURORA_TERMINAL:-}"
+TERMINAL_PREFERENCE=(foot ghostty konsole gnome-terminal xterm)
+
+# Set to 1 by --no-terminal.
+NO_TERMINAL=0
+
+# Seconds to wait for smallvil to create its Wayland socket.
+START_TIMEOUT="${AURORA_START_TIMEOUT:-30}"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/aurora"
+SMITHAY_SRC="$CACHE_DIR/smithay"
+TARGET_DIR="$CACHE_DIR/target-nested"
+
+TERMINAL_CMD=""
+COMPOSITOR_PID=""
+TERMINAL_PID=""
+
+usage() {
+  cat <<'EOF'
+Usage: harness/nested-up [-h|--help] [--no-terminal]
+
+Builds smallvil from Smithay at revision $SMITHAY_REV (default: master), starts
+it as a window on the current Wayland or X11 session, then starts a terminal
+inside it with WAYLAND_DISPLAY pointing at the nested compositor.
+
+Terminal choice:
+  AURORA_TERMINAL set       use that command; the script stops if it is not on PATH
+  AURORA_TERMINAL=none      run smallvil alone
+  AURORA_TERMINAL unset     use the first found of: foot, ghostty, konsole, gnome-terminal, xterm
+  none found                warn, then run smallvil alone
+  --no-terminal             run smallvil alone, whatever AURORA_TERMINAL says
+
+Environment overrides:
+  SMITHAY_REV           Smithay branch, tag or commit (default: master)
+  SMITHAY_URL           Smithay git URL
+  AURORA_TERMINAL       terminal command, or "none" (default: auto-detect)
+  AURORA_OFFLINE=1      do not fetch from SMITHAY_URL; use the local checkout
+  AURORA_START_TIMEOUT  seconds to wait for the socket (default: 30)
+
+Stop with Ctrl-C, or close the smallvil window. Both exit 0.
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage; exit 0 ;;
+    --no-terminal) NO_TERMINAL=1 ;;
+    *) echo "nested-up: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+die() { echo "nested-up: $*" >&2; exit 1; }
+note() { echo "nested-up: $*"; }
+warn() { echo "nested-up: warning: $*" >&2; }
+
+# Picks TERMINAL_CMD. Empty TERMINAL_CMD means smallvil runs alone.
+resolve_terminal() {
+  local t
+  if ((NO_TERMINAL)) || [[ "$AURORA_TERMINAL" == none ]]; then
+    TERMINAL_CMD=""
+    note "no terminal requested; smallvil runs alone"
+    return 0
+  fi
+  if [[ -n "$AURORA_TERMINAL" ]]; then
+    command -v "$AURORA_TERMINAL" >/dev/null 2>&1 \
+      || die "AURORA_TERMINAL='$AURORA_TERMINAL' is not on PATH. Unset it to auto-detect, set another terminal, or set it to none."
+    TERMINAL_CMD="$AURORA_TERMINAL"
+    note "terminal: $TERMINAL_CMD (from AURORA_TERMINAL)"
+    return 0
+  fi
+  for t in "${TERMINAL_PREFERENCE[@]}"; do
+    if command -v "$t" >/dev/null 2>&1; then
+      TERMINAL_CMD="$t"
+      note "terminal: $t (auto-detected)"
+      return 0
+    fi
+  done
+  warn "no terminal found (tried: ${TERMINAL_PREFERENCE[*]}). Continuing with smallvil alone. Install one or set AURORA_TERMINAL."
+}
+
+preflight() {
+  # First, because the socket checks below expand XDG_RUNTIME_DIR on both the
+  # Wayland and the X11 branch.
+  [[ -n "${XDG_RUNTIME_DIR:-}" ]] \
+    || die "XDG_RUNTIME_DIR is not set. The nested Wayland socket is created there. Run from a login session that sets it."
+
+  local c missing=()
+  for c in git cargo pkg-config; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  if ((${#missing[@]})); then
+    die "required commands not found: ${missing[*]}. Install them yourself (this script installs nothing), then rerun."
+  fi
+
+  # smallvil nests as a client of the host session, so one must exist.
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then
+      note "host session: Wayland ($WAYLAND_DISPLAY)"
+    else
+      die "WAYLAND_DISPLAY=$WAYLAND_DISPLAY is set but its socket is not at \${XDG_RUNTIME_DIR}/$WAYLAND_DISPLAY. The host compositor may have exited. Start a graphical session, then rerun."
+    fi
+  elif [[ -n "${DISPLAY:-}" ]]; then
+    note "host session: X11 ($DISPLAY)"
+  else
+    die "no host session found: WAYLAND_DISPLAY and DISPLAY are both unset. smallvil runs nested inside an existing Wayland or X11 session. Run this from a graphical login."
+  fi
+
+  resolve_terminal
+
+  # Advisory only: the exact system library list is not confirmed yet.
+  local lib
+  for lib in xkbcommon libudev libinput libseat gbm; do
+    pkg-config --exists "$lib" 2>/dev/null \
+      || warn "pkg-config cannot find '$lib'. cargo build may fail on it; install its -devel package if so."
+  done
+}
+
+# A full 40-character commit id, as opposed to a branch or tag name.
+is_full_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
+fetch_smithay() {
+  mkdir -p "$CACHE_DIR"
+
+  # An interrupted clone leaves the directory without .git. Clone it again.
+  if [[ -e "$SMITHAY_SRC" && ! -d "$SMITHAY_SRC/.git" ]]; then
+    warn "$SMITHAY_SRC exists but is not a git checkout (an earlier clone was probably interrupted). Removing it and cloning again."
+    rm -rf -- "$SMITHAY_SRC"
+  fi
+  if [[ ! -d "$SMITHAY_SRC/.git" ]]; then
+    note "cloning Smithay into $SMITHAY_SRC"
+    rm -rf -- "$SMITHAY_SRC.partial"
+    git clone --quiet "$SMITHAY_URL" "$SMITHAY_SRC.partial"
+    mv -- "$SMITHAY_SRC.partial" "$SMITHAY_SRC"
+  fi
+
+  # Fetch only when needed: not with AURORA_OFFLINE=1, and not when the pinned
+  # commit is already in the checkout. A failed fetch is a warning; the
+  # revision may still resolve from the local refs.
+  if [[ "${AURORA_OFFLINE:-0}" == 1 ]]; then
+    note "AURORA_OFFLINE=1: not fetching from $SMITHAY_URL"
+  elif is_full_sha "$SMITHAY_REV" && git -C "$SMITHAY_SRC" cat-file -e "$SMITHAY_REV^{commit}" 2>/dev/null; then
+    note "pinned commit $SMITHAY_REV is already present: not fetching"
+  elif ! git -C "$SMITHAY_SRC" fetch --quiet origin; then
+    warn "git fetch failed; using the local refs in $SMITHAY_SRC"
+  fi
+
+  local ref="$SMITHAY_REV" target
+  if git -C "$SMITHAY_SRC" rev-parse --verify --quiet "origin/$SMITHAY_REV^{commit}" >/dev/null; then
+    ref="origin/$SMITHAY_REV"
+  fi
+  target="$(git -C "$SMITHAY_SRC" rev-parse --verify --quiet "$ref^{commit}")" \
+    || die "Smithay revision '$SMITHAY_REV' is not in $SMITHAY_SRC. Check SMITHAY_REV. AURORA_OFFLINE=1 does not fetch, so a revision missing locally fails."
+  if [[ "$(git -C "$SMITHAY_SRC" rev-parse HEAD)" != "$target" ]]; then
+    git -C "$SMITHAY_SRC" checkout --quiet --force --detach "$target"
+  fi
+  note "Smithay at $(git -C "$SMITHAY_SRC" rev-parse --short "$target") (from $SMITHAY_REV)"
+}
+
+find_smallvil() {
+  local d
+  for d in "$SMITHAY_SRC/smallvil" "$SMITHAY_SRC/examples/smallvil"; do
+    if [[ -f "$d/Cargo.toml" ]]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  die "smallvil not found in $SMITHAY_SRC (looked in smallvil/ and examples/smallvil/) at $SMITHAY_REV. Check SMITHAY_REV."
+}
+
+build_smallvil() {
+  local dir="$1"
+  note "building smallvil (target dir $TARGET_DIR)"
+  CARGO_TARGET_DIR="$TARGET_DIR" cargo build --manifest-path "$dir/Cargo.toml" \
+    || die "cargo build failed. The errors above are from Smithay's build; a missing system library is the usual cause."
+}
+
+# List Wayland socket names currently in the runtime dir, one per line.
+list_sockets() {
+  local s
+  for s in "$XDG_RUNTIME_DIR"/wayland-*; do
+    [[ -S "$s" ]] && printf '%s\n' "${s##*/}"
+  done
+  return 0
+}
+
+cleanup() {
+  if [[ -n "$TERMINAL_PID" ]]; then kill "$TERMINAL_PID" 2>/dev/null || true; fi
+  if [[ -n "$COMPOSITOR_PID" ]]; then kill "$COMPOSITOR_PID" 2>/dev/null || true; fi
+}
+
+run_nested() {
+  local bin="$1"
+  local -a before=()
+  local line
+  while IFS= read -r line; do before+=("$line"); done < <(list_sockets)
+
+  note "starting smallvil nested in the host session"
+  "$bin" &
+  COMPOSITOR_PID=$!
+
+  # smallvil creates its own socket (wayland-N) in XDG_RUNTIME_DIR. Find the
+  # one that did not exist before it started.
+  local new_socket="" waited=0 s seen
+  while [[ -z "$new_socket" ]]; do
+    if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
+      die "smallvil exited before creating a Wayland socket. See its output above."
+    fi
+    while IFS= read -r s; do
+      seen=0
+      for line in "${before[@]}"; do
+        [[ "$line" == "$s" ]] && seen=1
+      done
+      if ((seen == 0)); then new_socket="$s"; break; fi
+    done < <(list_sockets)
+    if [[ -z "$new_socket" ]]; then
+      if ((waited >= START_TIMEOUT)); then
+        die "smallvil did not create a Wayland socket within ${START_TIMEOUT}s."
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    fi
+  done
+
+  note "nested compositor socket: $new_socket"
+  if [[ -n "$TERMINAL_CMD" ]]; then
+    note "starting $TERMINAL_CMD inside the nested compositor"
+    env -u DISPLAY WAYLAND_DISPLAY="$new_socket" "$TERMINAL_CMD" &
+    TERMINAL_PID=$!
+  else
+    note "no terminal: close the smallvil window to stop"
+  fi
+
+  # Closing the window is the normal stop, so exit 0 is a clean shutdown.
+  # 130 and 143 are the statuses of a signal stop (Ctrl-C, SIGTERM).
+  local rc=0
+  wait "$COMPOSITOR_PID" || rc=$?
+  case "$rc" in
+    0)       note "smallvil closed" ;;
+    130|143) note "smallvil stopped by signal (status $rc)" ;;
+    *)       die "smallvil exited with status $rc" ;;
+  esac
+}
+
+main() {
+  preflight
+  fetch_smithay
+
+  local dir bin
+  dir="$(find_smallvil)"
+  build_smallvil "$dir"
+
+  bin="$TARGET_DIR/debug/smallvil"
+  [[ -x "$bin" ]] || die "build finished but $bin does not exist. Check the package name in $dir/Cargo.toml."
+
+  trap cleanup EXIT
+  trap 'exit 0' INT TERM
+  run_nested "$bin"
+}
+
+main "$@"

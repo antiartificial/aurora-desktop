@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# ginux-up: build Ginux with its own Makefile, check host readiness, then stop
+# before starting a managed domain, because the upstream invocation for that
+# step is not confirmed.
+#
+# Ginux is a configurable userspace kernel for isolated Linux compatibility
+# domains. It runs as an ordinary Linux process (upstream README). Its source is
+# the ginux/upstream submodule. Nothing here uses QEMU, KVM, OVMF, an ESP or an
+# Alpine rootfs.
+#
+# Nothing in this script has been run end to end.
+#
+# Deferred, not abandoned: the bootable-kernel path. The UEFI kernel that built
+# GINUX.EFI and booted it under QEMU/KVM with OVMF is preserved upstream at tag
+# bootable-kernel-final (branch bootable-kernel). Bare metal remains a project
+# goal. This boot path returns when that work does (contracts/decisions/0005).
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GINUX_SRC="${GINUX_SRC:-$REPO_ROOT/ginux/upstream}"
+GINUX_TRIPLE=x86_64-unknown-linux-gnu
+# The path upstream's Makefile names as GINUX.
+GINUX_BIN="$GINUX_SRC/target/$GINUX_TRIPLE/release/ginux"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/aurora/ginux"
+# Stdout and stderr of the latest run, overwritten each run, as evidence for demos/.
+RUN_LOG="$CACHE_DIR/ginux-up.log"
+
+usage() {
+  cat <<'EOF'
+Usage: harness/ginux-up [-h|--help]
+
+Builds Ginux from its own source tree with upstream's Makefile, reports host
+readiness, and then stops before starting a managed domain. The domain-start
+invocation is not confirmed, so the script does not guess one.
+
+Nothing here has been run end to end. A run has not yet been seen to build,
+to pass upstream's doctor, or to start a domain on this host.
+
+Steps:
+  1. Source check. $GINUX_SRC/Cargo.toml and $GINUX_SRC/Makefile must exist.
+  2. make doctor in the source tree. Advisory: its result is reported, and the
+     build still runs. Skip it with GINUX_SKIP_DOCTOR=1.
+  3. make build in the source tree (cargo, x86_64-unknown-linux-gnu, release).
+     Then checks that the binary exists at
+     $GINUX_SRC/target/x86_64-unknown-linux-gnu/release/ginux.
+  4. Start a managed domain. Not implemented: the script exits with status 3
+     and names the file to consult.
+
+Environment overrides:
+  GINUX_SRC           Ginux source tree (default: ginux/upstream in this repo)
+  GINUX_SKIP_DOCTOR   1 to skip step 2
+
+Logs: ${XDG_CACHE_HOME:-$HOME/.cache}/aurora/ginux/ginux-up.log, overwritten on
+each run.
+
+Runs without root, installs nothing, and needs cargo, rustc and make on PATH.
+The build writes to the submodule's own target/ directory. Re-running is safe:
+upstream's make and cargo are incremental.
+
+Exit status: 0 only if a managed domain started (not yet possible; see step 4).
+3 means the build step passed and the domain step stopped. 1 means a failure
+(missing source or tool, failed build, or missing
+binary). 2 means a bad argument.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "ginux-up: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+die() { echo "ginux-up: $*" >&2; exit 1; }
+note() { echo "ginux-up: $*"; }
+
+# Step 1: the Ginux source. It is the ginux/upstream submodule unless GINUX_SRC says otherwise.
+check_source() {
+  if [[ ! -f "$GINUX_SRC/Cargo.toml" || ! -f "$GINUX_SRC/Makefile" ]]; then
+    die "the Ginux source is not present at $GINUX_SRC (Cargo.toml and Makefile not found).
+  It is the ginux/upstream git submodule. Run: git submodule update --init ginux/upstream
+  Or set GINUX_SRC to a Ginux checkout. Nothing was built."
+  fi
+  note "Ginux source: $GINUX_SRC"
+}
+
+# Host tools for the build. The script installs nothing.
+check_tools() {
+  local c missing=()
+  for c in make cargo rustc; do
+    command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+  done
+  if ((${#missing[@]})); then
+    die "required commands not found: ${missing[*]}. Install them yourself (this script installs nothing), then rerun."
+  fi
+}
+
+# Step 2: upstream's own host readiness check. Advisory: its failures do not stop the build.
+run_doctor() {
+  if [[ "${GINUX_SKIP_DOCTOR:-0}" == 1 ]]; then
+    note "doctor: skipped (GINUX_SKIP_DOCTOR=1)"
+    return 0
+  fi
+  local rc=0
+  note "doctor: make -C $GINUX_SRC doctor"
+  make -C "$GINUX_SRC" doctor || rc=$?
+  if ((rc == 0)); then
+    note "doctor: passed"
+  else
+    note "doctor: reported problems (make exit $rc). Advisory: the build does not depend on it. See output above."
+  fi
+}
+
+# Step 3: upstream's build, then verify the binary path its Makefile names.
+build_ginux() {
+  note "build: make -C $GINUX_SRC build (cargo, $GINUX_TRIPLE, release)"
+  make -C "$GINUX_SRC" build || die "make build failed in $GINUX_SRC (see the output above and $RUN_LOG)."
+  if [[ ! -x "$GINUX_BIN" ]]; then
+    die "build finished but $GINUX_BIN is missing or not executable. The Makefile's GINUX variable names this path; check the build output."
+  fi
+  note "built: $GINUX_BIN"
+}
+
+# Step 4: not implemented. Upstream's documented forms do not settle the host invocation.
+start_domain() {
+  cat >&2 <<EOF
+ginux-up: stopped before starting a managed domain. The build step passed: $GINUX_BIN
+  Unknown: the host invocation that starts a managed domain from this binary.
+  The upstream forms found so far do not settle it:
+    ginux launch <config> <root> [--result-file <fresh host path>]
+        README.md, "Configured native launch". It needs chroot and credential-change
+        privileges (root), which this harness does not use. It also needs
+        profile = "balanced" and backend = "ptrace-native", and a host root directory.
+    ginux lifecycle <config>   and   ginux domain <config> <fixture>
+        scripts/test-domain.sh, run inside the Rocky host VM by with-rocky-host.sh
+        (Makefile test-domain, demo-gate-4). The README says that VM runs under QEMU
+        TCG. Host-side use of these commands is not documented.
+  Consult, in $GINUX_SRC: README.md, Makefile (demo-gate-4, test-domain),
+  scripts/test-domain.sh, scripts/demo-gate-4.sh, docs/gate-4-domain-lifecycle.md,
+  config/domain-gate4.toml.
+  Once the host invocation is confirmed, add it here as step 4. Nothing was started.
+EOF
+  exit 3
+}
+
+main() {
+  check_source
+  check_tools
+  run_doctor
+  build_ginux
+  start_domain
+}
+
+mkdir -p "$CACHE_DIR"
+exec > >(tee "$RUN_LOG") 2>&1
+note "run started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+main "$@"

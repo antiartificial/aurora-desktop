@@ -1,0 +1,39 @@
+# Rust
+target/
+
+# Go
+bin/
+*.test
+*.out
+coverage.out
+
+# CMake and Ninja build directories
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+.ninja_deps
+.ninja_log
+
+# Editors and OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# QEMU scratch: disk images, copied OVMF vars, built EFI binaries
+*.qcow2
+*.raw
+*.img
+OVMF_VARS*
+*_VARS*.fd
+*-vars.fd
+*-vars.bin
+*.efi
+*.EFI
+
+# demos/ is tracked on purpose (phase recordings). Do not ignore it.

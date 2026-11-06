@@ -1,0 +1,1 @@
+The Linux backend of the kernel adapter: bubblewrap, namespaces, cgroups, Landlock, seccomp and Btrfs snapshots. Phase 2 builds it and writes the adapter decision record. The plan does not fix the language for this directory yet.

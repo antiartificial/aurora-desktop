@@ -1,0 +1,1 @@
+The Wayland compositor, written in Rust. Phase 0 puts no code here: the nested run lives in `harness/nested-up`, which builds an upstream Smithay clone in the cache. This folder stays empty until Phase 4, which grows it into Compositor v0. Anything on the frame path belongs here.
