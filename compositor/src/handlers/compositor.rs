@@ -1,4 +1,5 @@
 use crate::{Aurora, grabs::resize_grab, state::ClientState};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     reexports::wayland_server::{
@@ -22,6 +23,9 @@ impl CompositorHandler for Aurora {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(x) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &x.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
@@ -35,7 +39,7 @@ impl CompositorHandler for Aurora {
             if let Some(window) = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+                .find(|w| w.wl_surface().as_deref() == Some(&root))
             {
                 window.on_commit();
             }

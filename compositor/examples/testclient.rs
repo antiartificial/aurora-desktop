@@ -31,6 +31,10 @@ use wayland_protocols::wp::{
     },
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
+use wayland_protocols::wp::text_input::zv3::client::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3::{self, ZwpTextInputV3},
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface}, xdg_toplevel::{self, XdgToplevel}, xdg_wm_base::{self, XdgWmBase},
 };
@@ -43,7 +47,36 @@ struct App {
     /// `wl_output.scale`, and `wp_fractional_scale` in 120ths (0 = none received).
     int_scale: i32, frac120: u32,
     viewport: Option<WpViewport>,
+    /// `--text-input`: a text field. It enables itself when it gets the keyboard and prints what the input method sends.
+    ti: Option<ZwpTextInputV3>,
 }
+
+impl App {
+    /// Print one `ti ...` line, so a test sees the text-input traffic in order.
+    fn ti_say(&self, what: &str) { say(&format!("ti {what}")); }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for App {
+    fn event(s: &mut Self, ti: &ZwpTextInputV3, e: zwp_text_input_v3::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use zwp_text_input_v3::Event::*;
+        match e {
+            Enter { .. } => {
+                s.ti_say("enter");
+                ti.enable();
+                ti.set_surrounding_text("".into(), 0, 0);
+                ti.set_cursor_rectangle(10, 20, 2, 16);
+                ti.commit();
+            }
+            Leave { .. } => { s.ti_say("leave"); ti.disable(); ti.commit(); }
+            PreeditString { text, cursor_begin, cursor_end } => s.ti_say(&format!("preedit {:?} {cursor_begin} {cursor_end}", text.unwrap_or_default())),
+            CommitString { text } => s.ti_say(&format!("commit {:?}", text.unwrap_or_default())),
+            DeleteSurroundingText { before_length, after_length } => s.ti_say(&format!("delete {before_length} {after_length}")),
+            Done { serial } => s.ti_say(&format!("done {serial}")),
+            _ => {}
+        }
+    }
+}
+delegate_noop!(App: ZwpTextInputManagerV3);
 
 impl App {
     /// Draw the logical `self.size` for the scale this client knows about, attach and commit.
@@ -177,7 +210,7 @@ impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--
 fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
     let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
-    let (mut maximize, mut hidpi, mut integer_only) = (false, false, false);
+    let (mut maximize, mut hidpi, mut integer_only, mut text_input) = (false, false, false, false);
     let mut a = std::env::args().skip(1);
     while let Some(f) = a.next() {
         match f.as_str() {
@@ -188,6 +221,7 @@ fn main() {
             "--maximize" => maximize = true,
             "--hidpi" => hidpi = true,
             "--integer-scale" => integer_only = true,
+            "--text-input" => text_input = true,
             o => panic!("unknown argument {o}"),
         }
     }
@@ -197,16 +231,20 @@ fn main() {
     let comp: WlCompositor = globals.bind(&qh, 1..=4, ()).unwrap();
     let shm: WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
     let wm: XdgWmBase = globals.bind(&qh, 1..=1, ()).unwrap();
-    let _seat: WlSeat = globals.bind(&qh, 1..=5, ()).unwrap();
+    let seat: WlSeat = globals.bind(&qh, 1..=5, ()).unwrap();
 
     let surface = comp.create_surface(&qh, ());
-    let mut app = App { surface: surface.clone(), buffers: vec![], configured: false, shm, pattern, rgb, alpha, size: (w, h), pending: None, hidpi, integer_only, int_scale: 1, frac120: 0, viewport: None };
+    let mut app = App { surface: surface.clone(), buffers: vec![], configured: false, shm, pattern, rgb, alpha, size: (w, h), pending: None, hidpi, integer_only, int_scale: 1, frac120: 0, viewport: None, ti: None };
     if hidpi || integer_only {
         let _out: WlOutput = globals.bind(&qh, 2..=4, ()).unwrap();
     }
     if hidpi {
         if let Ok(m) = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()) { m.get_fractional_scale(&surface, &qh, ()); }
         if let Ok(v) = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()) { app.viewport = Some(v.get_viewport(&surface, &qh, ())); }
+    }
+    if text_input {
+        let m: ZwpTextInputManagerV3 = globals.bind(&qh, 1..=1, ()).expect("zwp_text_input_manager_v3");
+        app.ti = Some(m.get_text_input(&seat, &qh, ()));
     }
     // Learn the scale before the first buffer: output and fractional-scale events come on bind.
     q.roundtrip(&mut app).expect("roundtrip");

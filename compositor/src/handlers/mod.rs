@@ -41,6 +41,38 @@ impl SeatHandler for Aurora {
 impl PointerConstraintsHandler for Aurora {}
 
 //
+// Text input and input method
+//
+// Focus follows the keyboard: Smithay's keyboard focus hook enters and leaves the text-input
+// for the focused surface and (de)activates the input method. The compositor draws nothing for
+// the preedit: the text-input client renders its own preedit, and an input method's candidate
+// window is a popup surface that is placed beside the cursor rectangle and drawn as part of its
+// parent window.
+//
+
+impl smithay::wayland::text_input::TextInputActivation for Aurora {}
+
+impl smithay::wayland::input_method::InputMethodHandler for Aurora {
+    fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        if let Err(e) = self.popups.track_popup(smithay::desktop::PopupKind::from(surface)) {
+            tracing::warn!("ime: popup not tracked: {e}");
+        }
+    }
+
+    fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
+
+    fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        if let Some(parent) = surface.get_parent().map(|p| p.surface.clone()) {
+            let _ = smithay::desktop::PopupManager::dismiss_popup(&parent, &smithay::desktop::PopupKind::from(surface));
+        }
+    }
+
+    fn parent_geometry(&self, parent: &WlSurface) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        self.window_for_surface(parent).map(|w| w.geometry()).unwrap_or_default()
+    }
+}
+
+//
 // Wl Data Device
 //
 

@@ -15,6 +15,7 @@ mod stats;
 mod text;
 mod trusted;
 mod winit;
+mod xwayland;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 pub use state::Aurora;
@@ -22,7 +23,7 @@ pub use state::Aurora;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let mut event_loop: EventLoop<Aurora> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, Aurora> = EventLoop::try_new()?;
 
     let display: Display<Aurora> = Display::new()?;
 
@@ -97,6 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("aurora-compositor: socket {}", state.socket_name.to_string_lossy());
 
+    if args.xwayland {
+        match state.start_xwayland(event_loop.handle()) {
+            Ok(n) => println!("aurora-compositor: xwayland DISPLAY=:{n}"),
+            Err(e) => eprintln!("aurora-compositor: WARNING: --xwayland: cannot start Xwayland ({e}); X11 clients will not run"),
+        }
+    }
+
     // Optionally spawn a client (-c CMD)
     // Spawn a test client, that will run under Aurora
     spawn_client();
@@ -137,6 +145,8 @@ struct Args {
     aurora_bin: Option<String>,
     /// `--frame-stats PATH`: write per-frame timings (diagnostic; makes the effects pass block on the GPU at phase ends).
     frame_stats: Option<std::path::PathBuf>,
+    /// `--xwayland`: start Xwayland and export `DISPLAY`.
+    xwayland: bool,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -154,7 +164,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -170,6 +180,7 @@ fn parse_args() -> Args {
             "--test-input" => args.test_input = it.next().map(Into::into),
             "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
+            "--xwayland" => args.xwayland = true,
             "--legacy-scene" => args.legacy_scene = true,
             "--freeze-time" => args.freeze_time = true,
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),

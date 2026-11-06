@@ -70,7 +70,7 @@ impl XdgShellHandler for Aurora {
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
+                .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl_surface))
                 .unwrap()
                 .clone();
             let initial_window_location = self.space.element_location(&window).unwrap();
@@ -102,7 +102,7 @@ impl XdgShellHandler for Aurora {
             let window = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == wl_surface)
+                .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl_surface))
                 .unwrap()
                 .clone();
             let initial_window_location = self.space.element_location(&window).unwrap();
@@ -133,7 +133,7 @@ impl XdgShellHandler for Aurora {
             s.size = Some(area.size);
         });
         let wl = surface.wl_surface().clone();
-        let win = self.space.elements().find(|w| w.toplevel().unwrap().wl_surface() == &wl).cloned();
+        let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)).cloned();
         if let Some(w) = win {
             self.space.relocate_element(&w, area.loc);
         }
@@ -185,7 +185,7 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     // Handle toplevel commits.
     if let Some(window) = space
         .elements()
-        .find(|w| w.toplevel().unwrap().wl_surface() == surface)
+        .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
         .cloned()
     {
         let initial_configure_sent = with_states(surface, |states| {
@@ -227,7 +227,7 @@ impl Aurora {
         let Some(window) = self
             .space
             .elements()
-            .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+            .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &root))
         else {
             return;
         };

@@ -16,6 +16,7 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 use crate::shell::{Press, menu::Action};
+use crate::xwayland::send_pending;
 
 impl Aurora {
     /// Do what a menu item or settings control says.
@@ -130,14 +131,11 @@ impl Aurora {
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             if let Some((window, _loc)) = self.space.element_under(loc).map(|(w, l)| (w.clone(), l)) {
                 self.space.raise_element(&window, true);
-                keyboard.set_focus(self, Some(window.toplevel().unwrap().wl_surface().clone()), serial);
-                self.space.elements().for_each(|window| {
-                    window.toplevel().unwrap().send_pending_configure();
-                });
+                self.focus_and_activate(&window);
             } else {
                 self.space.elements().for_each(|window| {
                     window.set_activated(false);
-                    window.toplevel().unwrap().send_pending_configure();
+                    send_pending(window);
                 });
                 keyboard.set_focus(self, Option::<WlSurface>::None, serial);
             }

@@ -114,6 +114,18 @@ impl Comp {
         log
     }
 
+    /// Start any built example (see `examples/`) as a client of this compositor; its stdout is the returned log.
+    /// It is killed when the compositor handle drops.
+    pub fn example(&mut self, name: &str, args: &[&str]) -> PathBuf {
+        let n = self.clients.len();
+        let log = self.dir.path().join(format!("client{n}.log"));
+        let c = Command::new(example(name)).args(args).env("XDG_RUNTIME_DIR", self.dir.path()).env("WAYLAND_DISPLAY", &self.display)
+            .stdout(fs::File::create(&log).unwrap()).stderr(fs::File::create(self.dir.path().join(format!("client{n}.err"))).unwrap())
+            .spawn().unwrap();
+        self.clients.push(c);
+        log
+    }
+
     pub fn capture(&self, name: &str) -> Img {
         let out = self.dir.path().join(name);
         let st = Command::new(capture_bin()).args(["--display", &self.display, "-o"]).arg(&out)
@@ -134,6 +146,9 @@ impl Comp {
         BufReader::new(s).read_line(&mut ans).unwrap();
         assert_eq!(ans.trim(), "ok", "inject {cmd}");
     }
+
+    /// The compositor's process id.
+    pub fn pid(&self) -> u32 { self.child.id() }
 
     pub fn log(&self) -> String { fs::read_to_string(self.dir.path().join("comp.log")).unwrap_or_default() }
 }
