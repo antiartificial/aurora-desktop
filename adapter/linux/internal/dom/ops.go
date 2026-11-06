@@ -184,7 +184,21 @@ func canon(p string) (string, error) {
 }
 
 // GrantPath grants exactly one file or directory. mode is "ro" or "rw".
+// The path is made absolute and its symlinks are resolved here.
 func (s Store) GrantPath(name, path, mode string) (string, error) {
+	return s.grantPath(name, path, mode, false)
+}
+
+// GrantPathExact is GrantPath for a caller that already resolved the path and
+// authorised that exact string. It binds the path as given, never re-resolves
+// and so never silently substitutes another path: the path must be absolute,
+// clean and already canonical, else the grant is refused (a symlink component
+// changed since the caller resolved it).
+func (s Store) GrantPathExact(name, path, mode string) (string, error) {
+	return s.grantPath(name, path, mode, true)
+}
+
+func (s Store) grantPath(name, path, mode string, exact bool) (string, error) {
 	m, err := s.Load(name)
 	if err != nil {
 		return "", err
@@ -192,8 +206,14 @@ func (s Store) GrantPath(name, path, mode string) (string, error) {
 	if mode != "ro" && mode != "rw" {
 		return "", fmt.Errorf("mode must be ro or rw")
 	}
-	p, err := canon(path)
-	if err != nil {
+	var p string
+	if exact {
+		r, err := filepath.EvalSymlinks(path)
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || err != nil || r != path {
+			return "", fmt.Errorf("cannot grant %s exactly: not an absolute canonical path that exists (resolves to %q, err %v)", path, r, err)
+		}
+		p = path
+	} else if p, err = canon(path); err != nil {
 		return "", fmt.Errorf("cannot grant %s: %w", path, err)
 	}
 	if p == "/" {

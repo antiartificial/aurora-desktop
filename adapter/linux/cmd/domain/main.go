@@ -14,7 +14,9 @@ const usage = `usage: domain <command> [args]
 
   create <name>                         create a domain (btrfs subvolumes if available)
   run <name> -- <cmd...>                run a command inside the domain
-  grant <name> <path> [--ro|--rw]       grant one file or directory (default --ro)
+  grant <name> <path> [--ro|--rw] [--exact]
+                                        grant one file or directory (default --ro); --exact binds
+                                        the path as given and refuses it unless already canonical
   grant <name> --net <host>             grant network (coarse: shares the host network)
   revoke <name> <path>                  remove a path grant
   revoke <name> --net <host>            remove a net grant
@@ -88,6 +90,7 @@ func main() {
 	case "grant":
 		ro, rw := fs.Bool("ro", false, "read-only (default)"), fs.Bool("rw", false, "read-write")
 		net := fs.String("net", "", "network host to grant")
+		exact := fs.Bool("exact", false, "path is already canonical: bind it as given, refuse if it is not")
 		pos := parse(fs, args)
 		if *net != "" {
 			need(pos, 1, "grant <name> --net <host>")
@@ -105,7 +108,11 @@ func main() {
 		if *rw {
 			mode = "rw"
 		}
-		p, err := st.GrantPath(pos[0], pos[1], mode)
+		grant := st.GrantPath
+		if *exact {
+			grant = st.GrantPathExact
+		}
+		p, err := grant(pos[0], pos[1], mode)
 		if err != nil {
 			die("%v", err)
 		}

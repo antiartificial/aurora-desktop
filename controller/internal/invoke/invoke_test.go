@@ -59,14 +59,15 @@ func TestGrantRevokeSequence(t *testing.T) {
 	if e != nil {
 		t.Fatal(e, e.Detail)
 	}
+	d := DomainName("org.aurora.demo")
 	want := []string{
-		"ensure app-org-aurora-demo",
-		"install app-org-aurora-demo",
-		"grant app-org-aurora-demo " + in + " ro",
-		"grant app-org-aurora-demo " + dir + " rw",
-		"run app-org-aurora-demo /domain/data/app/run --verb copy@v1",
-		"revoke app-org-aurora-demo " + dir,
-		"revoke app-org-aurora-demo " + in,
+		"ensure " + d,
+		"install " + d,
+		"grant " + d + " " + in + " ro",
+		"grant " + d + " " + out + " rw", // the one output file, not dir
+		"run " + d + " /domain/data/app/run --verb copy@v1",
+		"revoke " + d + " " + out,
+		"revoke " + d + " " + in,
 	}
 	if !reflect.DeepEqual(fk.Calls, want) {
 		t.Fatalf("calls:\n got %q\nwant %q", fk.Calls, want)
@@ -181,12 +182,12 @@ func TestFallbackIsLoudAndUnisolated(t *testing.T) {
 	}
 }
 
-func TestDomainName(t *testing.T) {
-	if n := DomainName("org.aurora.lumen"); n != "app-org-aurora-lumen" {
+func TestDomainNameShape(t *testing.T) {
+	n := DomainName("org.verylongvendor.extremelylongapplicationname")
+	if len(n) > 32 || !strings.HasPrefix(n, "app-org-verylo") {
 		t.Fatal(n)
 	}
-	n := DomainName("org.verylongvendor.extremelylongapplicationname")
-	if len(n) > 32 || !strings.HasPrefix(n, "app-org-verylongvendor") {
+	if n := DomainName("org.aurora.lumen"); !strings.HasPrefix(n, "app-org-aurora-") || len(n) > 32 {
 		t.Fatal(n)
 	}
 }

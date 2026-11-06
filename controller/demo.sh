@@ -9,7 +9,7 @@ PIDS=()
 cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
   wait 2>/dev/null
-  for d in app-org-aurora-lumen app-org-aurora-demo; do "$W/bin/domain" destroy "$d" >/dev/null 2>&1; done
+  for d in "$W"/domains/app-*; do [ -d "$d" ] && "$W/bin/domain" destroy "$(basename "$d")" >/dev/null 2>&1; done
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -68,12 +68,12 @@ step "raw xattr (getfattr, if installed)"
 command -v getfattr >/dev/null && getfattr -n user.aurora.provenance "$OUT" || echo "(getfattr not installed)"
 
 step "grants after the run (must be empty: revoked)"
-"$W/bin/domain" show "app-$(echo "$APP" | tr . -)" 2>&1 || true
+for d in "$W"/domains/app-"$(echo "$APP" | tr . - | cut -c1-11 | sed 's/-*$//')"-*; do "$W/bin/domain" show "$(basename "$d")" 2>&1; done
 
 step "isolation proof: the fixture app (org.aurora.demo) runs in a domain and reports what it sees"
 printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$W/pics/probe.png"
 $C invoke org.aurora.demo copy@v1 --input "$W/pics/probe.png" --output "$W/pics/probe-out.png" | grep -E '"isolated"|"log"'
-echo "(0 entries in /home means the domain cannot see the host's home; only the granted input and output dir exist)"
+echo "(0 entries in /home means the domain cannot see the host's home; only the granted input and output files exist)"
 step "grant sources: restart controllerd with --no-gesture-grants and HOME=$W/home (fixture declares ~/Pictures write)"
 kill "${PIDS[1]}" 2>/dev/null; wait "${PIDS[1]}" 2>/dev/null
 mkdir -p "$W/home/Pictures"; cp "$W/pics/probe.png" "$W/home/Pictures/in.png"

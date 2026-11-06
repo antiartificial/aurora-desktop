@@ -127,7 +127,9 @@ func (c CLI) Ensure(name string) error {
 }
 
 func (c CLI) Grant(name, path, mode string) error {
-	return c.must("grant", name, path, "--"+mode)
+	// --exact: the controller resolved and authorised this very path; the
+	// domain must bind it as given, not resolve it a second time.
+	return c.must("grant", name, path, "--"+mode, "--exact")
 }
 
 func (c CLI) Revoke(name, path string) error { return c.must("revoke", name, path) }

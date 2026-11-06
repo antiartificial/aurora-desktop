@@ -39,7 +39,7 @@ func TestAmbientGrantInsideDeclaredCapability(t *testing.T) {
 	if e != nil {
 		t.Fatal(e, e.Detail)
 	}
-	want := []prov.Grant{{Path: in, Mode: "ro", Source: "ambient"}, {Path: sub, Mode: "rw", Source: "ambient"}}
+	want := []prov.Grant{{Path: in, Mode: "ro", Source: "ambient"}, {Path: filepath.Join(sub, "o.png"), Mode: "rw", Source: "ambient"}}
 	if !reflect.DeepEqual(res.Grants, want) || res.NeedsApproval {
 		t.Fatalf("grants %+v", res.Grants)
 	}

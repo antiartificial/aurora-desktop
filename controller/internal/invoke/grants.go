@@ -9,11 +9,14 @@ import (
 	"github.com/antiartificial/aurora/controller/internal/prov"
 )
 
-// planGrants lists the grants an invoke needs, each classified. A read-effect
-// verb has no outDir, so it can only ever get the ro input grant.
-func (iv *Invoker) planGrants(m *manifest.Manifest, input, outDir string) []prov.Grant {
+// planGrants lists the grants an invoke needs, each classified: the input file
+// ro and the single output file rw (never its directory). A read-effect verb
+// has no output, so it can only ever get the ro input grant. The paths are
+// canonical and are resolved here exactly once: classification and the grant
+// call use these very strings, and the domain binds them without re-resolving.
+func (iv *Invoker) planGrants(m *manifest.Manifest, input, output string) []prov.Grant {
 	var gs []prov.Grant
-	for _, c := range []struct{ path, mode string }{{input, "ro"}, {outDir, "rw"}} {
+	for _, c := range []struct{ path, mode string }{{input, "ro"}, {output, "rw"}} {
 		if c.path != "" {
 			gs = append(gs, prov.Grant{Path: c.path, Mode: c.mode, Source: iv.classify(m, c.path, c.mode)})
 		}

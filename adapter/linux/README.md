@@ -82,7 +82,12 @@ default. Not done:
   hosts and certificate stores with a net grant) and all of `/usr` are
   readable. `/usr` is not secret, but it is not nothing.
 - Granting a directory exposes everything below it; a granted path is
-  canonicalised (symlinks resolved) when granted.
+  canonicalised (symlinks resolved) when granted. `grant --exact` is for a
+  caller that already resolved and authorised the path (the controller): it
+  binds the path as given and refuses it unless it is absolute, clean and
+  already canonical, so a symlink swapped after the caller's check fails the
+  grant instead of redirecting it. A swap between the grant and `run` (bwrap
+  resolves again) is not closed; that needs fd-based binds.
 - Running domains are not stopped by `destroy`; the data tree is removed from
   under them. Metadata writes are atomic but not locked across processes.
 - Btrfs: unprivileged `btrfs subvolume delete` fails (EPERM) on non-empty

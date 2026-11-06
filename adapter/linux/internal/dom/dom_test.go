@@ -350,3 +350,33 @@ func TestLimitEnforcedInsideDomain(t *testing.T) {
 		t.Skipf("could not observe pids limit (controller likely undelegated): %q", out.String())
 	}
 }
+
+func TestGrantPathExactRefusesNonCanonical(t *testing.T) {
+	st, scratch := sandboxed(t)
+	real, err := filepath.EvalSymlinks(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := filepath.Join(real, "a.txt"), filepath.Join(real, "b.txt")
+	write(t, a, "AAA")
+	write(t, b, "BBB")
+	link := filepath.Join(real, "link")
+	if err := os.Symlink(a, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.Create("x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GrantPathExact("x", link, "ro"); err == nil {
+		t.Fatal("exact grant followed a symlink")
+	}
+	if _, err := st.GrantPathExact("x", real+"/./a.txt", "ro"); err == nil {
+		t.Fatal("exact grant accepted an unclean path")
+	}
+	if _, err := st.GrantPathExact("x", "a.txt", "ro"); err == nil {
+		t.Fatal("exact grant accepted a relative path")
+	}
+	if p, err := st.GrantPathExact("x", a, "ro"); err != nil || p != a {
+		t.Fatalf("canonical path refused or altered: %q %v", p, err)
+	}
+}

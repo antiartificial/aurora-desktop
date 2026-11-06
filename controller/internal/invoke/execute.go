@@ -12,7 +12,7 @@ import (
 
 // execute runs argv for app, inside its domain when domain tooling works.
 // Inside the domain the grants are exactly the planned ones (input ro, the
-// output's directory rw, see planGrants), revoked afterwards. Without domain tooling it runs the app
+// output file rw, see planGrants), revoked afterwards. Without domain tooling it runs the app
 // directly on the host, says so loudly, and reports isolated=false.
 func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv []string, stdin []byte, grants []prov.Grant) (domain.Result, bool, *Error) {
 	if err := iv.Runner.Available(); err != nil {

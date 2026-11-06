@@ -86,31 +86,37 @@ func (iv *Invoker) logf(f string, a ...any) {
 	}
 }
 
-// appLock serialises invokes per app: they share one domain, and grants are
-// per-domain state.
-func (iv *Invoker) appLock(id string) *sync.Mutex {
+// domainLock serialises invokes per domain (not per app id): invokes that
+// share a domain share its grant list and its data/app image, so the lock key
+// is the domain name itself and the invariant holds by construction.
+func (iv *Invoker) domainLock(name string) *sync.Mutex {
 	iv.mu.Lock()
 	defer iv.mu.Unlock()
 	if iv.locks == nil {
 		iv.locks = map[string]*sync.Mutex{}
 		iv.clock = hlc.New()
 	}
-	if iv.locks[id] == nil {
-		iv.locks[id] = &sync.Mutex{}
+	if iv.locks[name] == nil {
+		iv.locks[name] = &sync.Mutex{}
 	}
-	return iv.locks[id]
+	return iv.locks[name]
 }
 
 var badName = regexp.MustCompile(`[^a-z0-9_-]`)
 
-// DomainName maps an app id to a domain name (a-z 0-9 _ -, max 32).
+// DomainName maps an app id to a domain name (a-z 0-9 _ -, max 32): "app-",
+// up to 11 characters of the sanitised id for readability, and always the
+// first 64 bits of sha256 of the FULL id. The readable part is lossy ('.' and
+// '-' both become '-'), the hash is what keeps distinct ids in distinct
+// domains. Injective up to a 64-bit hash collision, which a 32-character
+// name cannot do better than.
 func DomainName(appID string) string {
-	n := "app-" + badName.ReplaceAllString(strings.ToLower(appID), "-")
-	if len(n) > 32 {
-		sum := sha256.Sum256([]byte(appID))
-		n = n[:25] + fmt.Sprintf("-%x", sum[:3])
+	pre := badName.ReplaceAllString(strings.ToLower(appID), "-")
+	if len(pre) > 11 {
+		pre = strings.TrimRight(pre[:11], "-")
 	}
-	return n
+	sum := sha256.Sum256([]byte(appID))
+	return fmt.Sprintf("app-%s-%x", pre, sum[:8])
 }
 
 // Invoke runs one verb.
@@ -124,7 +130,8 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_such_verb", "app %s has no verb %q", "", req.App, req.Verb)
 	}
 	writes := verb.Effect != manifest.EffectRead
-	input, outDir, output, e := checkPaths(req, verb, writes)
+	succeeded := false
+	input, output, e := checkPaths(req, verb, writes)
 	if e != nil {
 		return nil, e
 	}
@@ -152,7 +159,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		Args   map[string]json.RawMessage `json:"args"`
 	}{input, output, args})
 
-	grants := iv.planGrants(app.Manifest, input, outDir)
+	grants := iv.planGrants(app.Manifest, input, output)
 	needsApproval := false
 	if g, ok := firstGesture(grants); ok {
 		if iv.NoGestureGrants {
@@ -164,7 +171,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		}
 	}
 
-	l := iv.appLock(app.ID())
+	l := iv.domainLock(DomainName(app.ID()))
 	l.Lock()
 	defer l.Unlock()
 	if iv.Timeout > 0 {
@@ -173,6 +180,19 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		defer cancel()
 	}
 
+	if writes {
+		created, e := prepareOutput(output)
+		if e != nil {
+			return nil, e
+		}
+		if created {
+			defer func() {
+				if !succeeded {
+					os.Remove(output)
+				}
+			}()
+		}
+	}
 	res, isolated, e := iv.execute(ctx, app, exe, argv, stdin, grants)
 	if e != nil {
 		return nil, e
@@ -187,7 +207,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if !writes {
 		return out, nil
 	}
-	if st, err := os.Stat(output); err != nil || !st.Mode().IsRegular() {
+	if st, err := os.Stat(output); err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
@@ -206,45 +226,53 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		}
 	}
 	out.Output, out.Provenance = output, &rec
+	succeeded = true
 	return out, nil
 }
 
-// checkPaths canonicalises input and output and checks they are usable.
-func checkPaths(req Request, verb manifest.Verb, writes bool) (input, outDir, output string, e *Error) {
+// checkPaths canonicalises input and output and checks they are usable. The
+// output is its resolved directory plus its base name; a base name that is
+// itself a symlink or a directory is refused, so the one granted file is the
+// file the caller named and not wherever a link points.
+
+func checkPaths(req Request, verb manifest.Verb, writes bool) (input, output string, e *Error) {
 	if req.Input != "" || len(verb.Accepts) > 0 {
 		if !filepath.IsAbs(req.Input) {
-			return "", "", "", fail("bad_request", "input must be an absolute path", "got "+req.Input)
+			return "", "", fail("bad_request", "input must be an absolute path", "got "+req.Input)
 		}
 		p, err := filepath.EvalSymlinks(req.Input)
 		if err != nil {
-			return "", "", "", fail("bad_input", "cannot read input", err.Error())
+			return "", "", fail("bad_input", "cannot read input", err.Error())
 		}
 		if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
-			return "", "", "", fail("bad_input", "input is not a regular file", p)
+			return "", "", fail("bad_input", "input is not a regular file", p)
 		}
 		input = p
 	}
 	if !writes {
 		if req.Output != "" {
-			return "", "", "", fail("bad_request", "%s is a read verb and takes no output", "", req.Verb)
+			return "", "", fail("bad_request", "%s is a read verb and takes no output", "", req.Verb)
 		}
-		return input, "", "", nil
+		return input, "", nil
 	}
 	if !filepath.IsAbs(req.Output) {
-		return "", "", "", fail("bad_request", "%s writes a file: output must be an absolute path", "got "+req.Output, req.Verb)
+		return "", "", fail("bad_request", "%s writes a file: output must be an absolute path", "got "+req.Output, req.Verb)
 	}
 	dir, err := filepath.EvalSymlinks(filepath.Dir(req.Output))
 	if err != nil {
-		return "", "", "", fail("bad_output", "output directory unusable", err.Error())
+		return "", "", fail("bad_output", "output directory unusable", err.Error())
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return "", "", "", fail("bad_output", "output directory is not a directory", dir)
+		return "", "", fail("bad_output", "output directory is not a directory", dir)
 	}
 	output = filepath.Join(dir, filepath.Base(req.Output))
-	if output == input {
-		return "", "", "", fail("bad_request", "output must differ from input", "")
+	if st, err := os.Lstat(output); err == nil && !st.Mode().IsRegular() {
+		return "", "", fail("bad_output", "output exists and is not a regular file (symlinks are refused)", output)
 	}
-	return input, dir, output, nil
+	if output == input {
+		return "", "", fail("bad_request", "output must differ from input", "")
+	}
+	return input, output, nil
 }
 
 func tail(b []byte) string {
