@@ -120,8 +120,11 @@ alive() { kill -0 "${PIDS[$1]}" 2>/dev/null; }
 say "== starting (run dir $RUN)"
 # busd, controllerd and indexd run under supervisord (restart with backoff, a
 # crash-loop give-up, health judged on the bus, supervisor.service.* events).
-# The service list is data: this file. controllerd waits (no_autostart) until the
-# compositor it is wired to is up, then is started with `auroractl start`.
+# The compositor is a fourth supervised service: kill -9 it and it comes back with
+# its window placements and shell state (compositor-state.json, theme/), and the
+# supervisor publishes supervisor.service.crashed. Its CLIENTS do not survive:
+# they lose their wayland socket with it (no display proxy yet). The service list
+# is data: this file.
 mkdir -p "$RUN/index/queries" "$RUN/supervisor"
 cat > "$RUN/index/queries/images-today.query" <<'Q'
 # Seeded by aurora-up so `aurora query` has something to show.
@@ -141,13 +144,20 @@ svc_diag() { "$BIN/auroractl" status 2>&1; tail -5 "$RUN/$1.log" 2>/dev/null; }
 APPS=$ROOT/apps; [ $FIXTURES = 1 ] && APPS=$APPS,$ROOT/controller/testdata/apps
 COMPFLAGS=()
 if [ $COMPOSITOR = 1 ]; then COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOCK"); else COMPFLAGS=(--no-compositor-approval); fi
-CTLEXTRA=; [ $COMPOSITOR = 1 ] && CTLEXTRA=',"no_autostart":true'
 {
   printf '{"services":[\n'
   svc_entry busd "$RUN/busd.log" '{"type":"bus"}' '[]' '' "$BIN/busd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/buslog"; printf ',\n'
-  svc_entry controllerd "$RUN/controllerd.log" '{"type":"service","name":"registry"}' '["busd"]' "$CTLEXTRA" \
+  svc_entry controllerd "$RUN/controllerd.log" '{"type":"service","name":"registry"}' '["busd"]' '' \
     "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" --approval-timeout "$APPROVAL" ${ISOLATION:+"$ISOLATION"} "${COMPFLAGS[@]}"; printf ',\n'
   svc_entry indexd "$RUN/indexd.log" '{"type":"service","name":"index"}' '["busd"]' '' "$BIN/indexd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/index"
+  if [ $COMPOSITOR = 1 ]; then
+    printf ',\n'
+    cp -r "$ROOT/contracts/theme" "$RUN/theme"   # a copy: edit it and the compositor hot-reloads it; settings edits land here and survive a restart
+    FLAGS=(--headless="$SIZE" --bus-socket "$AURORA_BUS_SOCK" --trusted-socket "$AURORA_TRUSTED_SOCK" --theme "$RUN/theme" --state-file "$RUN/compositor-state.json")
+    [ $TESTINPUT = 1 ] && FLAGS+=(--test-input "$INPUT")
+    [ -n "$DUMP" ] && FLAGS+=(--dump-overlay "$DUMP")
+    svc_entry compositor "$RUN/compositor.log" '{"type":"none"}' '["busd"]' '' "$COMP" "${FLAGS[@]}"
+  fi
   printf '\n]}\n'
 } > "$RUN/services.json"
 start supervisord "$RUN/supervisord.log" "$BIN/supervisord" --config "$RUN/services.json" --control "$AURORA_SUPERVISOR_SOCK" \
@@ -159,13 +169,8 @@ waitfor "busd healthy" 100 svc_healthy busd || { svc_diag busd; exit 1; }
 WL=
 COMPFLAGS=()
 if [ $COMPOSITOR = 1 ]; then
-  cp -r "$ROOT/contracts/theme" "$RUN/theme"   # a copy: edit it and the compositor hot-reloads it
-  FLAGS=(--headless="$SIZE" --bus-socket "$AURORA_BUS_SOCK" --trusted-socket "$AURORA_TRUSTED_SOCK" --theme "$RUN/theme")
-  [ $TESTINPUT = 1 ] && FLAGS+=(--test-input "$INPUT")
-  [ -n "$DUMP" ] && FLAGS+=(--dump-overlay "$DUMP")
-  "$COMP" "${FLAGS[@]}" >"$RUN/compositor.out" 2>"$RUN/compositor.err" & PIDS+=($!); NAMES+=(compositor)
-  waitfor "compositor socket" 150 grep -q 'socket wayland' "$RUN/compositor.out" || { tail -5 "$RUN/compositor.err"; exit 1; }
-  WL=$(sed -n 's/^aurora-compositor: socket //p' "$RUN/compositor.out")
+  waitfor "compositor socket" 150 grep -q '^aurora-compositor: socket wayland' "$RUN/compositor.log" || { tail -5 "$RUN/compositor.log"; exit 1; }
+  WL=$(sed -n 's/^aurora-compositor: socket //p' "$RUN/compositor.log" | tail -1)
   if [ $WINDOWS = 1 ] && [ -x "$EXAMPLES/testclient" ]; then
     export WAYLAND_DISPLAY=$WL
     start "scene: split window" "$RUN/win0.log" "$EXAMPLES/testclient" --size 400x500 --pattern split
@@ -179,8 +184,6 @@ if [ $COMPOSITOR = 1 ]; then
   fi
 fi
 
-# controllerd is wired to the compositor's trusted socket, so it starts now.
-[ $COMPOSITOR = 1 ] && { "$BIN/auroractl" start controllerd >/dev/null || { svc_diag controllerd; exit 1; }; }
 waitfor controllerd 150 svc_healthy controllerd || { svc_diag controllerd; exit 1; }
 # indexd turns the provenance events controllerd publishes into live queries; it
 # has been up since busd was, and subscribes, so ordering does not matter.
@@ -213,7 +216,7 @@ cat <<EOF
    busd          pid $(pidn busd)   $AURORA_BUS_SOCK
    controllerd   pid $(pidn controllerd)   registry service on the bus; approvals via $APPROVER
    indexd        pid $(pidn indexd)   live queries over provenance; a domain sees only its own files (index/README.md)
-   supervisor    pid $(pidn supervisord)   restarts busd/controllerd/indexd on failure: auroractl status | restart NAME | stop NAME | start NAME
+   supervisor    pid $(pidn supervisord)   restarts busd/controllerd/indexd/compositor on failure: auroractl status | restart NAME | stop NAME | start NAME
 EOF
 [ $COMPOSITOR = 1 ] && cat <<EOF
    compositor    pid $(pidn compositor)   headless $SIZE, wayland display $RUN/xdg/$WL
@@ -222,7 +225,7 @@ EOF
 [ $COMPOSITOR = 1 ] && [ $TESTINPUT = 1 ] && say "                 test-input      $INPUT   (headless has no keyboard; keys go in here)"
 [ $HAIKU_UP = 1 ] && say "   haiku_ledger  a Haiku BApplication serving verbs add@v1 / list@v1 on the bus as service 'haiku-ledger'"
 say "   isolation     $ISO"
-say "   logs          $RUN/*.log, $RUN/*.out, $RUN/*.err"
+say "   logs          $RUN/*.log, $RUN/*.out"
 
 cat <<EOF
 
@@ -257,7 +260,7 @@ while true; do
   for i in "${!PIDS[@]}"; do
     if ! alive "$i"; then
       case "${NAMES[$i]}" in
-        supervisord|compositor) say "aurora-up: ${NAMES[$i]} exited; see $RUN/"; exit 1;;
+        supervisord) say "aurora-up: ${NAMES[$i]} exited; see $RUN/"; exit 1;;
       esac
     fi
   done

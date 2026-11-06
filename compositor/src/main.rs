@@ -10,6 +10,7 @@ mod headless;
 mod render;
 mod scale;
 mod input;
+mod persist;
 mod shell;
 mod state;
 mod stats;
@@ -97,6 +98,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => eprintln!("aurora-compositor: WARNING: --frame-stats {}: cannot create the file ({e}); no timings will be recorded", p.display()),
         }
     }
+    if let Some(p) = &args.state_file {
+        let (ps, note) = persist::Persist::open(p, std::time::Instant::now());
+        eprintln!("aurora-compositor: layout memory {}: {note}", p.display());
+        state.persist = Some(ps);
+    }
     if let Some(p) = &args.dump_overlay {
         eprintln!("aurora-compositor: WARNING: --dump-overlay {}: the overlay will be written to a file (demo/test only)", p.display());
     }
@@ -175,6 +181,8 @@ struct Args {
     frame_stats: Option<std::path::PathBuf>,
     /// `--xwayland`: start Xwayland and export `DISPLAY`.
     xwayland: bool,
+    /// `--state-file PATH`: remember where windows were and put them back after a restart.
+    state_file: Option<std::path::PathBuf>,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -192,7 +200,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, drm: None, drm_timeout: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -213,6 +221,7 @@ fn parse_args() -> Args {
             "--freeze-time" => args.freeze_time = true,
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
             "--aurora" => args.aurora_bin = it.next(),
+            "--state-file" => args.state_file = it.next().map(Into::into),
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),
             "--drm" => args.drm = Some(None),
             s if s.starts_with("--drm=") => args.drm = Some(Some(s["--drm=".len()..].into())),

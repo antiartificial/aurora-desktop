@@ -5,7 +5,7 @@
 //! `up <name>`, `pointer X Y` (logical), `click`, `rclick` (right button), `move N X Y`,
 //! `frame N` (the reply is held until N more frames have been rendered, so a test
 //! can step the compositor deterministically; see `Aurora::frame_waiters`) and
-//! `stats [N]` (the `--frame-stats` summary over the last N frames; reads, injects nothing). Events enter through `Aurora::keyboard_input`, the same function
+//! `state` (shell state and window layout as JSON), `stats [N]` (the `--frame-stats` summary over the last N frames; reads, injects nothing). Events enter through `Aurora::keyboard_input`, the same function
 //! real keyboards use, so an injected key meets the same overlay routing.
 //!
 //! Why it is not a way to approve a prompt on a real machine: it exists only
@@ -129,6 +129,20 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             (Some(w), [_, x, y]) => { state.space.relocate_element(&w, (*x, *y)); "ok".into() }
             _ => "err bad move".into(),
         };
+    }
+    if cmd == "state" {
+        // The shell state and window layout as one JSON line: what a restart must bring back.
+        let t = &state.fx.theme;
+        let wins: Vec<_> = state.live_windows().into_iter().map(|l| serde_json::json!({"app_id": l.app_id, "title": l.title, "x": l.x, "y": l.y, "w": l.w, "h": l.h})).collect();
+        let v = serde_json::json!({
+            "scale": state.output_scale(), "scale_setting": t.output.scale,
+            "background": format!("{:?}", t.background.mode).to_lowercase(),
+            "dock": {"enabled": t.dock.enabled, "edge": format!("{:?}", t.dock.edge).to_lowercase()},
+            "font": {"family": t.font.family, "size": t.font.size},
+            "windows": wins,
+            "restored": state.persist.as_ref().map(|p| p.restored),
+        });
+        return format!("ok {v}");
     }
     if cmd == "stats" || cmd.starts_with("stats ") {
         let last = cmd["stats".len()..].trim().parse::<usize>().unwrap_or(0);

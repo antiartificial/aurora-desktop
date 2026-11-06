@@ -81,6 +81,8 @@ pub struct Aurora {
     pub frame: u64,
     /// `--test-input frame N` callers: their reply is held until frame `.1` has been rendered.
     pub frame_waiters: Vec<(std::os::unix::net::UnixStream, u64)>,
+    /// `--state-file PATH`: window placement memory (see `persist`).
+    pub persist: Option<crate::persist::Persist<smithay::reexports::wayland_server::backend::ObjectId>>,
 }
 
 impl Aurora {
@@ -178,6 +180,7 @@ impl Aurora {
             stats: None,
             frame: 0,
             frame_waiters: vec![],
+            persist: None,
         }
     }
 

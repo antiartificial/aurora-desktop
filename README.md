@@ -27,7 +27,7 @@ make desktop                           # build everything, start the stack, open
 env`). Or drive it by hand:
 
 ```sh
-./aurora-up                            # one terminal: bus, controller, index, supervisor
+./aurora-up                            # one terminal: bus, controller, index, compositor, supervisor
 source /tmp/aurora-up-1000/env         # another terminal
 aurora apps                            # what's installed
 genimage /tmp/photo.png
@@ -61,8 +61,9 @@ streams new files as they're made.
 | **Agents** | MCP tools generated from manifests; destructive calls stop at a person |
 
 Each `demos/*/run.sh` starts a real stack, asserts decoded output, and exits
-non-zero on failure. They're the actual regression suite: 130 compositor tests,
-135 Interface Kit checks, 85 live-query, 60 supervisor, 57 gateway.
+non-zero on failure. They're the actual regression suite: 141 compositor tests,
+135 Interface Kit checks, 85 live-query, 64 crash-survival, 60 supervisor,
+57 gateway.
 
 ## Limits
 
@@ -78,10 +79,22 @@ Stated here for the same reason they're stated in the code.
   `demos/ptrace-ancestry/run.sh`.
 - **The log is tamper-evident, not tamper-proof.** The hash is unkeyed — whoever
   can write the directory can rewrite history and its anchor together.
+- **The compositor survives a crash; its clients do not.** The compositor is a
+  supervised service: `kill -9` it and the supervisor restarts it with
+  back-off, publishes a `supervisor.service.crashed` report (signal, uptime,
+  restart number) and comes back with its scale, background, dock and font.
+  Window layout comes back only as a *placement memory*: the `wl_display`
+  socket dies with the compositor, so every client loses its connection and
+  exits, and a window reappears where it was only when that app is started
+  again. There is no display proxy to hold client connections -- the other
+  half of the plan's crash survival, deliberately not built.
+  `demos/crash-survival/run.sh`.
+- **X11 clients are not HiDPI.** They get client scale 1, so an X window is
+  the right size at any output scale but soft above 1: a 1x buffer upscaled.
 - **`demos/interface-kit/run.sh` is flaky.** Its browser section raced to five
   failures in one of two consecutive runs and 135/135 in the other. Being
   chased.
-- No XWayland, no IME, no crash survival, no app store.
+- No app store, no generations.
 
 ## Layout
 

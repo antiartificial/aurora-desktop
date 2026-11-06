@@ -216,7 +216,7 @@ func (s *Supervisor) run(v *svc) {
 		}
 		cmd, err := s.spawn(v)
 		if err != nil {
-			s.exited(v, "start failed: "+Clean(err.Error()), false, true)
+			s.exited(v, "start failed: "+Clean(err.Error()), false, true, exitInfo{})
 			s.mu.Unlock()
 			continue
 		}
@@ -226,12 +226,14 @@ func (s *Supervisor) run(v *svc) {
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
 		var reason string
+		var info exitInfo
 		kr := killReq{}
 	wait:
 		for {
 			select {
 			case err := <-done:
 				reason = describeExit(err, cmd)
+				info = exitOf(cmd)
 				break wait
 			case k := <-v.killCh:
 				if k.pid != pid {
@@ -248,13 +250,34 @@ func (s *Supervisor) run(v *svc) {
 				if kr.counts {
 					reason = kr.reason + " (" + describeExit(err, cmd) + ")"
 				}
+				info = exitOf(cmd)
 				break wait
 			}
 		}
 		s.mu.Lock()
-		s.exited(v, reason, kr.pid != 0, kr.counts)
+		s.exited(v, reason, kr.pid != 0, kr.counts, info)
 		s.mu.Unlock()
 	}
+}
+
+// exitInfo is how a process ended, as data: the signal that killed it or its
+// exit code. The zero value means "no process was waited for" (a failed start).
+type exitInfo struct {
+	known    bool
+	signaled bool
+	signal   string
+	code     int
+}
+
+func exitOf(cmd *exec.Cmd) exitInfo {
+	ps := cmd.ProcessState
+	if ps == nil {
+		return exitInfo{}
+	}
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return exitInfo{known: true, signaled: true, signal: sigName(ws.Signal()), code: -1}
+	}
+	return exitInfo{known: true, code: ps.ExitCode()}
 }
 
 func describeExit(err error, cmd *exec.Cmd) string {
@@ -335,9 +358,24 @@ func (s *Supervisor) wakeDependents(v *svc) {
 
 // exited records the end of v's process. s.mu held. byUs: the supervisor asked
 // for it. counts: it is nevertheless a crash for the restart policy (hang kill).
-func (s *Supervisor) exited(v *svc, reason string, byUs, counts bool) {
+func (s *Supervisor) exited(v *svc, reason string, byUs, counts bool, info exitInfo) {
 	now := time.Now()
 	ran := time.Duration(0)
+	restartNo := v.spawns // the restart this exit asks for
+	pid0 := v.pid
+	// A crash report goes out for a process that died on its own by a signal or
+	// a non-zero status, or that we had to kill for hanging; not for a stop we
+	// asked for. Sent last, once the policy has decided whether it comes back.
+	defer func() {
+		if !info.known || (byUs && !counts) || (!info.signaled && info.code == 0 && !counts) {
+			return
+		}
+		body := map[string]any{"service": v.spec.Name, "pid": pid0, "exit_code": info.code, "uptime_ms": ran.Milliseconds(), "restart": restartNo, "will_restart": v.desired && !v.gaveUp, "reason": reason}
+		if info.signaled {
+			body["signal"] = info.signal
+		}
+		s.bus.Emit(TopicCrashed, body)
+	}()
 	if v.pid != 0 {
 		ran = now.Sub(v.startedAt)
 	}
