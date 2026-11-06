@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # aurora-up: build what is needed and run the whole Aurora stack in the
-# foreground: busd, a headless compositor with a small scene, controllerd (wired
-# to the compositor's trusted socket and the domain binary) and, if built, the
-# Haiku ledger app on the bus. Ctrl-C (or SIGTERM) stops everything and removes
+# foreground: busd, controllerd and indexd under a supervisor (restarts, health;
+# see `auroractl status`), a headless compositor with a small scene, and, if
+# built, the Haiku ledger app. Ctrl-C (or SIGTERM) stops everything and removes
 # the domains, cgroups, sockets and temp files it made.
 #
 #   aurora-up [flags]         start (default run dir /tmp/aurora-up-UID)
@@ -48,6 +48,7 @@ build() {
      && CGO_ENABLED=0 go build -o "$BIN/aurora-preflight" ./cmd/aurora-preflight) || die "controller build failed"
   (cd "$ROOT/shell" && GOWORK=off go build -o "$BIN/aurora" ./cmd/aurora && GOWORK=off go build -o "$BIN/powerbox" ./cmd/powerbox) || die "shell build failed"
   (cd "$ROOT/index" && go build -o "$BIN/indexd" ./cmd/indexd) || die "indexd build failed"
+  (cd "$ROOT/supervisor" && go build -o "$BIN/" ./cmd/supervisord ./cmd/auroractl) || die "supervisor build failed"
   (cd "$ROOT/apps/lumen" && go build -o bin/lumen ./cmd/lumen && go build -o "$BIN/genimage" ./cmd/genimage) || die "lumen build failed"
   if [ $COMPOSITOR = 1 ]; then
     (cd "$ROOT/compositor" && cargo build --release --examples 2>&1 | tail -1) || die "compositor build failed"
@@ -60,18 +61,26 @@ build() {
 }
 if [ $BUILD = 1 ] || [ $BUILD_ONLY = 1 ]; then build; fi
 [ $BUILD_ONLY = 1 ] && { say "built into $BIN"; exit 0; }
-for b in busd bus domain controllerd controller aurora aurora-preflight indexd; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
+for b in busd bus domain controllerd controller aurora aurora-preflight indexd supervisord auroractl; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
 [ $COMPOSITOR = 0 ] || { [ -x "$COMP" ] || die "compositor not built: run without --no-build, or pass --no-compositor"; }
 [ $HAIKU = 0 ] || [ -x "$LEDGER" ] || HAIKU=0
 
 # ---------------------------------------------------------------- run dir
 PIDS=() NAMES=()
 export XDG_RUNTIME_DIR=$RUN/xdg AURORA_DOMAINS_DIR=$RUN/domains AURORA_BUS_SOCK=$RUN/bus.sock
-export AURORA_TRUSTED_SOCK=$RUN/xdg/aurora-trusted.sock AURORA_DOMAIN_BIN=$BIN/domain
+export AURORA_TRUSTED_SOCK=$RUN/xdg/aurora-trusted.sock AURORA_DOMAIN_BIN=$BIN/domain AURORA_SUPERVISOR_SOCK=$RUN/supervisor.sock
 export AURORA_KITS_NS=up$$
 INPUT=$RUN/input.sock
 
+reap_children() {  # services the supervisor started, if it was SIGKILLed and could not stop them
+  local n p
+  [ -f "$RUN/supervisor/children" ] || return 0
+  while read -r n p; do
+    [ -n "${p:-}" ] && [ "$(readlink "/proc/$p/exe" 2>/dev/null)" != "" ] && case $(readlink "/proc/$p/exe") in "$BIN"/*) kill -9 "$p" 2>/dev/null;; esac
+  done < "$RUN/supervisor/children"
+}
 sweep() {  # destroy the domains of a (possibly dead) run, then its sockets and files
+  reap_children
   for d in "$RUN"/domains/*/; do [ -d "$d" ] && "$BIN/domain" destroy "$(basename "$d")" >/dev/null 2>&1; done
   [ -f "$RUN/kitsns" ] && rm -f "/dev/shm/aurora-kits-$(id -u)-$(cat "$RUN/kitsns")"
   rm -rf "$RUN"
@@ -109,8 +118,43 @@ alive() { kill -0 "${PIDS[$1]}" 2>/dev/null; }
 
 # ---------------------------------------------------------------- start
 say "== starting (run dir $RUN)"
-start busd "$RUN/busd.log" "$BIN/busd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/buslog"
-waitfor busd 100 test -S "$AURORA_BUS_SOCK" || { cat "$RUN/busd.log"; exit 1; }
+# busd, controllerd and indexd run under supervisord (restart with backoff, a
+# crash-loop give-up, health judged on the bus, supervisor.service.* events).
+# The service list is data: this file. controllerd waits (no_autostart) until the
+# compositor it is wired to is up, then is started with `auroractl start`.
+mkdir -p "$RUN/index/queries" "$RUN/supervisor"
+cat > "$RUN/index/queries/images-today.query" <<'Q'
+# Seeded by aurora-up so `aurora query` has something to show.
+title: Images written today
+mime: image/*
+since: today
+Q
+jstr() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+svc_entry() {  # NAME LOGFILE HEALTH_JSON NEEDS_JSON EXTRA_JSON cmd...
+  local n=$1 log=$2 h=$3 needs=$4 extra=$5 a cmd=; shift 5
+  for a in "$@"; do cmd+="${cmd:+,}$(jstr "$a")"; done
+  printf '{"name":"%s","log":%s,"health":%s,"needs":%s%s,"command":[%s]}' "$n" "$(jstr "$log")" "$h" "$needs" "$extra" "$cmd"
+}
+svc_healthy() { "$BIN/auroractl" status --json 2>/dev/null | grep -q "\"name\":\"$1\",\"state\":\"running\",\"health\":\"healthy\""; }
+svc_diag() { "$BIN/auroractl" status 2>&1; tail -5 "$RUN/$1.log" 2>/dev/null; }
+
+APPS=$ROOT/apps; [ $FIXTURES = 1 ] && APPS=$APPS,$ROOT/controller/testdata/apps
+COMPFLAGS=()
+if [ $COMPOSITOR = 1 ]; then COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOCK"); else COMPFLAGS=(--no-compositor-approval); fi
+CTLEXTRA=; [ $COMPOSITOR = 1 ] && CTLEXTRA=',"no_autostart":true'
+{
+  printf '{"services":[\n'
+  svc_entry busd "$RUN/busd.log" '{"type":"bus"}' '[]' '' "$BIN/busd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/buslog"; printf ',\n'
+  svc_entry controllerd "$RUN/controllerd.log" '{"type":"service","name":"registry"}' '["busd"]' "$CTLEXTRA" \
+    "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" --approval-timeout "$APPROVAL" ${ISOLATION:+"$ISOLATION"} "${COMPFLAGS[@]}"; printf ',\n'
+  svc_entry indexd "$RUN/indexd.log" '{"type":"service","name":"index"}' '["busd"]' '' "$BIN/indexd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/index"
+  printf '\n]}\n'
+} > "$RUN/services.json"
+start supervisord "$RUN/supervisord.log" "$BIN/supervisord" --config "$RUN/services.json" --control "$AURORA_SUPERVISOR_SOCK" \
+  --bus-socket "$AURORA_BUS_SOCK" --children-file "$RUN/supervisor/children"
+waitfor "supervisor control socket" 100 test -S "$AURORA_SUPERVISOR_SOCK" || { cat "$RUN/supervisord.log"; exit 1; }
+waitfor busd 100 test -S "$AURORA_BUS_SOCK" || { svc_diag busd; exit 1; }
+waitfor "busd healthy" 100 svc_healthy busd || { svc_diag busd; exit 1; }
 
 WL=
 COMPFLAGS=()
@@ -133,28 +177,14 @@ if [ $COMPOSITOR = 1 ]; then
     fi
     unset WAYLAND_DISPLAY
   fi
-  COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOCK")
-else
-  COMPFLAGS=(--no-compositor-approval)
 fi
 
-APPS=$ROOT/apps; [ $FIXTURES = 1 ] && APPS=$APPS,$ROOT/controller/testdata/apps
-start controllerd "$RUN/controllerd.log" "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" \
-  --approval-timeout "$APPROVAL" $ISOLATION "${COMPFLAGS[@]}"
-waitfor controllerd 100 grep -q 'registered service' "$RUN/controllerd.log" || { cat "$RUN/controllerd.log"; exit 1; }
-
-# indexd turns the provenance events controllerd publishes into live queries.
-# It is started after controllerd only so its log reads in causal order; it
-# subscribes, so ordering does not actually matter.
-mkdir -p "$RUN/index/queries"
-cat > "$RUN/index/queries/images-today.query" <<'Q'
-# Seeded by aurora-up so `aurora query` has something to show.
-title: Images written today
-mime: image/*
-since: today
-Q
-start indexd "$RUN/indexd.log" "$BIN/indexd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/index"
-waitfor indexd 100 grep -q 'serving "index"' "$RUN/indexd.log" || { cat "$RUN/indexd.log"; exit 1; }
+# controllerd is wired to the compositor's trusted socket, so it starts now.
+[ $COMPOSITOR = 1 ] && { "$BIN/auroractl" start controllerd >/dev/null || { svc_diag controllerd; exit 1; }; }
+waitfor controllerd 150 svc_healthy controllerd || { svc_diag controllerd; exit 1; }
+# indexd turns the provenance events controllerd publishes into live queries; it
+# has been up since busd was, and subscribes, so ordering does not matter.
+waitfor indexd 150 svc_healthy indexd || { svc_diag indexd; exit 1; }
 
 HAIKU_UP=0
 if [ $HAIKU = 1 ]; then
@@ -169,13 +199,13 @@ command -v bwrap >/dev/null || ISO="NO: bwrap not installed"
 # ---------------------------------------------------------------- env file and banner
 {
   echo "export PATH=\"$BIN:\$PATH\""
-  for v in XDG_RUNTIME_DIR AURORA_DOMAINS_DIR AURORA_BUS_SOCK AURORA_TRUSTED_SOCK AURORA_DOMAIN_BIN AURORA_KITS_NS; do echo "export $v=\"${!v}\""; done
+  for v in XDG_RUNTIME_DIR AURORA_DOMAINS_DIR AURORA_BUS_SOCK AURORA_TRUSTED_SOCK AURORA_DOMAIN_BIN AURORA_KITS_NS AURORA_SUPERVISOR_SOCK; do echo "export $v=\"${!v}\""; done
   [ -n "$WL" ] && { echo "export AURORA_WAYLAND=\"$WL\""; echo "export AURORA_CAPTURE=\"$CAPTURE\""; }
   [ $TESTINPUT = 1 ] && [ $COMPOSITOR = 1 ] && echo "export AURORA_INPUT_SOCK=\"$INPUT\""
 } > "$RUN/env"
 touch "$RUN/ready"
 
-pidn() { for i in "${!NAMES[@]}"; do [ "${NAMES[$i]}" = "$1" ] && { echo "${PIDS[$i]}"; return; }; done; }
+pidn() { for i in "${!NAMES[@]}"; do [ "${NAMES[$i]}" = "$1" ] && { echo "${PIDS[$i]}"; return; }; done; "$BIN/auroractl" pid "$1" 2>/dev/null; }
 APPROVER="the bus (terminal prompt in 'aurora watch')"; [ $COMPOSITOR = 1 ] && APPROVER="the compositor's trusted overlay"
 cat <<EOF
 
@@ -183,6 +213,7 @@ cat <<EOF
    busd          pid $(pidn busd)   $AURORA_BUS_SOCK
    controllerd   pid $(pidn controllerd)   registry service on the bus; approvals via $APPROVER
    indexd        pid $(pidn indexd)   live queries over provenance (no capability filter; see index/README.md)
+   supervisor    pid $(pidn supervisord)   restarts busd/controllerd/indexd on failure: auroractl status | restart NAME | stop NAME | start NAME
 EOF
 [ $COMPOSITOR = 1 ] && cat <<EOF
    compositor    pid $(pidn compositor)   headless $SIZE, wayland display $RUN/xdg/$WL
@@ -214,19 +245,30 @@ EOF
 EOF
 fi
 [ $HAIKU_UP = 1 ] && say "   bus send haiku-ledger add@v1 '{\"label\":\"coffee\",\"cents\":350}'"
-say "   bus inspect; bus log | tail
+say "   auroractl status                                       # pid, uptime, restarts, last exit, health
+   bus inspect; bus log | tail
    aurora query; aurora query run images-today --watch   # then run the open above again
    aurora activity                                        # the whole recorded history, correlated"
 say
 say "Ctrl-C here stops everything and cleans up."
 
+GAVE_WARNED=
 while true; do
   for i in "${!PIDS[@]}"; do
     if ! alive "$i"; then
       case "${NAMES[$i]}" in
-        busd|controllerd|compositor) say "aurora-up: ${NAMES[$i]} exited; see $RUN/"; exit 1;;
+        supervisord|compositor) say "aurora-up: ${NAMES[$i]} exited; see $RUN/"; exit 1;;
       esac
     fi
   done
+  # The supervisor restarts what dies. It gives up on a crash loop; busd and
+  # controllerd gone for good means the stack is not usable, so say so and stop.
+  if gave=$("$BIN/auroractl" status -q 2>&1); then :; else
+    case " $(echo $gave) " in
+      *" busd "*|*" controllerd "*) say "aurora-up: $(echo $gave) gave up after repeated crashes (auroractl status); see $RUN/"; exit 1;;
+    esac
+    [ "$gave" != "$GAVE_WARNED" ] && say "aurora-up: WARNING: $(echo $gave) gave up after repeated crashes; the rest keeps running (auroractl status, auroractl start NAME)"
+    GAVE_WARNED=$gave
+  fi
   sleep 1 & wait $!
 done

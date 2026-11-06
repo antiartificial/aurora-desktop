@@ -410,13 +410,14 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 
 // systemPrefixes are the topic namespaces that carry the system's own business:
 // provenance records (paths, apps, grants, capability handle ids), approval
-// requests, the daemon's own events, agent traffic, index matches. A confined
+// requests, the daemon's own events, agent traffic, index matches, and which
+// services the supervisor has restarted and why. A confined
 // app has no need to hear any of it, and provenance.created in particular names
 // every other domain's files. A domain connection (one that arrived on a
 // per-domain socket, so its identity was stamped by busd from the socket, never
 // by the client) is never delivered these. The user's own session still hears
 // everything.
-var systemPrefixes = []string{"provenance.", "approval.", "bus.", "agent.", "index."}
+var systemPrefixes = []string{"provenance.", "approval.", "bus.", "agent.", "index.", "supervisor."}
 
 func isSystemTopic(topic string) bool {
 	for _, p := range systemPrefixes {

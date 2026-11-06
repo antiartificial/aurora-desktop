@@ -56,7 +56,7 @@ func TestDomainStarSubscriptionGetsAppTopicsNotSystemOnes(t *testing.T) {
 			t.Fatalf("a wildcard must be accepted: %v", err)
 		}
 	}
-	for _, topic := range []string{"provenance.created", "approval.requested", "agent.call", "index.match.x", "demo.canary"} {
+	for _, topic := range []string{"provenance.created", "approval.requested", "agent.call", "index.match.x", "supervisor.service.restarted", "demo.canary"} {
 		if err := pub.Publish(topic, json.RawMessage(`{"file":"/other/domain/secret.png"}`), proto.QoSInteractive, false); err != nil {
 			t.Fatal(err)
 		}
@@ -66,7 +66,7 @@ func TestDomainStarSubscriptionGetsAppTopicsNotSystemOnes(t *testing.T) {
 	if len(got) != 1 || got[0] != "demo.canary" {
 		t.Fatalf("domain saw %v, want only [demo.canary]", got)
 	}
-	if all := collect(s.Events(), 300*time.Millisecond); len(all) != 5 {
+	if all := collect(s.Events(), 300*time.Millisecond); len(all) != 6 {
 		t.Fatalf("the session must keep receiving everything, saw %v", all)
 	}
 }
@@ -77,7 +77,7 @@ func TestDomainStarSubscriptionGetsAppTopicsNotSystemOnes(t *testing.T) {
 func TestDomainCannotSubscribeToSystemNamespaces(t *testing.T) {
 	sess, dom := domainWorld(t)
 	d, s := dial(t, dom), dial(t, sess)
-	for _, topic := range []string{"provenance.created", "provenance.*", "approval.requested", "bus.cap.revoked", "agent.x", "index.match.q"} {
+	for _, topic := range []string{"provenance.created", "provenance.*", "approval.requested", "bus.cap.revoked", "agent.x", "index.match.q", "supervisor.service.exited"} {
 		err := d.Subscribe(ctx(t), topic)
 		var re *client.RemoteError
 		if !errors.As(err, &re) || re.Code != "reserved_topic" {
