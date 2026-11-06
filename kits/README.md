@@ -172,3 +172,19 @@ BMessage to JSON: int8/16/32/64 to integer, float/double to number, bool, string
 `cmake --build build && ctest --test-dir build` builds `busd` and `bus` with Go into the build directory (skipped if Go is absent: the `bus_bridge` test then runs only the pure groups). `demo/bus_demo.sh [build-dir]` starts busd, starts `haiku_ledger` (a `BApplication` subclass with a `BHandler`, idiomatic `switch (message->what)`), drives it with `bus send haiku-ledger add@v1 '{"label":"coffee","cents":350}'` and `bus sub 'ledger.**'`, checks the replies and events, and cleans up. `tests/test_bus.cpp` has 206 checks: JSON round trips and malformed input, conversion in both directions, and, against a real busd, request/reply, unhandled `what`, `no_reply`, `timeout`, malformed payloads and raw garbage on the socket, ordering of 41 requests, publish to a subscriber, event to the handler, `Call`, and a duplicate service name refused.
 
 Not done: latency is unmeasured; concurrent callers are serialised (a slow handler blocks every bus caller; by design, not measured); segments and caps are not carried; the bridge was exercised with our `BLooper`, not Haiku's own.
+
+## Real Haiku kit code in the running stack (`haiku-compat/`)
+
+`build/haiku-compat/haiku_ledger_real` is the ledger bus service on Haiku's OWN `BMessage`, `BHandler`, `BLooper` and `BMessenger` (Vitruvian `src/kits/app/*.cpp`, MIT, compiled in place and never copied). It uses no `BApplication`: a `BLooper` plus a `BHandler` and the bridge. Same handler source as `haiku_ledger` (`demo/ledger_handler.h`), same bridge source (`src/bus/`, compiled twice, once per kit). `demo/bus_demo_real.sh` drives it with the Go `bus` CLI (ctest `bus_demo_real`).
+
+```
+bus send haiku-ledger-real add@v1 '{"label":"coffee","cents":350}'
+{"total":350,"handled_by":"Haiku BHandler::MessageReceived on Haiku's real BLooper (no BApplication)"}
+```
+
+- Linked into the binary: Haiku `app/{Message,Handler,Looper,Messenger,MessageAdapter,LooperList,TokenSpace,MessageQueue,DirectMessageTarget,MessageFilter,MessageUtils,PropertyInfo}`, `support/{String,List,Archivable,ArchivingManagers,ByteOrder,BlockCache,DataIO,Locker,StringList,Flattenable}`, `interface/{Rect,Point}`, `system/libroot2/KMessage` (25 files), plus our `haiku-compat/stubs.cpp` and `real_init.cpp` and `libkitsos`.
+- No `--unresolved-symbols=ignore-all`. `BPath` is defined (real for string paths, hollow for `entry_ref`). `BEntry`, `BFile`, `BNode` and `BAppFileInfo` are referenced only by `BArchivable` instantiate-by-name; objects are built with `-ffunction-sections` and linked with `--gc-sections`, so those functions are dropped and a link error, not a crash, appears if something reachable ever needs them.
+- `InitTerminateLibBe.cpp` is not used (it also starts the registrar and locale kit). `real_init.cpp` is a constructor(101) in the executable that calls `BMessage::Private::StaticInit()` and registers the fork handlers, as libbe does.
+- Difference from our kit: Haiku's default `BHandler::MessageReceived` does not answer an unknown verb, so the bus error is `no_reply`, not `not_understood`.
+
+Remaining before a real `BApplication`: see `haiku-compat/README.md` and decision 0008 "Update: Haiku's own kit code now runs in the live stack".

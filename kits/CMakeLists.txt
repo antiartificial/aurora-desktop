@@ -34,7 +34,7 @@ add_test(NAME haiku_app COMMAND haiku_app)
 
 # Bus bridge: a C++ bus client and the BLooper <-> bus bridge (decision 0008's untested claim).
 add_library(kitsbus STATIC src/bus/Json.cpp src/bus/BusClient.cpp src/bus/BusConvert.cpp src/bus/BusBridge.cpp)
-target_include_directories(kitsbus PUBLIC include)
+target_include_directories(kitsbus PUBLIC include include/bus)
 target_link_libraries(kitsbus PUBLIC kitsapp)
 
 add_executable(haiku_ledger demo/haiku_ledger.cpp)
@@ -57,4 +57,19 @@ if(GO_EXE)
   set_tests_properties(bus_demo PROPERTIES TIMEOUT 60)
 else()
   add_test(NAME bus_bridge COMMAND test_bus)   # busd tests skip without Go
+endif()
+
+# Real Haiku kit code (Vitruvian's src/kits/app, compiled in place, read-only): haiku_ledger_real and the
+# haiku-compat tests. Off when the Haiku source or Go (for busd) is absent. See haiku-compat/README.md.
+set(HAIKU_SRC "/home/arti/projects/Vitruvian" CACHE PATH "Vitruvian/Haiku checkout (read-only)")
+if(EXISTS ${HAIKU_SRC}/src/kits/app/Message.cpp)
+  add_subdirectory(haiku-compat)
+  add_test(NAME haiku_real_flat COMMAND test_flat)
+  add_test(NAME haiku_real_looper COMMAND test_looper)
+  if(GO_EXE)
+    add_dependencies(haiku_ledger_real bus_binaries)
+    add_test(NAME bus_demo_real COMMAND ${CMAKE_SOURCE_DIR}/demo/bus_demo_real.sh
+      ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus $<TARGET_FILE:haiku_ledger_real>)
+    set_tests_properties(bus_demo_real PROPERTIES TIMEOUT 60)
+  endif()
 endif()

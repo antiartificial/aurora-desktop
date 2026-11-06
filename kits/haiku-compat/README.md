@@ -21,7 +21,7 @@ cmake -S . -B build -G Ninja && cmake --build build     # 37 steps, clean
 build/test_flat ; build/test_looper
 ./try.sh <Haiku .cpp>      # syntax-only compile of one file with the same flags (MODE=-c OUT=x.o for an object)
 ```
-Standalone project; it is not wired into `kits/CMakeLists.txt`. The existing suite still passes (`ctest`: 4/4).
+Builds standalone, and is also pulled into `kits/CMakeLists.txt` (`add_subdirectory`; build/haiku-compat). Update: the link no longer uses `--unresolved-symbols=ignore-all`; `BPath` is stubbed and the rest are gc'd (see `kits/README.md`, last section); `haiku_ledger_real` runs on the bus. The existing suite still passes (`ctest`: 4/4).
 
 ## Output
 

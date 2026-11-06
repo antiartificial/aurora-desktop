@@ -8,9 +8,9 @@ set(K ${HAIKU_SRC}/src/kits)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS ON)
 
-add_library(kitsos STATIC ../src/shm.c ../src/port.c ../src/area.c ../src/sem.c ../src/thread.c)
-target_include_directories(kitsos PRIVATE ../include)  # PRIVATE: our Message.h etc. must NOT shadow Haiku's
-target_link_libraries(kitsos PUBLIC pthread)
+add_library(kitsos_real STATIC ../src/shm.c ../src/port.c ../src/area.c ../src/sem.c ../src/thread.c)
+target_include_directories(kitsos_real PRIVATE ../include)  # PRIVATE: our Message.h etc. must NOT shadow Haiku's
+target_link_libraries(kitsos_real PUBLIC pthread)
 
 add_library(haiku_app_real STATIC
 	${K}/app/Message.cpp ${K}/app/Handler.cpp ${K}/app/Looper.cpp ${K}/app/Messenger.cpp
@@ -30,15 +30,28 @@ target_include_directories(haiku_app_real SYSTEM PUBLIC shim shim/prim
 	${HAIKU_SRC}/headers/private/interface ${HAIKU_SRC}/headers/private/system ${HAIKU_SRC}/headers/os/drivers
 	${HAIKU_SRC}/headers/private/system/arch/x86_64 ${HAIKU_SRC}/headers/private/storage
 	${HAIKU_SRC}/headers/build/config_headers)
-target_compile_options(haiku_app_real PUBLIC -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/haiku_prelude.h -Wno-multichar -w)
-target_link_libraries(haiku_app_real PUBLIC kitsos)
+target_compile_options(haiku_app_real PUBLIC -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/haiku_prelude.h -Wno-multichar -w -ffunction-sections)
+target_link_libraries(haiku_app_real PUBLIC kitsos_real)
 
 add_executable(test_flat test_flat.cpp)
-# Storage kit symbols (BPath, BEntry, BFile, BNode, BAppFileInfo) are unresolved; defer them so the binary links.
-# A call into any of them crashes. This is a documented gap, not a fix.
-target_link_options(test_flat PRIVATE -Wl,--unresolved-symbols=ignore-all)
+target_link_options(test_flat PRIVATE -Wl,--gc-sections)
 target_link_libraries(test_flat haiku_app_real)
 
 add_executable(test_looper test_looper.cpp)
-target_link_options(test_looper PRIVATE -Wl,--unresolved-symbols=ignore-all)
+target_link_options(test_looper PRIVATE -Wl,--gc-sections)
 target_link_libraries(test_looper haiku_app_real)
+
+# ---- haiku_ledger_real: a live bus service on Haiku's real BMessage/BHandler/BLooper/BMessenger ----
+# The bridge is the SAME source as kits/src/bus (public API only), compiled here against Haiku's headers.
+set(B ${CMAKE_CURRENT_SOURCE_DIR}/../src/bus)
+add_library(kitsbus_real STATIC ${B}/Json.cpp ${B}/BusClient.cpp ${B}/BusConvert.cpp ${B}/BusBridge.cpp)
+target_include_directories(kitsbus_real PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include/bus)
+target_link_libraries(kitsbus_real PUBLIC haiku_app_real)
+
+# NO --unresolved-symbols=ignore-all anywhere. BPath is defined (stubs.cpp). BEntry/BFile/BNode/BAppFileInfo
+# are referenced only by BArchivable's instantiate-by-name; -ffunction-sections + --gc-sections drop it, so the
+# link succeeds only while nothing reachable needs them, and fails loudly if that changes.
+add_executable(haiku_ledger_real ../demo/haiku_ledger_real.cpp real_init.cpp)
+target_include_directories(haiku_ledger_real PRIVATE ../demo)
+target_link_options(haiku_ledger_real PRIVATE -Wl,--gc-sections)
+target_link_libraries(haiku_ledger_real kitsbus_real)

@@ -79,7 +79,8 @@ BMessenger::BMessenger(const BHandler *handler, const BLooper *looper, status_t 
 	const BLooper *l = handler ? handler->Looper() : looper;
 	if (handler && looper && handler->Looper() != looper) r = B_MISMATCHED_VALUES;
 	else if (l) {
-		fPort = l->Port(); fToken = handler ? handler->Token() : -1;   // no handler: the preferred one r = B_OK;
+		fPort = l->Port(); fToken = handler ? handler->Token() : -1;   // no handler: the preferred one
+		r = B_OK;
 	}
 	if (result) *result = r;
 }

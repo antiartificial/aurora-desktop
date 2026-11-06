@@ -69,8 +69,9 @@ node_ref::node_ref(dev_t d, ino_t n) : device(d), node(n) {}
 node_ref::~node_ref() {}
 node_ref& node_ref::operator=(const node_ref& r) { device = r.device; node = r.node; return *this; }
 
-/* BPath, BEntry, BFile, BNode, BAppFileInfo are deliberately NOT stubbed: they are polymorphic, so a
-   stub needs ~50 hollow virtuals. They stay unresolved (see README, "unresolved at link time"). */
+/* BEntry, BFile, BNode, BAppFileInfo are deliberately NOT stubbed (~50 hollow virtuals). Only Archivable.cpp's
+   instantiate-by-name uses them; the link uses --gc-sections, so they are dropped, and a link error (not a crash)
+   reports it if a reachable path ever needs one. BPath is below. */
 
 /* ---- registrar / roster: BLOCKED. The registrar is not ported; these always fail. ---- */
 app_info::app_info() {} app_info::~app_info() {}
@@ -84,3 +85,19 @@ static BRoster sRoster;
 const BRoster* be_roster = &sRoster;
 BApplication* be_app = NULL;
 BMessenger be_app_messenger;
+
+/* ---- BPath: REAL for plain-string paths, HOLLOW for entry_ref/BEntry/BDirectory (needs the storage kit).
+   Haiku's own Path.cpp cannot be built (it pulls syscalls.h and BEntry). Message.cpp references BPath only in
+   BMessage::PrintToStream() for a B_REF_TYPE field. A BPath built from an entry_ref stays B_NO_INIT and
+   Path() is NULL (printf shows "(null)"); it does not crash. ---- */
+BPath::BPath() : fName(NULL), fCStatus(B_NO_INIT) {}
+BPath::BPath(const entry_ref*) : fName(NULL), fCStatus(B_NO_INIT) {}
+BPath::~BPath() { free(fName); }
+const char* BPath::Path() const { return fCStatus == B_OK ? fName : NULL; }
+bool BPath::IsFixedSize() const { return false; }
+type_code BPath::TypeCode() const { return B_REF_TYPE; }
+ssize_t BPath::FlattenedSize() const { return B_NOT_SUPPORTED; }
+status_t BPath::Flatten(void*, ssize_t) const { return B_NOT_SUPPORTED; }
+bool BPath::AllowsTypeCode(type_code c) const { return c == B_REF_TYPE; }
+status_t BPath::Unflatten(type_code, const void*, ssize_t) { return B_NOT_SUPPORTED; }
+void BPath::_WarPath1() {} void BPath::_WarPath2() {} void BPath::_WarPath3() {}

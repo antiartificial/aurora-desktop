@@ -25,7 +25,9 @@ void BusMarkArray(BMessage *msg, const char *name);
 
 class BusBridge {
 public:
-	/* target: the handler requests are posted to (NULL: the looper's preferred handler). */
+	/* target: the handler requests are posted to (NULL: the looper's preferred handler). The
+	   target must already be added to the looper when Start() is called. Written to compile
+	   against both our BLooper and Haiku's real one (haiku-compat/): public API only. */
 	BusBridge(BLooper *looper, BHandler *target, const char *service);
 	~BusBridge() { Stop(); }
 
@@ -54,6 +56,7 @@ private:
 	void OnEvent(const BusEnvelope &ev);
 
 	BLooper *fLooper; BHandler *fTarget; std::string fService;
+	BMessenger fTo;   // built in Start(): the portable way (handler, looper) to address a looper
 	std::map<std::string, uint32> fVerbs;
 	bigtime_t fReplyTimeout = 10000000;
 	BusClient fClient;

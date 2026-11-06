@@ -17,6 +17,8 @@ BusBridge::BusBridge(BLooper *looper, BHandler *target, const char *service)
 status_t BusBridge::Start(const char *socketPath)
 {
 	if (fStarted) return B_ERROR;
+	fTo = BMessenger(fTarget, fLooper);
+	if (!fTo.IsValid()) return B_BAD_VALUE;
 	// Requests are queued by the reader thread and served by a separate thread: serving
 	// blocks until the looper replies, and the reader must stay free to read responses
 	// to Call()s that handlers make.
@@ -70,8 +72,7 @@ void BusBridge::HandleRequest(const BusEnvelope &req)
 	msg.AddString("bus:from", req.from.c_str());
 	msg.AddString("bus:qos", req.qos.empty() ? "user-initiated" : req.qos.c_str());
 
-	BMessenger to(fLooper->Port(), fTarget ? fTarget->Token() : -1);
-	status_t r = to.SendMessage(&msg, &reply, 5000000, fReplyTimeout);
+	status_t r = fTo.SendMessage(&msg, &reply, 5000000, fReplyTimeout);
 	if (r == B_TIMED_OUT) { fClient.ReplyError(req, "timeout", "handler did not reply in time"); return; }
 	if (r != B_OK) { fClient.ReplyError(req, "deliver_failed", "could not deliver to the looper"); return; }
 	if (reply.what == B_NO_REPLY) {
