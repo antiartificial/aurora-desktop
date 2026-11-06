@@ -36,6 +36,9 @@ impl Aurora {
             Action::OpenSettings => self.shell.open_settings(),
             Action::WindowSwitcher => self.switch(crate::fx::switcher::Act::Open),
             Action::CloseSettings => self.shell.settings = None,
+            Action::RunVerb { app, verb } => {
+                self.shell.run_verb(&app, &verb);
+            }
         }
     }
 
@@ -123,8 +126,9 @@ impl Aurora {
         if l.panel.contains(dp.x, dp.y) {
             // The dock swallows the click: no window is raised or focused, no client sees it.
             if button_state == ButtonState::Pressed {
+                let out = self.output_physical();
                 if let Some(i) = l.item_at(dp.x, dp.y) {
-                    self.shell.launch(i);
+                    self.shell.open_verb_menu(i, (out.w, out.h));
                 }
             }
             return;

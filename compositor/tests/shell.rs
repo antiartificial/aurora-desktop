@@ -159,10 +159,16 @@ fn hover_highlights_the_item_and_click_runs_the_launcher() {
     assert!(!out.exists(), "a click outside every pill launched something");
     c.inject(&format!("pointer {x1} {y1}"));
     c.inject("click");
+    // The click asks which verb (a compositor menu); nothing is launched until one is chosen.
+    wait_for("the verb menu", || c.log().contains("menu: verbs of org.aurora.ledger"));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!out.exists(), "the dock click itself launched something");
+    c.inject("key Down");
+    c.inject("key Return");
     wait_for("the launcher to run", || out.exists() && std::fs::read_to_string(&out).unwrap_or_default().contains("BUS="));
     let got = std::fs::read_to_string(&out).unwrap();
     println!("CLICK ran the launcher with: {}", got.replace('\n', " | "));
-    assert!(got.starts_with("open --pick --app org.aurora.ledger"), "{got}");
+    assert!(got.starts_with("open --pick --app org.aurora.ledger --verb resize@v1"), "{got}");
     assert!(got.contains(&format!("BUS={}", bus.display())));
 }
 

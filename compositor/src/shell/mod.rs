@@ -272,11 +272,12 @@ impl Shell {
 
     // ---- launching -------------------------------------------------------
 
-    /// Start the launcher for the app in dock item `i`. Returns the argv it ran.
-    pub fn launch(&mut self, i: usize) -> Option<Vec<String>> {
-        let item = self.items.get(i).filter(|it| it.clickable)?;
+    /// Run `verb` of `app`: the launcher does the rest (arguments, then the
+    /// powerbox for the file). Which verb is already decided, by the verb menu,
+    /// so no terminal is spent on asking that. Returns the argv it ran.
+    pub fn run_verb(&mut self, app: &str, verb: &str) -> Option<Vec<String>> {
         let term = resolve_terminal(&self.dock.terminal);
-        let argv = launch_argv(&self.aurora_bin, term.as_deref(), &item.id);
+        let argv = launch_argv(&self.aurora_bin, term.as_deref(), app, verb);
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]).stdin(std::process::Stdio::null());
         if let Some(s) = &self.registry.sock {
@@ -284,7 +285,7 @@ impl Shell {
         }
         match cmd.spawn() {
             Ok(mut child) => {
-                tracing::info!("dock: launched {:?} via {argv:?}", item.id);
+                tracing::info!("dock: launched {app:?} verb {verb:?} via {argv:?}");
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
@@ -658,11 +659,12 @@ pub fn resolve_launcher(given: Option<&str>) -> String {
     "aurora".into()
 }
 
-/// What a dock click runs. The launcher does the work: `aurora open --pick --app ID`
-/// (the powerbox picker; an interactive terminal flow), inside a terminal window
-/// when one is configured so the prompts have somewhere to appear.
-pub fn launch_argv(aurora: &str, terminal: Option<&str>, app_id: &str) -> Vec<String> {
-    let inner = [aurora, "open", "--pick", "--app", app_id].map(String::from);
+/// What choosing a verb runs: `aurora open --pick --app ID --verb NAME` (the
+/// powerbox picks the file; an interactive terminal flow), inside a terminal
+/// window when one is configured so the prompts have somewhere to appear.
+pub fn launch_argv(aurora: &str, terminal: Option<&str>, app_id: &str, verb: &str) -> Vec<String> {
+    let inner = [aurora, "open", "--pick", "--app", app_id, "--verb", verb].map(String::from);
+
     match terminal {
         None => inner.to_vec(),
         Some(t) => {
@@ -680,10 +682,10 @@ mod tests {
 
     #[test]
     fn launch_runs_the_launcher_directly_or_inside_a_terminal() {
-        assert_eq!(launch_argv("aurora", None, "org.x.app"), ["aurora", "open", "--pick", "--app", "org.x.app"]);
-        let v = launch_argv("/bin/aurora", Some("xterm"), "org.x.app");
+        assert_eq!(launch_argv("aurora", None, "org.x.app", "resize@v1"), ["aurora", "open", "--pick", "--app", "org.x.app", "--verb", "resize@v1"]);
+        let v = launch_argv("/bin/aurora", Some("xterm"), "org.x.app", "resize@v1");
         assert_eq!(&v[..3], ["xterm", "-e", "sh"]);
-        assert_eq!(&v[v.len() - 5..], ["/bin/aurora", "open", "--pick", "--app", "org.x.app"]);
+        assert_eq!(&v[v.len() - 7..], ["/bin/aurora", "open", "--pick", "--app", "org.x.app", "--verb", "resize@v1"]);
     }
 
     #[test]
