@@ -29,6 +29,7 @@ bool last_frame(int index, Frame* out);
 // Number of AS_* opcodes the server did not understand (and how many of those wanted a reply).
 int unhandled_opcodes(int* withReply);
 void inject_pointer(int window, float x, float y, int button);	// -1 move, 0 up, 1 down; window coords
+uint32_t current_modifiers();	// Haiku modifier bits as of the last B_MODIFIERS_CHANGED / key event (modifiers())
 double output_scale();		// the scale the server renders at
 
 }	// namespace aurora

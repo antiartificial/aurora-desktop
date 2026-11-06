@@ -5,6 +5,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FT2 REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(ICU REQUIRED IMPORTED_TARGET icu-uc)
 pkg_check_modules(WLC IMPORTED_TARGET wayland-client)
+pkg_check_modules(XKB IMPORTED_TARGET xkbcommon)
 find_program(WAYLAND_SCANNER wayland-scanner)
 
 set(K ${HAIKU_SRC}/src/kits)
@@ -14,10 +15,10 @@ set(I ${K}/interface)
 set(IFACE_REAL
 	AbstractLayoutItem AbstractLayout AffineTransform Alignment Bitmap BMCPrivate Button ColorConversion
 	ControlLook Control Deskbar Font GradientConic GradientDiamond GradientLinear Gradient
-	GradientRadialFocus GradientRadial GraphicsDefs GroupLayout HaikuControlLook Icon Input InterfaceDefs
+	GradientRadialFocus GradientRadial GraphicsDefs GroupLayout HaikuControlLook Icon InterfaceDefs
 	LayoutContext LayoutItem Layout LayoutUtils MenuBar MenuField MenuItem MenuItemPrivate Menu MenuPrivate
 	MenuWindow Picture PicturePlayer Polygon PopUpMenu PrivateScreen Region RegionSupport Screen ScrollBar
-	SeparatorItem Shape StringView TextView ToolTipManager ToolTip TwoDimensionalLayout ViewLayoutItem View
+	SeparatorItem Shape ScrollView ListItem ListView OutlineListView StringItem StringView TextView ToolTipManager ToolTip TwoDimensionalLayout ViewLayoutItem View
 	Window)
 set(SRC_IFACE)
 foreach(n ${IFACE_REAL})
@@ -29,7 +30,7 @@ set(SRC_APP ${K}/app/AppDefs.cpp ${K}/app/AppServerLink.cpp ${K}/app/Cursor.cpp 
 	${K}/app/LinkReceiver.cpp ${K}/app/LinkSender.cpp ${K}/app/MessageRunner.cpp ${K}/app/PortLink.cpp
 	${K}/app/ServerLink.cpp ${K}/app/ServerMemoryAllocator.cpp)
 set(SRC_SUPPORT ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp)
+	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
 
 add_library(haiku_iface_real STATIC ${SRC_IFACE} ${SRC_LAYOUTER} ${SRC_TEXTVIEW} ${SRC_APP} ${SRC_SUPPORT})
 # Order: our shim syscalls.h first (Haiku's needs the kernel info-struct zoo), then haiku_app_real's include set.
@@ -51,7 +52,7 @@ target_link_libraries(aurora_appserver PUBLIC haiku_iface_real PkgConfig::FT2 Pk
 # Wayland presenter: only when libwayland-client and wayland-scanner exist. xdg-shell.xml is found, not vendored.
 find_file(XDG_SHELL_XML xdg-shell.xml PATHS /usr/share/wayland-protocols/stable/xdg-shell
 	/usr/share/qt6/wayland/protocols/xdg-shell /usr/share/qt5/wayland/protocols/xdg-shell NO_DEFAULT_PATH)
-if(WLC_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
+if(WLC_FOUND AND XKB_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
 	set(GEN ${CMAKE_CURRENT_BINARY_DIR}/gen)
 	file(MAKE_DIRECTORY ${GEN})
 	add_custom_command(OUTPUT ${GEN}/xdg-shell-protocol.c ${GEN}/xdg-shell-client-protocol.h
@@ -60,7 +61,7 @@ if(WLC_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
 		DEPENDS ${XDG_SHELL_XML})
 	add_library(aurora_wl_present STATIC appserver/present_wl.c ${GEN}/xdg-shell-protocol.c)
 	target_include_directories(aurora_wl_present PUBLIC appserver PRIVATE ${GEN})
-	target_link_libraries(aurora_wl_present PUBLIC PkgConfig::WLC)
+	target_link_libraries(aurora_wl_present PUBLIC PkgConfig::WLC PkgConfig::XKB)
 	target_compile_definitions(aurora_appserver PUBLIC AURORA_HAVE_WAYLAND=1)
 	target_link_libraries(aurora_appserver PUBLIC aurora_wl_present)
 endif()
@@ -77,6 +78,11 @@ iface_exe(test_iface_window tests/test_window.cpp)
 iface_exe(test_controls tests/test_controls.cpp)
 iface_exe(iface_hello demo/hello.cpp)
 iface_exe(iface_controls demo/controls.cpp)
+iface_exe(iface_keys demo/keys.cpp)
+iface_exe(iface_scroll demo/scroll.cpp)
+iface_exe(iface_list demo/list.cpp)
+# The file browser lives with its README and fixtures in demos/browser; it is built here because only this tree knows the kit.
+iface_exe(iface_browser ${CMAKE_CURRENT_SOURCE_DIR}/../../demos/browser/browser.cpp)
 
 # These need no compositor (AURORA_APPSERVER_PRESENT=0 inside the tests). The compositor-backed check is
 # demos/interface-kit/run.sh.

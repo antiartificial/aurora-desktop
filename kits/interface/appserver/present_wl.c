@@ -16,6 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
+#include <sys/mman.h>
 
 struct au_wl {
 	struct wl_display* dpy;
@@ -25,6 +27,16 @@ struct au_wl {
 	struct xdg_wm_base* wm;
 	struct wl_seat* seat;
 	struct wl_pointer* ptr;
+	struct wl_keyboard* kbd;
+	struct xkb_context* xkb;
+	struct xkb_keymap* keymap;
+	struct xkb_state* xstate;
+	struct au_wl_win* kfocus;
+	uint32_t mods;
+	int rep_rate, rep_delay;			/* repeat_info: keys/s, ms */
+	int rep_key;					/* xkb keycode being repeated, 0 = none */
+	au_key rep;
+	struct timespec rep_next;
 	struct wl_output* out;
 	int scale;
 	pthread_mutex_t mu;
@@ -40,6 +52,7 @@ struct au_wl_win {
 	struct xdg_surface* xs;
 	struct xdg_toplevel* top;
 	au_event_fn fn;
+	au_key_fn kfn;
 	void* user;
 	int configured, lw, lh;
 	int destroyed;
@@ -112,8 +125,155 @@ static void p_button(void* d, struct wl_pointer* p, uint32_t s, uint32_t t, uint
 	if (g->focus && g->focus->fn && button == 0x110)	/* BTN_LEFT */
 		g->focus->fn(g->focus->user, AU_EV_POINTER_BUTTON, 1, state == WL_POINTER_BUTTON_STATE_PRESSED);
 }
-static void p_axis(void* d, struct wl_pointer* p, uint32_t t, uint32_t a, wl_fixed_t v) { (void)d; (void)p; (void)t; (void)a; (void)v; }
-static const struct wl_pointer_listener ptr_listener = { p_enter, p_leave, p_motion, p_button, p_axis, NULL, NULL, NULL, NULL, NULL, NULL };
+/* Wheel: wl_pointer.axis value is in surface px (a notch is about 10-15). a = axis (0 vertical, 1 horizontal),
+ * b = value * 256. The first version left every listener past `axis` NULL; libwayland aborts the client the
+ * moment the compositor sends wl_pointer.frame, i.e. on the first real pointer event. */
+static void p_axis(void* d, struct wl_pointer* p, uint32_t t, uint32_t a, wl_fixed_t v)
+{
+	au_wl* g = d; (void)p; (void)t;
+	if (g->focus && g->focus->fn) g->focus->fn(g->focus->user, AU_EV_WHEEL, (int)a, (int)(wl_fixed_to_double(v) * 256));
+}
+static void p_frame(void* d, struct wl_pointer* p) { (void)d; (void)p; }
+static void p_axis_source(void* d, struct wl_pointer* p, uint32_t s) { (void)d; (void)p; (void)s; }
+static void p_axis_stop(void* d, struct wl_pointer* p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
+static void p_axis_discrete(void* d, struct wl_pointer* p, uint32_t a, int32_t n) { (void)d; (void)p; (void)a; (void)n; }
+static const struct wl_pointer_listener ptr_listener = { p_enter, p_leave, p_motion, p_button, p_axis, p_frame, p_axis_source, p_axis_stop, p_axis_discrete };
+
+/* ---- keyboard: wl_keyboard + xkbcommon. The keymap is whatever the compositor sends (it is configurable and
+ * hot-reloadable there; a new wl_keyboard.keymap event replaces ours). ---- */
+static uint32_t mods_now(au_wl* g)
+{
+	uint32_t m = 0;
+	if (!g->xstate) return 0;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_SHIFT;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_CTRL;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_ALT;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_LOGO;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_CAPS, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_CAPS;
+	if (xkb_state_mod_name_is_active(g->xstate, XKB_MOD_NAME_NUM, XKB_STATE_MODS_EFFECTIVE) > 0) m |= AU_MOD_NUM;
+	return m;
+}
+
+/* BeOS character for the keys that are not text: the arrows, Home, Enter, ... (InterfaceDefs.h). 0 = none. */
+static uint32_t special_char(xkb_keysym_t s)
+{
+	switch (s) {
+	case XKB_KEY_Left: return 0x1c;  case XKB_KEY_Right: return 0x1d;
+	case XKB_KEY_Up: return 0x1e;    case XKB_KEY_Down: return 0x1f;
+	case XKB_KEY_Return: case XKB_KEY_KP_Enter: case XKB_KEY_ISO_Enter: return 0x0a;
+	case XKB_KEY_BackSpace: return 0x08;
+	case XKB_KEY_Tab: case XKB_KEY_ISO_Left_Tab: return 0x09;
+	case XKB_KEY_Escape: return 0x1b;
+	case XKB_KEY_Delete: return 0x7f;
+	case XKB_KEY_Home: return 0x01;  case XKB_KEY_End: return 0x04;
+	case XKB_KEY_Insert: return 0x05;
+	case XKB_KEY_Page_Up: return 0x0b; case XKB_KEY_Page_Down: return 0x0c;
+	}
+	if (s >= XKB_KEY_F1 && s <= XKB_KEY_F12) return 0x10;	/* B_FUNCTION_KEY; the key code says which */
+	return 0;
+}
+
+static void emit_key(au_wl* g, uint32_t evdev, int pressed, int repeat, au_key* out)
+{
+	xkb_keycode_t kc = evdev + 8;
+	memset(out, 0, sizeof(*out));
+	out->evdev = evdev; out->pressed = pressed; out->repeat = repeat; out->mods = g->mods;
+	if (!g->xstate) return;
+	xkb_keysym_t sym = xkb_state_key_get_one_sym(g->xstate, kc);
+	uint32_t sp = special_char(sym);
+	if (sp) {
+		out->utf8[0] = (char)sp;
+	} else {
+		xkb_state_key_get_utf8(g->xstate, kc, out->utf8, sizeof(out->utf8));
+		/* modifier keys and dead keys type nothing */
+		if ((unsigned char)out->utf8[0] < 0x20 && out->utf8[0] != 0 && !(g->mods & AU_MOD_CTRL)) out->utf8[0] = 0;
+	}
+	/* raw_char: the symbol at level 0 of this layout (no shift/caps/ctrl) */
+	xkb_layout_index_t lay = xkb_state_key_get_layout(g->xstate, kc);
+	const xkb_keysym_t* syms; int n = xkb_keymap_key_get_syms_by_level(g->keymap, kc, lay, 0, &syms);
+	out->raw_char = 0;
+	if (n > 0) {
+		uint32_t s2 = special_char(syms[0]);
+		out->raw_char = s2 ? s2 : xkb_keysym_to_utf32(syms[0]);
+	}
+}
+
+static void deliver_key(au_wl* g, const au_key* k)
+{
+	if (g->kfocus && g->kfocus->kfn) g->kfocus->kfn(g->kfocus->user, k);
+}
+
+static void kb_keymap(void* d, struct wl_keyboard* kb, uint32_t fmt, int32_t fd, uint32_t size)
+{
+	au_wl* g = d; (void)kb;
+	if (fmt != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
+	char* map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	close(fd);
+	if (map == MAP_FAILED) return;
+	struct xkb_keymap* km = xkb_keymap_new_from_string(g->xkb, map, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+	munmap(map, size);
+	if (!km) { fprintf(stderr, "present_wl: compositor keymap did not compile\n"); return; }
+	if (g->xstate) xkb_state_unref(g->xstate);
+	if (g->keymap) xkb_keymap_unref(g->keymap);
+	g->keymap = km; g->xstate = xkb_state_new(km); g->mods = 0; g->rep_key = 0;
+}
+static void kb_enter(void* d, struct wl_keyboard* kb, uint32_t s, struct wl_surface* sf, struct wl_array* keys)
+{
+	au_wl* g = d; (void)kb; (void)s; (void)keys;
+	g->kfocus = wl_surface_get_user_data(sf);
+	if (g->kfocus && g->kfocus->fn) g->kfocus->fn(g->kfocus->user, AU_EV_ACTIVATE, 1, 0);
+}
+static void kb_leave(void* d, struct wl_keyboard* kb, uint32_t s, struct wl_surface* sf)
+{
+	au_wl* g = d; (void)kb; (void)s; (void)sf;
+	g->rep_key = 0;
+	if (g->kfocus && g->kfocus->fn) g->kfocus->fn(g->kfocus->user, AU_EV_ACTIVATE, 0, 0);
+	g->kfocus = NULL;
+}
+static void kb_key(void* d, struct wl_keyboard* kb, uint32_t s, uint32_t t, uint32_t key, uint32_t state)
+{
+	au_wl* g = d; (void)kb; (void)s; (void)t;
+	if (!g->xstate) return;
+	int pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+	au_key k; emit_key(g, key, pressed, 0, &k);
+	deliver_key(g, &k);
+	if (pressed && g->rep_rate > 0 && xkb_keymap_key_repeats(g->keymap, key + 8)) {
+		g->rep_key = key; g->rep = k;
+		clock_gettime(CLOCK_MONOTONIC, &g->rep_next);
+		long ms = g->rep_delay; g->rep_next.tv_sec += ms / 1000; g->rep_next.tv_nsec += (ms % 1000) * 1000000L;
+		if (g->rep_next.tv_nsec >= 1000000000L) { g->rep_next.tv_sec++; g->rep_next.tv_nsec -= 1000000000L; }
+	} else if (!pressed && (int)key == g->rep_key)
+		g->rep_key = 0;
+}
+static void kb_mods(void* d, struct wl_keyboard* kb, uint32_t s, uint32_t dep, uint32_t lat, uint32_t lock, uint32_t grp)
+{
+	au_wl* g = d; (void)kb; (void)s;
+	if (!g->xstate) return;
+	xkb_state_update_mask(g->xstate, dep, lat, lock, 0, 0, grp);
+	uint32_t old = g->mods, now = mods_now(g);
+	g->mods = now;
+	if (now != old && g->kfocus && g->kfocus->fn) g->kfocus->fn(g->kfocus->user, AU_EV_MODS, (int)now, (int)old);
+}
+static void kb_repeat(void* d, struct wl_keyboard* kb, int32_t rate, int32_t delay)
+{
+	au_wl* g = d; (void)kb;
+	g->rep_rate = rate; g->rep_delay = delay;
+}
+static const struct wl_keyboard_listener kb_listener = { kb_keymap, kb_enter, kb_leave, kb_key, kb_mods, kb_repeat };
+
+/* Client-side key repeat: the compositor only tells us the rate (repeat_info) and expects us to generate it. */
+static void repeat_tick(au_wl* g)
+{
+	if (!g->rep_key || g->rep_rate <= 0) return;
+	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+	while (g->rep_key && (now.tv_sec > g->rep_next.tv_sec || (now.tv_sec == g->rep_next.tv_sec && now.tv_nsec >= g->rep_next.tv_nsec))) {
+		au_key k = g->rep; k.repeat = 1; k.pressed = 1;
+		deliver_key(g, &k);
+		long step = 1000000000L / g->rep_rate;
+		g->rep_next.tv_nsec += step;
+		while (g->rep_next.tv_nsec >= 1000000000L) { g->rep_next.tv_sec++; g->rep_next.tv_nsec -= 1000000000L; }
+	}
+}
 
 static void seat_caps(void* d, struct wl_seat* s, uint32_t caps)
 {
@@ -121,6 +281,10 @@ static void seat_caps(void* d, struct wl_seat* s, uint32_t caps)
 	if ((caps & WL_SEAT_CAPABILITY_POINTER) && !g->ptr) {
 		g->ptr = wl_seat_get_pointer(s);
 		wl_pointer_add_listener(g->ptr, &ptr_listener, g);
+	}
+	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !g->kbd) {
+		g->kbd = wl_seat_get_keyboard(s);
+		wl_keyboard_add_listener(g->kbd, &kb_listener, g);
 	}
 }
 static void seat_name(void* d, struct wl_seat* s, const char* n) { (void)d; (void)s; (void)n; }
@@ -147,10 +311,11 @@ static void* event_thread(void* arg)
 		wl_display_flush(g->dpy);
 		pthread_mutex_unlock(&g->mu);
 		struct pollfd pfd = { wl_display_get_fd(g->dpy), POLLIN, 0 };
-		int r = poll(&pfd, 1, 50);
+		int r = poll(&pfd, 1, g->rep_key ? 5 : 50);
 		pthread_mutex_lock(&g->mu);
 		if (r > 0 && (pfd.revents & POLLIN)) wl_display_read_events(g->dpy); else wl_display_cancel_read(g->dpy);
 		wl_display_dispatch_pending(g->dpy);
+		repeat_tick(g);
 		pthread_mutex_unlock(&g->mu);
 	}
 	return NULL;
@@ -162,6 +327,8 @@ au_wl* au_wl_connect(void)
 	g->dpy = wl_display_connect(NULL);
 	if (!g->dpy) { free(g); return NULL; }
 	g->scale = 1;
+	g->xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	g->rep_rate = 25; g->rep_delay = 400;
 	pthread_mutex_init(&g->mu, NULL);
 	g->reg = wl_display_get_registry(g->dpy);
 	wl_registry_add_listener(g->reg, &reg_listener, g);
@@ -228,12 +395,15 @@ int au_wl_win_present(au_wl_win* w, const uint32_t* argb, int pw, int ph, int bs
 	return 0;
 }
 
+void au_wl_win_set_key_fn(au_wl_win* w, au_key_fn fn) { w->kfn = fn; }
+
 void au_wl_win_destroy(au_wl_win* w)
 {
 	au_wl* g = w->g;
 	pthread_mutex_lock(&g->mu);
 	w->destroyed = 1;
 	if (g->focus == w) g->focus = NULL;
+	if (g->kfocus == w) { g->kfocus = NULL; g->rep_key = 0; }
 	xdg_toplevel_destroy(w->top);
 	xdg_surface_destroy(w->xs);
 	wl_surface_destroy(w->surf);

@@ -175,3 +175,13 @@ Not verified:
 2. Share the colour area and `ServerMemoryAllocator` so `BBitmap`/`DrawBitmap` work; then move the server out of process (one app_server, many apps) behind the same ports.
 3. Decide the text convergence (section 4) with the compositor team before more text features land in either place.
 4. Remaining opcode families by demand: bitmaps, strokes of curves, regions as clip, patterns, `BPicture`.
+
+## 8. Addendum: keyboard, scrolling, lists, a browser (same day, later)
+
+What changed, and what the section 7 list above no longer says:
+
+- **Keyboard.** `present_wl.c` binds `wl_keyboard`, compiles the compositor's own xkb keymap (a new `keymap` event replaces it, so hot reload works), tracks modifiers, and does client-side key repeat from `repeat_info`. `server.cpp` turns each key into the message app_server sends: `B_KEY_DOWN/UP` (`key` = BeOS key code from the evdev position, `modifiers`, `raw_char`, `byte`, `bytes`, `states`, `be:key_repeat`), `B_UNMAPPED_KEY_*` for keys that type nothing, `B_MODIFIERS_CHANGED`, `B_WINDOW_ACTIVATED` on keyboard enter/leave. Alt is Command and the logo key is Option (Haiku's default keymap). `input_shim.cpp` replaces `Input.cpp` (`_control_input_server_` only) so `modifiers()` and `get_click_speed()` answer.
+- **Pointer** now survives the compositor: the listener table had NULL for `wl_pointer.frame`, which libwayland turns into an abort on the first real pointer event. Wheel (`B_MOUSE_WHEEL_CHANGED`) is wired but nothing could drive it (no wheel command in `--test-input`). The server counts clicks (`clicks` = 2 within 500 ms and 4 px).
+- **Scrolling and shapes.** New opcodes: `AS_VIEW_SCROLL`, `AS_GET_SCROLLBAR_INFO`, `AS_STROKE_SHAPE`/`AS_FILL_SHAPE` (polylines; beziers flattened to 12 segments), needed by `BScrollBar` and its arrows. `BListView` needed none.
+- **A bug fixed on the way.** `fonts.cpp` shaped through `hb_ft_font`, which reads advances from the FT face at whatever size `Rasterize` last set: a string's width depended on what had been drawn before it (the same 12-character string measured 177 or 264 px). It now shapes from the font file with HarfBuzz's own OpenType functions.
+- ScrollView, ListView, ListItem, StringItem, OutlineListView are compiled in; `BTextView`, menus and layouts are still not run. `demos/browser/` is the first real application.

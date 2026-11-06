@@ -176,7 +176,15 @@ private:
 		if (!e->ft) {
 			if (FT_New_Face(fLib, e->path.c_str(), 0, &e->ft)) { e->ft = NULL; return NULL; }
 			e->upem = e->ft->units_per_EM ? e->ft->units_per_EM : 1000;
-			e->hb = hb_ft_font_create_referenced(e->ft);
+			// Shape from the font file itself (OpenType funcs), NOT hb_ft_font_create: that one reads advances
+			// through the FT_Face at whatever size Rasterize last set, so a string's width depended on which
+			// glyphs had been drawn before it. Here advances are pure font units, so metrics are stable.
+			hb_blob_t* blob = hb_blob_create_from_file_or_fail(e->path.c_str());
+			hb_face_t* face = blob ? hb_face_create(blob, 0) : hb_face_get_empty();
+			if (blob) hb_blob_destroy(blob);
+			hb_face_set_upem(face, e->upem);
+			e->hb = hb_font_create(face);
+			hb_face_destroy(face);
 			hb_font_set_scale(e->hb, e->upem, e->upem);
 			hb_font_set_ptem(e->hb, 0);
 		}

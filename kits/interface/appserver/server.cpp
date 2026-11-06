@@ -22,6 +22,7 @@
 #include <MessagePrivate.h>
 #include <PortLink.h>
 #include <Region.h>
+#include <Shape.h>
 #include <ServerProtocol.h>
 #include <ServerProtocolStructs.h>
 #include <View.h>
@@ -44,6 +45,7 @@ namespace text = aurora::text;
 namespace aurora {
 
 void WlEvent(void* user, int kind, int a, int b);
+void WlKey(void* user, const au_key* k);
 
 namespace {
 
@@ -51,6 +53,7 @@ std::recursive_mutex gMu;
 bool gTrace = false;
 int gUnhandled = 0, gUnhandledReply = 0;
 double gScale = 1.0;
+uint32 gMods = 0;		// last modifier state seen on any window
 au_wl* gWl = NULL;
 std::vector<struct SWindow*> gWindows;	// creation order, never shrinks (index = last_frame index)
 const int32 kInternalEvent = 0x61755f01;	// our own opcode, never on the wire from a client
@@ -113,6 +116,11 @@ struct SWindow {
 	Frame last;
 	bool haveLast = false;
 	bool quit = false;
+	bigtime_t lastClickTime = 0; BPoint lastClickWhere{0, 0}; int32 clicks = 0;
+	BPoint ptrWhere{0, 0};		// last pointer position in window coordinates
+	uint32 mods = 0;		// Haiku modifier bits currently held (what B_MODIFIERS_CHANGED reports)
+	uint8 keyStates[16] = {0};	// bitmap of Haiku key codes held, as the "states" field of key messages
+	bool active = false;
 };
 
 struct SApp {
@@ -241,6 +249,15 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 	*handled = true;
 	text::Backend* b = TB();
 	switch (code) {
+		case AS_GET_SCROLLBAR_INFO:
+		{
+			// Haiku's defaults: proportional thumb, one arrow at each end, knob style 0, 15 px minimum.
+			scroll_bar_info i; i.proportional = true; i.double_arrows = false; i.knob = 0; i.min_knob_size = 15;
+			reply.StartMessage(B_OK);
+			reply.Attach<scroll_bar_info>(i);
+			reply.Flush();
+			return;
+		}
 		case AS_GET_SYSTEM_FONTS:
 		{
 			reply.StartMessage(B_OK);
@@ -471,6 +488,7 @@ void Show(SWindow* w, bool show)
 		if (!w->wl && gWl) {
 			int lw = (int)w->frame.IntegerWidth() + 1, lh = (int)w->frame.IntegerHeight() + 1;
 			w->wl = au_wl_win_create(gWl, w->title.c_str(), lw, lh, WlEvent, w);
+			if (w->wl) au_wl_win_set_key_fn(w->wl, WlKey);
 		}
 		InvalidateWindowRect(w, BRect(0, 0, w->frame.IntegerWidth(), w->frame.IntegerHeight()));
 	}
@@ -607,6 +625,35 @@ void HandleFontState(SView* v, LinkReceiver& link)
 	if (mask & B_FONT_FLAGS) { uint32 f; link.Read<uint32>(&f); }
 }
 
+// BShape -> polylines in window coordinates. Beziers are flattened to 12 segments; arcs are not in BShape.
+struct ShapeFlattener : public BShapeIterator {
+	const SView* view;
+	std::vector<std::vector<BPoint> > paths;
+	std::vector<bool> closed;
+	explicit ShapeFlattener(const SView* v) : view(v) {}
+	status_t IterateMoveTo(BPoint* p) override { paths.push_back(std::vector<BPoint>(1, ToWindow(view, *p))); closed.push_back(false); return B_OK; }
+	status_t IterateLineTo(int32 n, BPoint* p) override
+	{
+		if (paths.empty()) return B_OK;
+		for (int32 i = 0; i < n; i++) paths.back().push_back(ToWindow(view, p[i]));
+		return B_OK;
+	}
+	status_t IterateBezierTo(int32 n, BPoint* p) override
+	{
+		if (paths.empty()) return B_OK;
+		for (int32 b = 0; b + 2 < n; b += 3) {
+			BPoint p0 = paths.back().back(), p1 = ToWindow(view, p[b]), p2 = ToWindow(view, p[b + 1]), p3 = ToWindow(view, p[b + 2]);
+			for (int k = 1; k <= 12; k++) {
+				float t = k / 12.0f, u = 1 - t;
+				paths.back().push_back(BPoint(u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+					u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y));
+			}
+		}
+		return B_OK;
+	}
+	status_t IterateClose() override { if (!closed.empty()) closed.back() = true; return B_OK; }
+};
+
 SView* CreateView(SWindow* w, LinkReceiver& link, SView** parentOut)
 {
 	int32 token, parentToken; BRect frame; BPoint scroll; uint32 resize, em, eo, flags; bool hidden; rgb_color vc;
@@ -670,7 +717,73 @@ void SendInput(SWindow* w, BMessage& m)
 	BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
 }
 
-struct Internal { int kind, a, b; };
+struct Internal { int kind, a, b; au_key key; };
+
+// evdev (linux input) code -> BeOS key code, US layout positions (InterfaceDefs.h, Haiku's default keymap).
+// 0 = no BeOS equivalent. A key's *code* is the position; its *bytes* come from the compositor's xkb keymap.
+int32 HaikuKeyCode(uint32 ev)
+{
+	static const uint8 qrow[10] = {0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30};
+	static const uint8 arow[9] = {0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44};
+	static const uint8 zrow[7] = {0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52};
+	if (ev == 1) return 0x01;
+	if (ev >= 2 && ev <= 10) return 0x12 + (ev - 2);		// KEY_1..KEY_9
+	if (ev == 11) return 0x1b;							// KEY_0
+	if (ev == 12) return 0x1c; if (ev == 13) return 0x1d; if (ev == 14) return 0x1e; if (ev == 15) return 0x26;
+	if (ev >= 16 && ev <= 25) return qrow[ev - 16];
+	if (ev == 26) return 0x31; if (ev == 27) return 0x32; if (ev == 28) return 0x47; if (ev == 29) return 0x5c;
+	if (ev >= 30 && ev <= 38) return arow[ev - 30];
+	if (ev == 39) return 0x45; if (ev == 40) return 0x46; if (ev == 41) return 0x11; if (ev == 42) return 0x4b;
+	if (ev == 43) return 0x33;
+	if (ev >= 44 && ev <= 50) return zrow[ev - 44];
+	if (ev == 51) return 0x53; if (ev == 52) return 0x54; if (ev == 53) return 0x55; if (ev == 54) return 0x56;
+	if (ev == 56) return 0x5d; if (ev == 57) return 0x5e; if (ev == 58) return 0x3b; if (ev == 97) return 0x60;
+	if (ev == 100) return 0x5f;
+	if (ev >= 59 && ev <= 68) return 0x02 + (ev - 59);			// F1..F10
+	if (ev == 87) return 0x0c; if (ev == 88) return 0x0d;			// F11, F12
+	if (ev == 102) return 0x20; if (ev == 103) return 0x57; if (ev == 104) return 0x21; if (ev == 105) return 0x61;
+	if (ev == 106) return 0x63; if (ev == 107) return 0x35; if (ev == 108) return 0x62; if (ev == 109) return 0x36;
+	if (ev == 110) return 0x1f; if (ev == 111) return 0x34;
+	return 0;
+}
+
+uint32 HaikuModifiers(uint32 m)
+{
+	// Alt is Command (as on Haiku's default keymap) and the logo key is Option.
+	uint32 r = 0;
+	if (m & AU_MOD_SHIFT) r |= B_SHIFT_KEY | B_LEFT_SHIFT_KEY;
+	if (m & AU_MOD_CTRL) r |= B_CONTROL_KEY | B_LEFT_CONTROL_KEY;
+	if (m & AU_MOD_ALT) r |= B_COMMAND_KEY | B_LEFT_COMMAND_KEY;
+	if (m & AU_MOD_LOGO) r |= B_OPTION_KEY | B_LEFT_OPTION_KEY;
+	if (m & AU_MOD_CAPS) r |= B_CAPS_LOCK;
+	if (m & AU_MOD_NUM) r |= B_NUM_LOCK;
+	return r;
+}
+
+void HandleKey(SWindow* w, const au_key& k)
+{
+	int32 code = HaikuKeyCode(k.evdev);
+	if (code > 0 && code < 128) {
+		if (k.pressed) w->keyStates[code >> 3] |= 1 << (7 - (code & 7));
+		else w->keyStates[code >> 3] &= ~(1 << (7 - (code & 7)));
+	}
+	uint32 mods = HaikuModifiers(k.mods);
+	size_t len = strlen(k.utf8);
+	// A key with nothing to type (a modifier, a dead key) is B_UNMAPPED_KEY_*; the rest is B_KEY_*.
+	uint32 what = len ? (k.pressed ? B_KEY_DOWN : B_KEY_UP) : (k.pressed ? B_UNMAPPED_KEY_DOWN : B_UNMAPPED_KEY_UP);
+	BMessage m(what);
+	m.AddInt64("when", system_time());
+	m.AddInt32("key", code);
+	m.AddInt32("modifiers", mods);
+	if (len) {
+		m.AddInt32("raw_char", (int32)k.raw_char);
+		for (size_t i = 0; i < len; i++) m.AddInt8("byte", (int8)k.utf8[i]);
+		m.AddString("bytes", k.utf8);
+	}
+	m.AddData("states", B_UINT8_TYPE, w->keyStates, sizeof(w->keyStates), false);
+	if (k.repeat) m.AddInt32("be:key_repeat", 1);
+	SendInput(w, m);
+}
 
 void HandleInternal(SWindow* w, const Internal& e)
 {
@@ -686,6 +799,51 @@ void HandleInternal(SWindow* w, const Internal& e)
 		case AU_EV_RESIZE:
 			ApplyWindowResize(w, e.a, e.b);
 			break;
+		case AU_EV_KEY:
+			HandleKey(w, e.key);
+			break;
+		case AU_EV_ACTIVATE:
+		{
+			w->active = e.a != 0;
+			BMessage m(B_WINDOW_ACTIVATED);
+			m.AddInt64("when", system_time());
+			m.AddBool("active", w->active);
+			BMessenger reply;
+			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
+			break;
+		}
+		case AU_EV_MODS:
+		{
+			w->mods = gMods = HaikuModifiers((uint32)e.a);
+			BMessage m(B_MODIFIERS_CHANGED);
+			m.AddInt64("when", system_time());
+			m.AddInt32("modifiers", w->mods);
+			m.AddInt32("be:old_modifiers", HaikuModifiers((uint32)e.b));
+			m.AddData("states", B_UINT8_TYPE, w->keyStates, sizeof(w->keyStates), false);
+			SendInput(w, m);
+			break;
+		}
+		case AU_EV_WHEEL:
+		{
+			// B_MOUSE_WHEEL_CHANGED as app_server sends it: deltas in "notches" (wayland px / 10), positive = down/right.
+			float d = e.b / 256.0f / 10.0f;
+			SView* hit = w->top;
+			for (bool found = true; found && hit;) {
+				found = false;
+				for (size_t i = hit->children.size(); i-- > 0;) {
+					SView* c = hit->children[i];
+					if (!c->hidden && VisibleRect(c).Contains(w->ptrWhere)) { hit = c; found = true; break; }
+				}
+			}
+			BMessage m(B_MOUSE_WHEEL_CHANGED);
+			m.AddInt64("when", system_time());
+			m.AddFloat("be:wheel_delta_x", e.a == 1 ? d : 0);
+			m.AddFloat("be:wheel_delta_y", e.a == 0 ? d : 0);
+			if (hit) m.AddInt32("_view_token", hit->token);
+			BMessenger reply;
+			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
+			break;
+		}
 		case AU_EV_POINTER_MOVE:
 		case AU_EV_POINTER_BUTTON:
 		{
@@ -698,6 +856,7 @@ void HandleInternal(SWindow* w, const Internal& e)
 				where = BPoint(floorf(e.a / 256.0f), floorf(e.b / 256.0f));
 			else
 				buttons = e.b ? B_PRIMARY_MOUSE_BUTTON : 0;
+			w->ptrWhere = where;
 			SView* hit = w->top;
 			bool found = true;
 			while (found && hit) {
@@ -714,7 +873,16 @@ void HandleInternal(SWindow* w, const Internal& e)
 			m.AddPoint("screen_where", BPoint(where.x + w->frame.left, where.y + w->frame.top));
 			m.AddInt32("buttons", buttons);
 			m.AddInt32("modifiers", 0);
-			if (e.kind == AU_EV_POINTER_BUTTON && e.b) m.AddInt32("clicks", 1);
+			if (e.kind == AU_EV_POINTER_BUTTON && e.b) {
+				// app_server counts clicks: same place (4 px), within the double-click interval (500 ms).
+				bigtime_t now = system_time();
+				if (w->lastClickTime && now - w->lastClickTime < 500000 && fabsf(where.x - w->lastClickWhere.x) <= 4 && fabsf(where.y - w->lastClickWhere.y) <= 4)
+					w->clicks++;
+				else
+					w->clicks = 1;
+				w->lastClickTime = now; w->lastClickWhere = where;
+				m.AddInt32("clicks", w->clicks);
+			}
 			if (token != B_NULL_TOKEN) m.AddInt32("_view_token", token);
 			if (e.kind == AU_EV_POINTER_BUTTON && !e.b) grab = B_NULL_TOKEN;
 			BMessenger reply;
@@ -849,6 +1017,16 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			float x, y; link.Read<float>(&x); link.Read<float>(&y);
 			v->frame.right = v->frame.left + x; v->frame.bottom = v->frame.top + y;
 			if (w->visible) InvalidateWindowRect(w, VisibleRect(v->parent ? v->parent : v));
+			return;
+		}
+		case AS_VIEW_SCROLL:
+		{
+			// BView::ScrollTo: the client already clamped to its scroll bars and moved fBounds; we move the
+			// content. Haiku's app_server blits the still-visible part and invalidates the rest; we
+			// invalidate the whole visible area (correct, not minimal).
+			float dx, dy; link.Read<float>(&dx); link.Read<float>(&dy);
+			v->scroll.x += dx; v->scroll.y += dy;
+			if (w->visible) InvalidateWindowRect(w, VisibleRect(v));
 			return;
 		}
 		case AS_VIEW_SET_ORIGIN: { float x, y; link.Read<float>(&x); link.Read<float>(&y); v->st.origin = BPoint(x, y); return; }
@@ -1008,6 +1186,28 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			if (code == AS_FILL_ELLIPSE) w->canvas.FillEllipse(FRect{wr.left, wr.top, wr.right, wr.bottom}, DrawColor(v->st));
 			return;	// gap: stroked ellipse not drawn
 		}
+		case AS_STROKE_SHAPE: case AS_FILL_SHAPE:
+		{
+			BRect bounds; BShape shape;
+			if (link.Read<BRect>(&bounds) != B_OK || link.ReadShape(&shape) != B_OK) return;
+			SetupClip(w, v);
+			ShapeFlattener f(v);
+			f.Iterate(&shape);
+			for (size_t i = 0; i < f.paths.size(); i++) {
+				std::vector<BPoint>& p = f.paths[i];
+				if (code == AS_FILL_SHAPE) {
+					if (p.size() < 3) continue;
+					std::vector<float> xy;
+					for (size_t k = 0; k < p.size(); k++) { xy.push_back(p[k].x + 0.5f); xy.push_back(p[k].y + 0.5f); }
+					w->canvas.FillPolygon(xy.data(), (int)p.size(), DrawColor(v->st));
+				} else {
+					if (f.closed[i] && p.size() > 1) p.push_back(p[0]);
+					for (size_t k = 1; k < p.size(); k++)
+						w->canvas.StrokeLine(p[k - 1].x, p[k - 1].y, p[k].x, p[k].y, DrawColor(v->st), v->st.penSize * v->st.scale);
+				}
+			}
+			return;
+		}
 		case AS_FILL_TRIANGLE: case AS_STROKE_TRIANGLE:
 		{
 			BPoint p[3]; BRect bounds;
@@ -1025,6 +1225,7 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			std::vector<char> s(i.stringLength + 1, 0);
 			if (link.Read(s.data(), i.stringLength) != B_OK) return;
 			SetupClip(w, v);
+			if (gTrace) fprintf(stderr, "appserver: draw string \"%s\" font=%d/%d size=%.2f at %.1f,%.1f\n", s.data(), (int)v->st.font.family, (int)v->st.font.style, v->st.fontSize, i.location.x, i.location.y);
 			BPoint start = ToWindow(v, i.location);
 			BPoint end = DrawText(w, v->st, s.data(), i.stringLength, start, code == AS_DRAW_STRING_WITH_DELTA ? &i.delta : NULL);
 			BPoint o = WindowOffset(v);
@@ -1066,7 +1267,16 @@ void PostInternal(SWindow* w, int kind, int a, int b)
 {
 	PortLink l(w->port, -1);
 	l.StartMessage(kInternalEvent);
-	Internal e{kind, a, b};
+	Internal e{kind, a, b, {}};
+	l.Attach(&e, sizeof(e));
+	l.Flush();
+}
+
+void PostKey(SWindow* w, const au_key& k)
+{
+	PortLink l(w->port, -1);
+	l.StartMessage(kInternalEvent);
+	Internal e{AU_EV_KEY, 0, 0, k};
 	l.Attach(&e, sizeof(e));
 	l.Flush();
 }
@@ -1076,6 +1286,11 @@ void PostInternal(SWindow* w, int kind, int a, int b)
 void WlEvent(void* user, int kind, int a, int b)
 {
 	PostInternal((SWindow*)user, kind, a, b);
+}
+
+void WlKey(void* user, const au_key* k)
+{
+	PostKey((SWindow*)user, *k);
 }
 
 namespace {
@@ -1208,6 +1423,7 @@ int unhandled_opcodes(int* withReply)
 }
 
 double output_scale() { return gScale; }
+uint32_t current_modifiers() { return gMods; }
 
 // Test hook: the same internal event the Wayland pointer callbacks post, so a test can click without a seat.
 void inject_pointer(int window, float x, float y, int button)	// button: -1 move only, 0 release, 1 press

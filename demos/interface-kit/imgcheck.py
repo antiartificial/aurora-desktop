@@ -3,6 +3,11 @@
 
 usage: python3 -I imgcheck.py CAPTURE.png FRAME.ppm METRICS.txt
        python3 -I imgcheck.py --bbox CAPTURE.png R G B     (bounding box of one colour)
+       python3 -I imgcheck.py --scroll CAPTURE.png OX OY [EXPECTED]   (which scroll offset does the scroll demo show?)
+       python3 -I imgcheck.py --band CAPTURE.png OX OY     (runs of non-white pixels down column 100 of the list demo's content)
+       python3 -I imgcheck.py --diff CAPTURE.png FRAME.ppm OX OY   (prints: count of differing pixels, then each as x,y,got,want, max 8)
+       python3 -I imgcheck.py --find CAPTURE.png FRAME.ppm [X Y]  (prints "x y" where FRAME appears verbatim, or "none";
+                                                              with X Y only that position is tried)
 Prints one `ok:` or `FAIL:` line per assertion; the exit status is the number of failures.
 
 Nothing here trusts the app: the capture comes from the compositor over ext-image-copy-capture, the window is
@@ -43,6 +48,53 @@ def read_ppm(path):
     d = open(path, 'rb').read(); m = re.match(rb'P6\n(\d+) (\d+)\n255\n', d)
     w, h = int(m.group(1)), int(m.group(2)); px = d[m.end():]
     return w, h, [px[y * w * 3:(y + 1) * w * 3] for y in range(h)]
+
+def find_frame(crow, ch, frow, only=None):
+    """Where the PPM frame appears verbatim in the capture rows: (x, y) or None."""
+    fh = len(frow)
+    ys = [only[1]] if only else range(ch - fh + 1)
+    for y in ys:
+        x = crow[y].find(frow[0])
+        while x >= 0 and x % 3: x = crow[y].find(frow[0], x + 1)
+        while x >= 0:
+            if (not only or x // 3 == only[0]) and all(crow[y + k][x:x + len(frow[k])] == frow[k] for k in range(fh)): return x // 3, y
+            x = crow[y].find(frow[0], x + 1)
+            while x >= 0 and x % 3: x = crow[y].find(frow[0], x + 1)
+    return None
+
+if len(sys.argv) >= 5 and sys.argv[1] == '--scroll':
+    # iface_scroll: content top is window y=12, column x=100; 30 rows of 20 px, row i painted (8i, 200-5i, 100) for 18 px,
+    # then 2 px of (250,250,250). For every offset 0..440, count the pixels of the 160 visible rows that disagree.
+    _, _, crow = read_png(sys.argv[2]); ox, oy = int(sys.argv[3]), int(sys.argv[4])
+    col = [tuple(crow[oy + 12 + y][3 * (ox + 100):3 * (ox + 100) + 3]) for y in range(160)]
+    def want(y, off):
+        c = y + off; i, r = divmod(c, 20)
+        return (8 * i, 200 - 5 * i, 100) if r < 18 and i < 30 else (250, 250, 250)
+    miss = {off: sum(1 for y in range(160) if col[y] != want(y, off)) for off in range(0, 441)}
+    best = min(miss, key=lambda o: miss[o]); ties = [o for o in miss if miss[o] == miss[best]]
+    print(best, miss[best], len(ties)); sys.exit(0)
+
+if len(sys.argv) >= 5 and sys.argv[1] == '--band':
+    # iface_list: content top is window y=12, 160 rows, column x=100 (right of every label). Prints "top bottom r g b" per run.
+    _, _, crow = read_png(sys.argv[2]); ox, oy = int(sys.argv[3]), int(sys.argv[4]); runs = []; prev = None
+    for y in range(160):
+        c = tuple(crow[oy + 12 + y][3 * (ox + 100):3 * (ox + 100) + 3])
+        if c != (255, 255, 255):
+            if runs and prev == c and runs[-1][1] == y - 1: runs[-1][1] = y
+            else: runs.append([y, y, c])
+        prev = c
+    print(' ; '.join('%d %d %d %d %d' % (a, b, *c) for a, b, c in runs)); sys.exit(0)
+
+if len(sys.argv) == 6 and sys.argv[1] == '--diff':
+    _, _, crow = read_png(sys.argv[2]); fw, fh, frow = read_ppm(sys.argv[3]); ox, oy = int(sys.argv[4]), int(sys.argv[5])
+    d = [(x, y, tuple(crow[oy + y][3 * (ox + x):3 * (ox + x) + 3]), tuple(frow[y][3 * x:3 * x + 3])) for y in range(fh) for x in range(fw)
+         if crow[oy + y][3 * (ox + x):3 * (ox + x) + 3] != frow[y][3 * x:3 * x + 3]]
+    print(len(d), *['%d,%d,%s,%s' % (x, y, '/'.join(map(str, g)), '/'.join(map(str, w))) for x, y, g, w in d[:8]]); sys.exit(0)
+
+if len(sys.argv) >= 4 and sys.argv[1] == '--find':
+    _, _, crow = read_png(sys.argv[2]); _, _, frow = read_ppm(sys.argv[3])
+    ch = len(crow); r = find_frame(crow, ch, frow, (int(sys.argv[4]), int(sys.argv[5])) if len(sys.argv) == 6 else None)
+    print('%d %d' % r if r else 'none'); sys.exit(0)
 
 if len(sys.argv) == 6 and sys.argv[1] == '--bbox':    # bounding box of one colour in a capture
     w, h, rows = read_png(sys.argv[2]); col = bytes(int(v) for v in sys.argv[3:6]); xs = []; ys = []
