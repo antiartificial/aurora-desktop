@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# nested-up: build Smithay's smallvil example and run it as a window on the
-# current desktop, then start a terminal inside it when one is available.
+# nested-up: build a Smithay compositor (smallvil by default, or anvil) and run
+# it as a window on the current desktop, then start a terminal inside it when
+# one is available.
 #
 # Needs: git, cargo, pkg-config, and a running Wayland or X11 session to nest
 # inside. A terminal is optional. Installs nothing. Source and build output go
@@ -28,27 +29,42 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/aurora"
 SMITHAY_SRC="$CACHE_DIR/smithay"
 TARGET_DIR="$CACHE_DIR/target-nested"
 
+# Which Smithay compositor to run: smallvil (default) or anvil.
+COMPOSITOR="${AURORA_COMPOSITOR:-smallvil}"
+
 TERMINAL_CMD=""
 COMPOSITOR_PID=""
 TERMINAL_PID=""
 
 usage() {
   cat <<'EOF'
-Usage: harness/nested-up [-h|--help] [--no-terminal]
+Usage: harness/nested-up [-h|--help] [--no-terminal] [--compositor smallvil|anvil]
 
-Builds smallvil from Smithay at revision $SMITHAY_REV (default: master), starts
-it as a window on the current Wayland or X11 session, then starts a terminal
-inside it with WAYLAND_DISPLAY pointing at the nested compositor.
+Builds the chosen Smithay compositor at revision $SMITHAY_REV, starts it as a
+window on the current Wayland or X11 session, then starts a terminal inside it
+with WAYLAND_DISPLAY pointing at the nested compositor.
+
+Compositor choice:
+  smallvil (default)  Smithay's smallvil example. Its only backend is winit.
+                      It cannot be captured: it has no ext-image-copy-capture-v1.
+  anvil               Smithay's anvil, built with --no-default-features
+                      --features winit,egl and run with --winit. Anvil
+                      advertises ext-image-copy-capture-v1, so aurora-capture
+                      can ask it for a frame. At this Smithay revision it cannot
+                      deliver one: it stops the capture session right after
+                      offering constraints, and its frame handler fails with Unknown.
+  AURORA_COMPOSITOR=<name> is the same choice as --compositor.
 
 Terminal choice:
   AURORA_TERMINAL set       use that command; the script stops if it is not on PATH
-  AURORA_TERMINAL=none      run smallvil alone
+  AURORA_TERMINAL=none      run the compositor alone
   AURORA_TERMINAL unset     use the first found of: foot, ghostty, konsole, gnome-terminal, xterm
-  none found                warn, then run smallvil alone
-  --no-terminal             run smallvil alone, whatever AURORA_TERMINAL says
+  none found                warn, then run the compositor alone
+  --no-terminal             run the compositor alone, whatever AURORA_TERMINAL says
 
 Environment overrides:
-  SMITHAY_REV           Smithay branch, tag or commit (default: master)
+  SMITHAY_REV           Smithay branch, tag or commit (default: the pinned commit)
+  AURORA_COMPOSITOR     smallvil or anvil (default: smallvil)
   SMITHAY_URL           Smithay git URL
   AURORA_TERMINAL       terminal command, or "none" (default: auto-detect)
   AURORA_OFFLINE=1      do not fetch from SMITHAY_URL; use the local checkout
@@ -58,13 +74,21 @@ Stop with Ctrl-C, or close the smallvil window. Both exit 0.
 EOF
 }
 
-for arg in "$@"; do
-  case "$arg" in
+while (($#)); do
+  case "$1" in
     -h|--help) usage; exit 0 ;;
     --no-terminal) NO_TERMINAL=1 ;;
-    *) echo "nested-up: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    --compositor) (($# >= 2)) || { echo "nested-up: --compositor needs a name" >&2; exit 2; }; COMPOSITOR="$2"; shift ;;
+    --compositor=*) COMPOSITOR="${1#--compositor=}" ;;
+    *) echo "nested-up: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
+  shift
 done
+
+case "$COMPOSITOR" in
+  smallvil|anvil) ;;
+  *) echo "nested-up: unknown compositor '$COMPOSITOR' (use smallvil or anvil)" >&2; exit 2 ;;
+esac
 
 die() { echo "nested-up: $*" >&2; exit 1; }
 note() { echo "nested-up: $*"; }
@@ -173,29 +197,52 @@ fetch_smithay() {
   note "Smithay at $(git -C "$SMITHAY_SRC" rev-parse --short "$target") (from $SMITHAY_REV)"
 }
 
-find_smallvil() {
+# Sets the per-compositor values: the crate directory candidates, the cargo
+# feature flags, the binary name, and the arguments that start its winit backend.
+# smallvil has no backend flag: it runs its winit backend by default.
+select_compositor() {
+  case "$COMPOSITOR" in
+    smallvil)
+      COMPOSITOR_DIRS=("$SMITHAY_SRC/smallvil" "$SMITHAY_SRC/examples/smallvil")
+      COMPOSITOR_CARGO_ARGS=()
+      COMPOSITOR_RUN_ARGS=()
+      ;;
+    anvil)
+      COMPOSITOR_DIRS=("$SMITHAY_SRC/anvil")
+      # anvil's default features pull in udev, x11 and xwayland. The winit
+      # backend needs only winit, plus egl for the GL renderer.
+      COMPOSITOR_CARGO_ARGS=(--no-default-features --features winit,egl)
+      COMPOSITOR_RUN_ARGS=(--winit)
+      ;;
+  esac
+}
+
+find_compositor() {
   local d
-  for d in "$SMITHAY_SRC/smallvil" "$SMITHAY_SRC/examples/smallvil"; do
+  for d in "${COMPOSITOR_DIRS[@]}"; do
     if [[ -f "$d/Cargo.toml" ]]; then
       echo "$d"
       return 0
     fi
   done
-  die "smallvil not found in $SMITHAY_SRC (looked in smallvil/ and examples/smallvil/) at $SMITHAY_REV. Check SMITHAY_REV."
+  die "$COMPOSITOR not found in $SMITHAY_SRC (looked in ${COMPOSITOR_DIRS[*]}) at $SMITHAY_REV. Check SMITHAY_REV."
 }
 
-build_smallvil() {
+build_compositor() {
   local dir="$1"
-  note "building smallvil (target dir $TARGET_DIR)"
-  CARGO_TARGET_DIR="$TARGET_DIR" cargo build --manifest-path "$dir/Cargo.toml" \
+  note "building $COMPOSITOR (target dir $TARGET_DIR)"
+  CARGO_TARGET_DIR="$TARGET_DIR" cargo build --manifest-path "$dir/Cargo.toml" "${COMPOSITOR_CARGO_ARGS[@]}" \
     || die "cargo build failed. The errors above are from Smithay's build; a missing system library is the usual cause."
 }
 
-# List Wayland socket names currently in the runtime dir, one per line.
+# List Wayland sockets in the runtime dir, one per line as "name inode". The
+# inode is part of the key: a compositor can reuse a stale socket name (its
+# earlier run was killed without removing the file), and a name alone would
+# hide that new socket.
 list_sockets() {
   local s
   for s in "$XDG_RUNTIME_DIR"/wayland-*; do
-    [[ -S "$s" ]] && printf '%s\n' "${s##*/}"
+    [[ -S "$s" ]] && printf '%s %s\n' "${s##*/}" "$(stat -c %i -- "$s")"
   done
   return 0
 }
@@ -211,27 +258,27 @@ run_nested() {
   local line
   while IFS= read -r line; do before+=("$line"); done < <(list_sockets)
 
-  note "starting smallvil nested in the host session"
-  "$bin" &
+  note "starting $COMPOSITOR nested in the host session"
+  "$bin" "${COMPOSITOR_RUN_ARGS[@]}" &
   COMPOSITOR_PID=$!
 
-  # smallvil creates its own socket (wayland-N) in XDG_RUNTIME_DIR. Find the
-  # one that did not exist before it started.
+  # The compositor creates its own socket (wayland-N) in XDG_RUNTIME_DIR. Find
+  # the one that was not there before it started (same name and inode).
   local new_socket="" waited=0 s seen
   while [[ -z "$new_socket" ]]; do
     if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
-      die "smallvil exited before creating a Wayland socket. See its output above."
+      die "$COMPOSITOR exited before creating a Wayland socket. See its output above."
     fi
     while IFS= read -r s; do
       seen=0
       for line in "${before[@]}"; do
         [[ "$line" == "$s" ]] && seen=1
       done
-      if ((seen == 0)); then new_socket="$s"; break; fi
+      if ((seen == 0)); then new_socket="${s%% *}"; break; fi
     done < <(list_sockets)
     if [[ -z "$new_socket" ]]; then
       if ((waited >= START_TIMEOUT)); then
-        die "smallvil did not create a Wayland socket within ${START_TIMEOUT}s."
+        die "$COMPOSITOR did not create a Wayland socket within ${START_TIMEOUT}s."
       fi
       sleep 1
       waited=$((waited + 1))
@@ -244,7 +291,7 @@ run_nested() {
     env -u DISPLAY WAYLAND_DISPLAY="$new_socket" "$TERMINAL_CMD" &
     TERMINAL_PID=$!
   else
-    note "no terminal: close the smallvil window to stop"
+    note "no terminal: close the $COMPOSITOR window to stop"
   fi
 
   # Closing the window is the normal stop, so exit 0 is a clean shutdown.
@@ -252,21 +299,22 @@ run_nested() {
   local rc=0
   wait "$COMPOSITOR_PID" || rc=$?
   case "$rc" in
-    0)       note "smallvil closed" ;;
-    130|143) note "smallvil stopped by signal (status $rc)" ;;
-    *)       die "smallvil exited with status $rc" ;;
+    0)       note "$COMPOSITOR closed" ;;
+    130|143) note "$COMPOSITOR stopped by signal (status $rc)" ;;
+    *)       die "$COMPOSITOR exited with status $rc" ;;
   esac
 }
 
 main() {
+  select_compositor
   preflight
   fetch_smithay
 
   local dir bin
-  dir="$(find_smallvil)"
-  build_smallvil "$dir"
+  dir="$(find_compositor)"
+  build_compositor "$dir"
 
-  bin="$TARGET_DIR/debug/smallvil"
+  bin="$TARGET_DIR/debug/$COMPOSITOR"
   [[ -x "$bin" ]] || die "build finished but $bin does not exist. Check the package name in $dir/Cargo.toml."
 
   trap cleanup EXIT

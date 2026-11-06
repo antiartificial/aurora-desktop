@@ -204,3 +204,37 @@ defined. It must be restated before Phase 0 closes.
   "deferred QEMU" in the project plan is not yet decided.
 - Whether the nested compositor runs on the RTX 4090 with driver 580.178.04.
   The Phase 0 Nvidia check depends on this run.
+
+## Capture (`harness/capture`)
+
+`aurora-capture` is a Wayland client that requests frames over
+`ext-image-copy-capture-v1` and writes a PNG. Built because host-compositor
+screenshots of a nested compositor come out blank, and because Phase 8 needs a
+screenshot regression harness.
+
+`--list` prints a compositor's globals and says whether it can be captured at
+all. That is the question to ask first.
+
+**Nothing on this host can currently be captured.** Verified 2026-11-06:
+
+| Compositor | Advertises the protocol | Delivers frames |
+|---|---|---|
+| KWin (host, `wayland-0`) | no | n/a |
+| smallvil (nested) | no | n/a |
+| anvil (nested) | yes | **no** — `frame.fail(Unknown)`; upstream comment says "Anvil doesn't implement actual capture" |
+
+The client itself is verified correct. Against a scratch-patched anvil that
+wrote a known pattern, it captured 1856x1160 with 0 mismatches across 2,152,960
+pixels, confirming channel order, row order and pixel layout. The patch was not
+kept; it was a test fixture.
+
+Conclusion: frame capture is a **Phase 4 compositor deliverable**. Our
+compositor must implement `ext-image-copy-capture-v1` properly, at which point
+this client works unchanged and Phase 8's regression harness has its mechanism.
+
+Not handled: padded strides, multiple outputs, cursor capture, dmabuf, rotated
+outputs.
+
+`nested-up` gained `--compositor smallvil|anvil`. Anvil needs
+`--no-default-features --features winit,egl`; its defaults (udev, x11,
+xwayland, libei) are off.

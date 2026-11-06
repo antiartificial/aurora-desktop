@@ -1,0 +1,16 @@
+[package]
+name = "aurora-capture"
+version = "0.1.0"
+edition = "2021"
+description = "Capture one frame from a Wayland compositor over ext-image-copy-capture-v1 and write it as PNG"
+license = "MIT"
+publish = false
+
+[dependencies]
+# wayland-protocols only exposes ext-image-copy-capture-v1 and
+# ext-image-capture-source-v1 behind the "staging" feature.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+memmap2 = "0.9"
+png = "0.17"
+tempfile = "3"
