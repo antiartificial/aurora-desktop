@@ -53,24 +53,28 @@ streams new files as they're made.
 |---|---|
 | **Bus** | typed envelopes, attested identity, capability handles, sealed-memfd segments, tamper-evident log, invariant-checked replay |
 | **Domains** | bubblewrap, one subordinate uid each, grants revoked on exit, cgroups |
-| **Compositor** | glass (real dual-Kawase), Flip 3D switcher, frame capture, fractional-scale HiDPI, dock, context menu, settings panel |
+| **Compositor** | glass (real dual-Kawase), Flip 3D switcher, frame capture, fractional-scale HiDPI, dock, context menu, settings panel, XWayland, IME |
+| **Clipboard** | copy and paste both ways with the host over `ext_data_control`, plus primary selection; refused to clients inside a domain |
 | **Trusted path** | approval prompts drawn by the compositor and excluded from client captures |
-| **Haiku apps** | 97 translation units of Haiku's **real** Interface Kit, compiled unmodified, with keyboard, scrolling, lists and a file browser |
+| **Haiku apps** | Haiku's **real** Interface Kit compiled unmodified -- buttons, checkboxes, radio groups, text controls, sliders, tabs, lists, menus, colour control, alerts, layouts -- launched from the dock. `demos/kitchen-sink/screenshots/` |
 | **Third-party apps** | ImageMagick and ffmpeg as domain apps, output checked by decoders that never ask the tool |
 | **Live queries** | an index built from provenance events; a domain sees only its own files |
 | **Agents** | MCP tools generated from manifests; destructive calls stop at a person |
 
 Each `demos/*/run.sh` starts a real stack, asserts decoded output, and exits
-non-zero on failure. They're the actual regression suite: 141 compositor tests,
-135 Interface Kit checks, 85 live-query, 64 crash-survival, 60 supervisor,
-57 gateway.
+non-zero on failure. They're the actual regression suite: 179 compositor
+tests, 135 Interface Kit checks, 85 live-query, 75 kitchen-sink, 64
+crash-survival, 60 supervisor, 57 gateway, 41 full-stack.
 
 ## Limits
 
 Stated here for the same reason they're stated in the code.
 
-- **It doesn't boot.** No DRM/KMS or libinput; Aurora only runs nested. The
-  largest gap.
+- **It has never booted.** There is a DRM/KMS + libinput backend (`--drm`,
+  `docs/bare-metal.md`), but every pixel of it is unverified: it has only been
+  shown to build, to refuse `--headless`, and to fail cleanly without a seat.
+  The modeset, orientation, hardware cursor, real input, VT switching and
+  hotplug have never run against hardware.
 - **One uid owns everything.** Domains, bus, controller and compositor all run
   as you. The security story holds against *confined apps*, not against you.
 - **A domain is easier to hijack than an unsandboxed process.** A user
@@ -91,9 +95,16 @@ Stated here for the same reason they're stated in the code.
   `demos/crash-survival/run.sh`.
 - **X11 clients are not HiDPI.** They get client scale 1, so an X window is
   the right size at any output scale but soft above 1: a 1x buffer upscaled.
-- **`demos/interface-kit/run.sh` is flaky.** Its browser section raced to five
-  failures in one of two consecutive runs and 135/135 in the other. Being
-  chased.
+- **Windowed apps run unsandboxed.** A Haiku GUI app launched from the dock
+  is an ordinary process, outside the domain machinery that is this project's
+  whole security argument, because the Wayland socket is not yet a grantable
+  capability. Decision 0012 says what fixing it needs.
+- **No window decorations yet.** Nothing draws a title bar, so a window cannot
+  be moved, resized or closed by hand. Being built.
+- **`demos/interface-kit/run.sh` has a flake.** Its browser section raced to five
+  caret-blink capture race in its TEXT section, seen twice in eight runs. The
+  browser-section race it used to have is fixed: every step waits on a real
+  observable now instead of a fixed sleep.
 - No app store, no generations.
 
 ## Layout

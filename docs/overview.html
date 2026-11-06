@@ -408,12 +408,15 @@ failure. They are the project's actual regression suite.</p>
 <table class="tbl">
 <thead><tr><th>Suite</th><th>Checks</th><th>What it proves</th></tr></thead>
 <tbody>
-<tr><td>compositor unit + integration</td><td class="n">130</td><td>glass, capture exclusion, HiDPI, trusted path, chrome</td></tr>
+<tr><td>compositor unit + integration</td><td class="n">179</td><td>glass, capture exclusion, HiDPI, trusted path, chrome</td></tr>
 <tr><td><span class="mono">demos/interface-kit</span></td><td class="n">135</td><td>Haiku keyboard, scrolling, lists, browser, against independent renders</td></tr>
 <tr><td><span class="mono">demos/live-query</span></td><td class="n">85</td><td>per-domain visibility, forgery attempts, cross-domain negatives</td></tr>
 <tr><td><span class="mono">demos/supervisor</span></td><td class="n">60</td><td>kill -9 recovery, crash-loop give-up, clean shutdown</td></tr>
 <tr><td><span class="mono">demos/agent-gateway</span></td><td class="n">57</td><td>tool generation, and a destructive call stopped at approval</td></tr>
 <tr><td><span class="mono">apps/magick</span>, <span class="mono">apps/ffmpeg</span></td><td class="n">14, 13</td><td>isolation probes, provenance, output decoded without the tool's help</td></tr>
+<tr><td><span class="mono">demos/kitchen-sink</span></td><td class="n">75</td><td>thirteen more real Haiku controls on screen, against headless references</td></tr>
+<tr><td><span class="mono">demos/crash-survival</span></td><td class="n">64</td><td><span class="mono">kill -9</span> the compositor: crash report on the bus, shell state and layout restored</td></tr>
+<tr><td><span class="mono">demos/full-stack</span></td><td class="n">41</td><td>the whole stack end to end, including that the approval overlay stays out of client captures</td></tr>
 <tr><td><span class="mono">demos/ptrace-ancestry</span></td><td class="n">3</td><td>that a sandboxed process is <em>easier</em> to hijack than an unsandboxed one</td></tr>
 </tbody>
 </table>
