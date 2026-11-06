@@ -62,3 +62,18 @@ func TestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSegmentSigDmabufDiffersAndMemfdUnchanged(t *testing.T) {
+	m := Segment{ID: "a", Bytes: 4, Sealed: true, SHA256: "sha256:x"}
+	if got := m.Sig(); got != "a|4|true||sha256:x" {
+		t.Errorf("memfd signature changed (old logs would no longer verify): %q", got)
+	}
+	d := Segment{ID: "a", Bytes: 4, Kind: "dmabuf", Ino: 7}
+	if d.Sig() == m.Sig() || d.Sig() == (Segment{ID: "a", Bytes: 4, Kind: "dmabuf", Ino: 8}).Sig() {
+		t.Error("dma-buf kind and inode must be in the signature")
+	}
+	e := Envelope{Segments: []Segment{{ID: "a", Kind: "weird"}}}
+	if e.ValidateSegments() == nil {
+		t.Error("unknown kind accepted")
+	}
+}

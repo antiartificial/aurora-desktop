@@ -38,7 +38,25 @@ func (s *Server) prepareSegments(e *proto.Envelope) error {
 	}
 	for i := range e.Segments {
 		sg := &e.Segments[i]
-		seg, err := shm.Adopt(e.Attach[i]) // does not take ownership on error
+		f := e.Attach[i]
+		kind, err := shm.DetectKind(f) // from the kernel, not from the descriptor
+		if err != nil {
+			return fmt.Errorf("segment %q: %w", sg.ID, err)
+		}
+		declared := sg.Kind
+		if declared == "" {
+			declared = "memfd"
+		}
+		if (declared == "dmabuf") != (kind == shm.KindDmabuf) {
+			return fmt.Errorf("segment %q is declared kind %q but the fd is a %s", sg.ID, declared, kind)
+		}
+		if kind == shm.KindDmabuf {
+			if err := s.prepareDmabuf(sg, f, max); err != nil {
+				return err
+			}
+			continue
+		}
+		seg, err := shm.Adopt(f) // does not take ownership on error
 		if err != nil {
 			return fmt.Errorf("segment %q: %w", sg.ID, err)
 		}
@@ -52,7 +70,7 @@ func (s *Server) prepareSegments(e *proto.Envelope) error {
 		if err != nil {
 			return fmt.Errorf("segment %q: hash: %w", sg.ID, err)
 		}
-		sg.Sealed, sg.SHA256, sg.Absent = true, sum, false
+		sg.Sealed, sg.SHA256, sg.Absent, sg.Kind, sg.Ino = true, sum, false, "", 0
 	}
 	return nil
 }
@@ -69,4 +87,22 @@ func dupFiles(fs []*os.File) ([]*os.File, error) {
 		out = append(out, os.NewFile(uintptr(fd), f.Name()))
 	}
 	return out, nil
+}
+
+// prepareDmabuf records a dma-buf's kind, size (lseek SEEK_END) and inode. It
+// does NOT hash and cannot seal: the contents stay mutable by every fd holder,
+// so Sealed is false and SHA256 empty, whatever the sender declared.
+func (s *Server) prepareDmabuf(sg *proto.Segment, f *os.File, max int64) error {
+	d, err := shm.AdoptDmabuf(f)
+	if err != nil {
+		return fmt.Errorf("segment %q: %w", sg.ID, err)
+	}
+	if d.Size() != sg.Bytes {
+		return fmt.Errorf("segment %q declares %d bytes but the dma-buf is %d", sg.ID, sg.Bytes, d.Size())
+	}
+	if d.Size() > max {
+		return fmt.Errorf("segment %q is %d bytes, over the %d limit", sg.ID, d.Size(), max)
+	}
+	sg.Kind, sg.Ino, sg.Sealed, sg.SHA256, sg.Absent = "dmabuf", d.Inode(), false, "", false
+	return nil
 }

@@ -177,9 +177,10 @@ func TestUIDCgroupJoinAttackerStillRefused(t *testing.T) {
 }
 
 // 8f/8g, pinned as measured. A same-user attacker that enters the domain's
-// namespaces but keeps its own uid IS refused (on uid). One that also takes the
-// domain's uid, which it can because it OWNS the user namespace the domain
-// lives in, is ACCEPTED: per-domain uids do not close the setns hole.
+// namespaces but keeps its own uid is refused (on uid). One that also takes the
+// domain's uid (it OWNS the user namespace) passes cgroup, namespaces and uid,
+// and is refused ONLY by process ancestry: it forked after setns, so its
+// parent chain leads to the host, not to the sandbox init.
 func TestUIDSetnsAttacker(t *testing.T) {
 	start, _ := subIDs(t)
 	uid := start + 4244
@@ -200,11 +201,11 @@ func TestUIDSetnsAttacker(t *testing.T) {
 		t.Errorf("expected refusal on uid:\n%s", lg)
 	}
 	out = atk(t, nil, "setns", dsock, idB, cdir, strconv.Itoa(int(init)), strconv.Itoa(int(uid-start+1)))
-	if !sawSpoof(sub) {
-		t.Fatalf("RESIDUAL CHANGED: setns + taking the domain's uid is no longer accepted (good news: update the README and demo step 8g):\n%s\n%s", out, lg)
+	if sawSpoof(sub) {
+		t.Fatalf("setns + domain uid + fork was ACCEPTED despite the ancestry check:\n%s\n%s", out, lg)
 	}
-	if !lg.has("namespaces=ok") || !lg.has(fmt.Sprintf("uid %d comm \"python3\"", uid)) {
-		t.Errorf("accepted, but not as the log should show:\n%s", lg)
+	if !lg.has("namespaces=ok uid=ok ancestry=FAILED") {
+		t.Errorf("refused, but not on ancestry alone:\n%s", lg)
 	}
 }
 

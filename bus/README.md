@@ -183,8 +183,9 @@ busd listens on its session socket and, optionally, on one socket per domain.
   is refused (8f); a plain `setuid` to the domain's uid fails with EPERM (8h);
   a user namespace of the attacker's own, mapped over the user's subuid range,
   forges the uid and is ACCEPTED when uid is the only signal (8i), and refused
-  by the namespaces under the full stack (8j). **But the setns attacker that
-  also takes the domain's uid is ACCEPTED (8g, `TestUIDSetnsAttacker`).** The
+  by the namespaces under the full stack (8j). **Before the ancestry signal
+  (below), the setns attacker that also takes the domain's uid was ACCEPTED
+  (8g).** It is now refused (`TestUIDSetnsAttacker`). The
   hypothesis that its uid "stays its own" is wrong: the sandbox's user namespace
   is created by, and so owned by, the host user, which holds every capability
   in it (and in anything nested); inside it the domain's uid is mapped and the
@@ -192,9 +193,32 @@ busd listens on its session socket and, optionally, on one socket per domain.
   reason: changing euid makes the attacker non-dumpable, so the daemon (not
   owner of the attacker's mm) could not read its `/proc/<pid>/ns`; calling
   `prctl(PR_SET_DUMPABLE, 1)` removes that, so do not rely on it.
+- **Process ancestry (fourth signal, namespace-attested domains).** The peer
+  must descend, by real parent (`/proc/<pid>/stat` field 4), from the sandbox
+  init pid of the live run whose namespaces it matched (`server/ancestry.go`).
+  The walk is capped at 64 steps, each parent must have started no later than
+  its child (a recycled pid starts later), and the init pid must still have its
+  registered start time. A chain that reaches pid 1 without passing the init
+  pid is refused with `ancestry=FAILED`. Measured: real `domain run` processes
+  are accepted (every step 8 line shows `ancestry=ok`); the 8g attacker (setns
+  into everything, take the domain's uid, fork) passes cgroup, namespaces and
+  uid and is refused on ancestry alone, because it forked after `setns`, so its
+  parent chain ends in the host (`TestUIDSetnsAttacker`, demo 8g). Regression
+  risk checked: a legitimate process whose parent exited is reparented to the
+  sandbox init (pid 1 of its pid namespace) and is still accepted
+  (`TestAncestryOrphanInsideSandboxStillDescends`); host processes, children
+  of the test process and a wrong init start time are refused
+  (`TestAncestryHostProcessAndPidReuseRefused`). NOT tested, so not claimed:
+  injection. A same-uid process that `ptrace`s a legitimate domain process and
+  makes it connect acts through a real descendant, which ancestry accepts by
+  construction; I did not build that experiment and I expect it to defeat this
+  signal. Ancestry removes the cheap-to-script attacker (setns then connect from
+  a process of its own), not an attacker willing to hijack a real process. Also
+  untested: a daemon that is not in the host pid namespace.
 - **What this does NOT guarantee.** Membership, not intent. (1) Namespace and
-  uid attestation do NOT stop a same-user host process that enters the
-  domain's namespaces and takes the domain's uid (see above; 8g). It opens
+  uid attestation alone do NOT stop a same-user host process that enters the
+  domain's namespaces and takes the domain's uid (8g); only the ancestry
+  signal does, and ancestry does not stop injection into a real descendant. It opens
   `/proc/<init>/ns/*`, takes the owning user namespace with
   `ioctl(NS_GET_USERNS)`, `setns` into it, then ipc, uts, mnt and pid, joins the
   cgroup, takes the uid and forks: the child matches every signal. So the cheap
@@ -288,6 +312,32 @@ use(m.Bytes())                             // or io.Copy(w, seg.Reader())
   and `sealed`. A non-memfd, an unsealed memfd or a size lie is rejected with
   `bad_segments`. One segment is capped at 256 MiB (`Config.MaxSegmentBytes`),
   because the daemon hashes every one. Control verbs take no segments.
+- **dma-buf segments.** A segment may be a dma-buf instead of a sealed memfd
+  (descriptor `kind:"dmabuf"`; `kind` is absent for a memfd). The daemon
+  classifies the fd itself (`shm.DetectKind`): a dma-buf is an fd on the
+  kernel's dma-buf filesystem (`fstatfs` magic `DMAB`) that also answers
+  `DMA_BUF_IOCTL_SYNC` with flags 0 as a dma-buf does (EINVAL; other files give
+  ENOTTY). The sender's declared kind must equal the detected one, else
+  `bad_segments`; pipes, `/dev/null`, regular files and unsealed memfds are
+  rejected. **What differs from a memfd, and what is recorded.** A dma-buf
+  cannot be sealed and every holder (and the device) can keep writing, so the
+  daemon records `sealed:false`, NO `sha256`, the size from
+  `lseek(fd,0,SEEK_END)` (checked against `bytes`, capped by
+  `MaxSegmentBytes`) and `ino`, the kernel's inode number of the buffer, to
+  correlate the same buffer across messages. The log therefore proves "a
+  dma-buf of N bytes with this identity was sent", NOT what it held; the memfd
+  guarantee (immutable contents, content hash in the log) does not exist for
+  it, and a receiver sees later writes by the sender (tested). Never treat a
+  dma-buf as a snapshot. API: `client.AttachDmabuf`, `client.OpenDmabuf`
+  (`OpenSegment` refuses a dma-buf), `shm.IsDmabuf`, `shm.AdoptDmabuf`.
+  **Tested on this host with a real dma-buf** made via `/dev/udmabuf`
+  (`shm.CreateUdmabuf`, no GPU; tests skip where it is not accessible):
+  detection, descriptor, mutability, log shape, kind mismatches and impostors,
+  no fd leak. **Untested:** dma-bufs from a GPU driver or dma-heap (different
+  exporters, device-local memory, fences; detection should hold as it relies on
+  the filesystem, not the exporter, but this is unproven), importing the fd
+  into a GPU API, and dma-bufs across `bus replay` end to end (only the
+  descriptor signature is unit-tested).
 - **Delivery.** Fan-out gives each subscriber its own dup of the fd onto the
   same memory. The receiver's fd is shared with every other holder, so it
   uses `pread`/`mmap` (`Reader`, `Map`), never the shared file offset. A
@@ -428,8 +478,9 @@ rejected, then a host process impersonating a domain: refused with attestation
 (8a), accepted with `--attest-domains=off` (8b); the join-the-cgroup attack
 refused with namespaces attested (8c), accepted on a cgroup-only domain (8d, the
 old hole) and with attestation off (8e); then against per-domain subuids: the
-setns attacker with its own uid is refused (8f) but one that also takes the
-domain's uid is still accepted (8g); a plain setuid to the domain's uid fails
+setns attacker with its own uid is refused (8f), and one that also takes the
+domain's uid is refused by process ancestry (8g; it passed every other signal
+before ancestry existed), with a real domain process shown accepted (8g'); a plain setuid to the domain's uid fails
 (8h); a forged uid in the attacker's own user namespace passes when uid is the
 only signal (8i) and is refused by the namespaces under the full stack (8j).
 The attacker code is `demo-attacks.py`.
@@ -490,9 +541,8 @@ table with mint, holder checks, transfer, revoke and expiry.
   A stolen token is useless without holding the row, but a holder
   who passes the token out of band is not stopped from telling others the value
   (they still cannot present it).
-- **dma-buf, and any fd other than a sealed memfd.** memfd segments with
-  SCM_RIGHTS are implemented (see "Segments"). dma-buf handles (GPU buffers,
-  no seals, different size and trust rules) are not. Nothing forces a client
+- **Any fd other than a sealed memfd or a dma-buf.** Both kinds travel as
+  segments (see "Segments"); dma-bufs carry no seal and no content hash. Nothing forces a client
   to use segments: large data can still go in a payload up to the 4 MiB
   line limit. Also not done: segments inside `bus.log` replies as fds
   (descriptors only), a global cap on fds queued across connections, a

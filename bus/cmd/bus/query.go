@@ -69,6 +69,10 @@ func formatMsg(m proto.Envelope) string {
 		s += " caps=" + strings.Join(m.CapIDs, ",")
 	}
 	for _, sg := range m.Segments {
+		if sg.Kind == "dmabuf" {
+			s += fmt.Sprintf(" seg=%s(dmabuf %d bytes ino %d, unsealed, NO hash)", sg.ID, sg.Bytes, sg.Ino)
+			continue
+		}
 		s += fmt.Sprintf(" seg=%s(%d bytes %s)", sg.ID, sg.Bytes, sg.SHA256[:min(len(sg.SHA256), 19)])
 	}
 	return s

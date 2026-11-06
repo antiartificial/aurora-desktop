@@ -6,7 +6,7 @@
 # join-the-cgroup attack: accepted when only the cgroup is attested (the old
 # hole), REFUSED now that namespaces are attested too, accepted with attestation
 # off; then the same-uid attacks against PER-DOMAIN SUBORDINATE UIDS: what
-# setns-into-the-namespaces does now, and whether a same-user attacker can
+# setns-into-the-namespaces does now (and the process-ancestry check that refuses 8g), and whether a same-user attacker can
 # become the domain's uid (attackers: demo-attacks.py). Leaves nothing behind.
 set -euo pipefail
 
@@ -185,13 +185,19 @@ logspoof
 grep -E "REFUSED|attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
 kill "$TGT" 2>/dev/null || true
 
-step "8g. the same attacker, plus it takes alpha's uid after entering the domain's user namespace (it owns that namespace: it was made by this user)"
+step "8g. the same attacker, plus it takes alpha's uid after entering the domain's user namespace (it owns that namespace). Before ancestry it passed every other signal; now process ancestry refuses it (it forked after setns: its parent is the host, not the sandbox init)"
 restart --attest-domains=require --domain-ns "$IDA"
 live_run
 python3 "$ATK" setns /run/aurora/bus.sock "$IDB" "/sys/fs/cgroup$CGA" "$TGT" "$INNERA"
 logspoof
 grep -E "REFUSED|attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
 kill "$TGT" 2>/dev/null || true
+
+step "8g'. contrast: the real alpha process (a descendant of the sandbox init) passes all four signals, ancestry included"
+restart --attest-domains=require --domain-ns "$IDA"
+echo "real alpha process: $(inA send bus bus.ping@v1 2>&1 | head -c 60)"
+grep -E "attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
+echo "(NOT demonstrated here: acting THROUGH a legitimate descendant, e.g. injection into a real domain process. Ancestry cannot stop that; see README residuals.)"
 
 step "8h. can a same-user attacker become alpha's uid ($UIDA) at all? (a) plain setuid from the host"
 python3 "$ATK" setuid "$UIDA"

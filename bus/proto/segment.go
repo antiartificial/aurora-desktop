@@ -11,13 +11,21 @@ const MaxSegments = 16
 // Segment describes one shared-memory segment travelling with a message
 // (0001: "data off the bus"). The fd itself travels out of band over
 // SCM_RIGHTS; this descriptor is all the JSON line and the log ever hold.
-// SHA256 is set by the daemon from the sealed contents; a sender's value is
-// overwritten. Absent is set on a replayed descriptor: contents are not
+// SHA256 is set by the daemon from the sealed contents of a memfd; a sender's
+// value is overwritten. A dma-buf has Sealed=false and NO hash: its contents
+// are mutable by every holder and cannot be hashed cheaply or safely, so the
+// log proves only that a buffer of this size and identity was sent. Absent is set on a replayed descriptor: contents are not
 // replayable, only the descriptor and hash are.
 type Segment struct {
 	ID     string `json:"id"`
 	Bytes  int64  `json:"bytes"`
 	Sealed bool   `json:"sealed"`
+	// Kind is "" (a sealed memfd, the original and default) or "dmabuf". The
+	// daemon sets it from what the fd IS; a sender's claim must match it.
+	Kind string `json:"kind,omitempty"`
+	// Ino is a dma-buf's inode number on the kernel's dma-buf filesystem, for
+	// correlating the same buffer across messages. Never set for a memfd.
+	Ino    uint64 `json:"ino,omitempty"`
 	Mime   string `json:"mime,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
 	Absent bool   `json:"absent,omitempty"`
@@ -26,7 +34,11 @@ type Segment struct {
 // Sig is the canonical form compared by the replay checker. Absent is left
 // out on purpose: a replayed descriptor is Absent by construction.
 func (s Segment) Sig() string {
-	return fmt.Sprintf("%s|%d|%t|%s|%s", s.ID, s.Bytes, s.Sealed, s.Mime, s.SHA256)
+	sig := fmt.Sprintf("%s|%d|%t|%s|%s", s.ID, s.Bytes, s.Sealed, s.Mime, s.SHA256)
+	if s.Kind != "" {
+		sig += fmt.Sprintf("|%s|%d", s.Kind, s.Ino)
+	}
+	return sig
 }
 
 // ValidateSegments checks declared descriptors (not their fds).
@@ -41,6 +53,9 @@ func (e *Envelope) ValidateSegments() error {
 		}
 		if s.Bytes < 0 {
 			return fmt.Errorf("segment %q has negative size", s.ID)
+		}
+		if s.Kind != "" && s.Kind != "dmabuf" {
+			return fmt.Errorf("segment %q has unknown kind %q", s.ID, s.Kind)
 		}
 		seen[s.ID] = true
 	}

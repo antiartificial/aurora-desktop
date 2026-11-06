@@ -153,17 +153,22 @@ Weaknesses, stated plainly:
 - Membership is attested, intent is not. A same-user host process can no longer
   become the domain by writing to `cgroup.procs` (refused on uid and namespaces;
   `bus/demo-identity.sh` 8c), nor by entering the namespaces while keeping its
-  own uid (8f, refused on uid). It CAN still become the domain: per-domain uids
-  do NOT close the setns attack. The sandbox's user namespace is owned by the
-  host user, who therefore holds every capability in it: the attacker
-  `setns`es into it, enters pid/mnt/ipc/uts, joins the cgroup, takes the
-  domain's uid (`seteuid` to a uid mapped in that namespace), and connects; the
-  bus sees the domain's uid, cgroup and namespaces and accepts (8g, measured on
-  this host). Outside the namespace, a plain `setuid` to the domain's uid fails
-  (8h), but the user can map its own subuid range in a user namespace and
-  forge the uid there (8i); that forger still fails on namespaces (8j). Closing
-  this needs a uid the host user does not control (root-created namespaces) or a
-  policy that denies `setns`/`/proc/<pid>/ns` to the user's other processes.
+  own uid (8f, refused on uid). Per-domain uids alone did NOT close the setns
+  attack: the sandbox's user namespace is owned by the host user, who holds
+  every capability in it, so the attacker `setns`es in, joins the cgroup, takes
+  the domain's uid and connects (8g). The bus now also requires the peer to
+  descend, by real parent, from the registered sandbox init pid (the pid this
+  adapter records in `nsrun.go` and registers); the 8g attacker forks after
+  `setns`, its parent is the host, and it is refused on ancestry alone (measured
+  on this host). A real `domain run` process, including one whose parent exited
+  (reparented to the sandbox init), is accepted. This does NOT stop an attacker
+  that acts THROUGH a real domain process (for example by `ptrace`-injecting
+  into it); that experiment was not run, and ancestry accepts such a process by
+  construction. Outside the namespace, a plain `setuid` to the domain's uid
+  fails (8h); a forged uid in the attacker's own user namespace (8i) still
+  fails on namespaces (8j). Closing injection needs a uid the host user does not
+  control (root-created namespaces) or a policy denying `ptrace`/`setns` to the
+  user's other processes.
 - A passed file descriptor still lets the receiver speak as the domain.
 - Any process the domain starts is in the cgroup and is that domain; the bus
   cannot tell the app from a shell it spawned.

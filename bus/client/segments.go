@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/bus/shm"
 )
@@ -89,4 +91,56 @@ func OpenSegment(e proto.Envelope, id string) (*shm.Segment, error) {
 		}
 	}
 	return s, nil
+}
+
+// AttachDmabuf attaches a dma-buf fd you hold (a dup is sent; you keep f). The
+// descriptor is unsealed and unhashed: receivers must treat the contents as
+// mutable by anyone holding the buffer. Fails if f is not a dma-buf.
+func AttachDmabuf(e *proto.Envelope, id, mime string, f *os.File) error {
+	d, err := shm.AdoptDmabuf(f)
+	if err != nil {
+		return err
+	}
+	if len(e.Segments) >= proto.MaxSegments {
+		return fmt.Errorf("at most %d segments per message", proto.MaxSegments)
+	}
+	for _, o := range e.Segments {
+		if o.ID == id {
+			return fmt.Errorf("segment id %q already used", id)
+		}
+	}
+	fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	e.Segments = append(e.Segments, proto.Segment{ID: id, Bytes: d.Size(), Kind: "dmabuf", Ino: d.Inode(), Mime: mime})
+	e.Attach = append(e.Attach, os.NewFile(uintptr(fd), f.Name()))
+	return nil
+}
+
+// OpenDmabuf returns a received dma-buf segment (a dup the caller closes) and
+// its descriptor. It checks the fd is a dma-buf of the declared size. Unlike
+// OpenSegment there is no seal and no hash to rely on.
+func OpenDmabuf(e proto.Envelope, id string) (*os.File, proto.Segment, error) {
+	i := e.AttachIndex(id)
+	if i < 0 {
+		return nil, proto.Segment{}, fmt.Errorf("message has no segment %q with contents", id)
+	}
+	d, err := shm.AdoptDmabuf(e.Attach[i])
+	if err != nil {
+		return nil, proto.Segment{}, err
+	}
+	for _, desc := range e.Segments {
+		if desc.ID == id {
+			if desc.Kind != "dmabuf" || desc.Bytes != d.Size() {
+				return nil, proto.Segment{}, fmt.Errorf("segment %q: descriptor does not match the dma-buf (%d bytes)", id, d.Size())
+			}
+			fd, err := unix.FcntlInt(e.Attach[i].Fd(), unix.F_DUPFD_CLOEXEC, 0)
+			if err != nil {
+				return nil, proto.Segment{}, err
+			}
+			return os.NewFile(uintptr(fd), e.Attach[i].Name()), desc, nil
+		}
+	}
+	return nil, proto.Segment{}, fmt.Errorf("no descriptor for %q", id)
 }

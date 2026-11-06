@@ -252,8 +252,16 @@ func (s *Server) admitDomain(nc net.Conn, cred Cred, dom *domainSock) (*attestSt
 		a.close()
 		return nil, fmt.Errorf("attestation REFUSED for %s on %s (mode %s): signals cgroup=ok namespaces=FAILED uid=%s: %w", who, d, s.cfg.AttestDomains, uidSignal(dom), err)
 	}
+	if err := descendsFrom(cred.PID, run); err != nil {
+		a.close()
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s (mode %s): signals cgroup=ok namespaces=ok uid=%s ancestry=FAILED: %w; the peer is not a descendant of the sandbox init", who, d, s.cfg.AttestDomains, uidSignal(dom), err)
+	}
+	if !a.alive() {
+		a.close()
+		return nil, fmt.Errorf("attestation FAILED for %s on %s: pid went away during ancestry check", who, d)
+	}
 	a.ns = ns
-	s.cfg.Logf("attested %s on %s: signals cgroup=ok (%s) namespaces=ok (%s, run init pid %d) uid=%s (pidfd %v)", who, d, got, ns, run.pid, uidSignal(dom), a.pidfd >= 0)
+	s.cfg.Logf("attested %s on %s: signals cgroup=ok (%s) namespaces=ok (%s, run init pid %d) ancestry=ok uid=%s (pidfd %v)", who, d, got, ns, run.pid, uidSignal(dom), a.pidfd >= 0)
 	return a, nil
 }
 
