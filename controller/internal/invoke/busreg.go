@@ -77,4 +77,13 @@ func (iv *Invoker) Close() {
 			iv.logf("WARNING: %v", err)
 		}
 	}
+	// Revoke the capability epoch handle. capbus.Client.Close does this; it
+	// was never called, so every controllerd run left its epoch handle minted
+	// and unrevoked in the log forever. That made "minted and never revoked"
+	// meaningless noise in `aurora activity`. Revoking it on a clean stop
+	// gives that signal its meaning back: an epoch handle still outstanding
+	// means the controller did not shut down cleanly.
+	if c, ok := iv.Caps.(interface{ Close() }); ok && c != nil {
+		c.Close()
+	}
 }

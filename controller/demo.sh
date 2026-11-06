@@ -7,7 +7,10 @@ CTL=$(pwd); ROOT=$(cd .. && pwd)
 W=$(mktemp -d /tmp/ctl-demo.XXXXXX)
 PIDS=()
 cleanup() {
-  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
+  # Reverse order: stop clients before the bus they talk to. controllerd
+  # revokes its capability epoch handle on SIGTERM, which needs busd alive;
+  # killing busd first left the handle outstanding in the log every run.
+  for ((i=${#PIDS[@]}-1; i>=0; i--)); do p=${PIDS[$i]:-}; [ -n "$p" ] && kill "$p" 2>/dev/null; done
   wait 2>/dev/null
   for d in "$W"/domains/app-*; do [ -d "$d" ] && "$W/bin/domain" destroy "$(basename "$d")" >/dev/null 2>&1; done
   rm -rf "$W"
