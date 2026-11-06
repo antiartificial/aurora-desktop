@@ -215,26 +215,29 @@ screenshot regression harness.
 `--list` prints a compositor's globals and says whether it can be captured at
 all. That is the question to ask first.
 
-**Nothing on this host can currently be captured.** Verified 2026-11-06:
+**One compositor on this host can be captured: `aurora-compositor`**
+(`compositor/`, run with `--headless`). Verified 2026-11-06:
 
 | Compositor | Advertises the protocol | Delivers frames |
 |---|---|---|
+| aurora-compositor `--headless` (nested-up `--compositor aurora --headless`) | yes | **yes** — 1280x800 with a ghostty window, 918 distinct colours, 5 of 5 captures succeeded |
+| aurora-compositor, winit window | yes | not verified: the host screen was locked and the winit window blocked in `eglSwapBuffers` |
 | KWin (host, `wayland-0`) | no | n/a |
 | smallvil (nested) | no | n/a |
 | anvil (nested) | yes | **no** — `frame.fail(Unknown)`; upstream comment says "Anvil doesn't implement actual capture" |
 
-The client itself is verified correct. Against a scratch-patched anvil that
-wrote a known pattern, it captured 1856x1160 with 0 mismatches across 2,152,960
-pixels, confirming channel order, row order and pixel layout. The patch was not
-kept; it was a test fixture.
+The client was verified first against a scratch-patched anvil that wrote a
+known pattern: 1856x1160, 0 mismatches across 2,152,960 pixels (channel order,
+row order, pixel layout). It has since been checked against a real render: see
+`harness/capture/README.md`.
 
-Conclusion: frame capture is a **Phase 4 compositor deliverable**. Our
-compositor must implement `ext-image-copy-capture-v1` properly, at which point
-this client works unchanged and Phase 8's regression harness has its mechanism.
+Frame capture was a **Phase 4 compositor deliverable**; `compositor/` is the
+first step, with the gaps listed in `compositor/README.md`. Phase 8's
+regression harness has its mechanism: `--headless` needs no host window.
 
 Not handled: padded strides, multiple outputs, cursor capture, dmabuf, rotated
 outputs.
 
-`nested-up` gained `--compositor smallvil|anvil`. Anvil needs
+`nested-up` gained `--compositor smallvil|anvil|aurora` (and `--headless[=WxH]` for aurora). Anvil needs
 `--no-default-features --features winit,egl`; its defaults (udev, x11,
 xwayland, libei) are off.

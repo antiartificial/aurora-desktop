@@ -1,0 +1,21 @@
+[package]
+name = "aurora-compositor"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "aurora-compositor"
+path = "src/main.rs"
+
+[dependencies]
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+bitflags = "2.2.1"
+tracing = "0.1"
+
+# Pinned to the commit of the clone at ~/.cache/aurora/smithay (harness/nested-up
+# uses the same SMITHAY_REV). Cargo.lock records it too.
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "65aa86fa5236e41775c313408102a5d5c2d1e2ca"
+default-features = false
+features = ["backend_winit", "wayland_frontend", "desktop"]

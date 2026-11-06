@@ -19,6 +19,8 @@ requested from the compositor itself over a Wayland protocol.
 
 | Compositor | Advertises `ext_image_copy_capture_manager_v1` | Can it deliver a frame? |
 |---|---|---|
+| **aurora-compositor** (`compositor/`, `--headless`) | yes, v1, with `ext_output_image_capture_source_manager_v1` | **yes.** Verified 2026-11-06: 1280x800, ghostty inside, 918 distinct colours, 5 of 5 captures succeeded. See `compositor/README.md`. |
+| aurora-compositor, winit backend | yes | not verified. The host screen was locked, so the winit window blocked in `eglSwapBuffers` and never rendered a second frame. |
 | anvil (Smithay, this Smithay revision) | yes, v1, with `ext_output_image_capture_source_manager_v1` | no. Its session is stopped right after the constraints are sent, and its frame handler fails with `Unknown`. The client reports this as "stopped the capture session". |
 | smallvil (Smithay, this Smithay revision) | no | no. It initialises only the core globals, so it has no capture protocol at all. |
 | KWin (host, `kwin_wayland`, Plasma on this machine) | no | no. `--list` shows neither capture global. |
@@ -89,10 +91,17 @@ before the frame is taken.
   compositor render.
 - `--list` against the user's running smallvil (`wayland-1`): not advertised.
 
+- A real compositor render, from `aurora-compositor --headless`
+  (2026-11-06): 1280x800 `Xrgb8888`, a ghostty window (One Dark background
+  40,44,52) on the 25,25,25 clear colour, 918 distinct colours, title bar at
+  the top (row order correct). Five captures in a row: 5 of 5 exit 0, byte
+  identical for a static scene. An empty compositor captures as one flat colour
+  (25,25,25), which is the truth for an empty scene.
+
 ## What is not verified
 
-- A real, non-blank frame from any compositor. No host capture was taken, and
-  none of the three compositors above can deliver one as things stand.
+- A real frame from the host KWin, anvil or smallvil: none can deliver one.
+  (A real frame from aurora-compositor is verified; see below.)
 - Stride other than `width * 4`. The client always requests that stride, and
   the pattern test used it, so padded strides are untested.
 - Multiple outputs. The client takes the first `wl_output`.

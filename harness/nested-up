@@ -19,17 +19,24 @@ SMITHAY_URL="${SMITHAY_URL:-https://github.com/Smithay/smithay.git}"
 AURORA_TERMINAL="${AURORA_TERMINAL:-}"
 TERMINAL_PREFERENCE=(foot ghostty konsole gnome-terminal xterm)
 
+# Set by --headless (aurora only).
+HEADLESS=""
+
 # Set to 1 by --no-terminal.
 NO_TERMINAL=0
 
 # Seconds to wait for smallvil to create its Wayland socket.
 START_TIMEOUT="${AURORA_START_TIMEOUT:-30}"
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Binary name and cargo profile directory; select_compositor overrides them for aurora.
+BIN_NAME=""
+BIN_PROFILE=debug
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/aurora"
 SMITHAY_SRC="$CACHE_DIR/smithay"
 TARGET_DIR="$CACHE_DIR/target-nested"
 
-# Which Smithay compositor to run: smallvil (default) or anvil.
+# Which compositor to run: smallvil (default), anvil, or aurora (compositor/).
 COMPOSITOR="${AURORA_COMPOSITOR:-smallvil}"
 
 TERMINAL_CMD=""
@@ -38,7 +45,7 @@ TERMINAL_PID=""
 
 usage() {
   cat <<'EOF'
-Usage: harness/nested-up [-h|--help] [--no-terminal] [--compositor smallvil|anvil]
+Usage: harness/nested-up [-h|--help] [--no-terminal] [--compositor smallvil|anvil|aurora] [--headless[=WxH]]
 
 Builds the chosen Smithay compositor at revision $SMITHAY_REV, starts it as a
 window on the current Wayland or X11 session, then starts a terminal inside it
@@ -53,6 +60,13 @@ Compositor choice:
                       can ask it for a frame. At this Smithay revision it cannot
                       deliver one: it stops the capture session right after
                       offering constraints, and its frame handler fails with Unknown.
+  aurora              This repo's compositor/ crate (aurora-compositor). It is built
+                      with cargo from the repo, not from the Smithay clone, and it
+                      implements ext-image-copy-capture-v1 for real: aurora-capture
+                      gets real pixels from it. It needs the host window to be
+                      presented: with the host screen locked its winit backend
+                      blocks in eglSwapBuffers. --headless runs it with no host
+                      window (aurora only; default size 1280x800).
   AURORA_COMPOSITOR=<name> is the same choice as --compositor.
 
 Terminal choice:
@@ -80,15 +94,20 @@ while (($#)); do
     --no-terminal) NO_TERMINAL=1 ;;
     --compositor) (($# >= 2)) || { echo "nested-up: --compositor needs a name" >&2; exit 2; }; COMPOSITOR="$2"; shift ;;
     --compositor=*) COMPOSITOR="${1#--compositor=}" ;;
+    --headless) HEADLESS="--headless" ;;
+    --headless=*) HEADLESS="$1" ;;
     *) echo "nested-up: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
 case "$COMPOSITOR" in
-  smallvil|anvil) ;;
-  *) echo "nested-up: unknown compositor '$COMPOSITOR' (use smallvil or anvil)" >&2; exit 2 ;;
+  smallvil|anvil|aurora) ;;
+  *) echo "nested-up: unknown compositor '$COMPOSITOR' (use smallvil, anvil or aurora)" >&2; exit 2 ;;
 esac
+if [[ -n "$HEADLESS" && "$COMPOSITOR" != aurora ]]; then
+  echo "nested-up: --headless is only supported with --compositor aurora" >&2; exit 2
+fi
 
 die() { echo "nested-up: $*" >&2; exit 1; }
 note() { echo "nested-up: $*"; }
@@ -99,7 +118,7 @@ resolve_terminal() {
   local t
   if ((NO_TERMINAL)) || [[ "$AURORA_TERMINAL" == none ]]; then
     TERMINAL_CMD=""
-    note "no terminal requested; smallvil runs alone"
+    note "no terminal requested; $COMPOSITOR runs alone"
     return 0
   fi
   if [[ -n "$AURORA_TERMINAL" ]]; then
@@ -214,6 +233,14 @@ select_compositor() {
       COMPOSITOR_CARGO_ARGS=(--no-default-features --features winit,egl)
       COMPOSITOR_RUN_ARGS=(--winit)
       ;;
+    aurora)
+      COMPOSITOR_DIRS=("$REPO_DIR/compositor")
+      COMPOSITOR_CARGO_ARGS=(--release)
+      COMPOSITOR_RUN_ARGS=()
+      [[ -n "$HEADLESS" ]] && COMPOSITOR_RUN_ARGS=("$HEADLESS")
+      BIN_NAME=aurora-compositor
+      BIN_PROFILE=release
+      ;;
   esac
 }
 
@@ -308,13 +335,15 @@ run_nested() {
 main() {
   select_compositor
   preflight
-  fetch_smithay
+  # aurora's Smithay dependency is a pinned git rev in compositor/Cargo.toml;
+  # cargo fetches it, so the clone is only needed for smallvil and anvil.
+  [[ "$COMPOSITOR" == aurora ]] || fetch_smithay
 
   local dir bin
   dir="$(find_compositor)"
   build_compositor "$dir"
 
-  bin="$TARGET_DIR/debug/$COMPOSITOR"
+  bin="$TARGET_DIR/$BIN_PROFILE/${BIN_NAME:-$COMPOSITOR}"
   [[ -x "$bin" ]] || die "build finished but $bin does not exist. Check the package name in $dir/Cargo.toml."
 
   trap cleanup EXIT
