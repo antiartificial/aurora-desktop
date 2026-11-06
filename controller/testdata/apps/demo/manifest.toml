@@ -30,3 +30,11 @@ summary = "Report the size of an image in bytes"
 effect = "read"
 accepts = ["image/png"]
 output = { bytes = "int" }
+
+[[verb]]
+name = "delete@v1"
+summary = "Destroy an image (stand-in: writes a tombstone at the output)"
+effect = "destructive"
+accepts = ["image/png"]
+capabilities = ["path:~/Pictures"]
+output = { image = "image/png" }

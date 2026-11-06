@@ -109,6 +109,21 @@ survey, not from a build, and gaps should be expected. The tests were written
 alongside the implementation and have not been mutation-tested, so they show
 these cases pass rather than that a regression would be caught.
 
+### Stage A runs an application
+
+Added after the messaging core landed in `kits/` (`libkitsapp.a`). On top of the primitives there is now a from-scratch reimplementation of the app-kit API surface: `BMessage` (typed named multi-item fields, nesting, flatten/unflatten), `BHandler`, `BLooper` (its port is one of our ports; the loop runs on a `spawn_thread` thread), `BMessenger` (async and synchronous send, local and cross-process) and `BApplication` (no app_server, no registrar; see `kits/README.md` for what is stubbed). It follows Haiku's MIT public API shapes; no Haiku source is used. This is not Haiku's own `BMessage`/`BLooper`.
+
+What runs: `kits/demo/haiku_app.cpp`, a `BApplication` subclass with a `BHandler` that keeps a ledger. A second process finds it by signature, sends `BMessage`s with `BMessenger::SendMessage(msg, &reply)` and gets synchronous replies, including a nested-message reply, a not-understood reply, and a quit request. `kits/tests/test_app.cpp` (151 checks) covers the same paths, plus a flattened message round trip through a port between two processes.
+
+Still open, so real Haiku source cannot yet compile against this:
+
+- Haiku's own `BMessage` is not used. Not implemented: scripting and specifiers, `BArchivable`, `BString`, `BList`, `BMessageFilter`/`BMessageQueue`/`BMessageRunner`/`BInvoker`, `BRoster`, most `Add*`/`Find*`/`Replace*` types (pointers, refs, rects, points, messengers, flat objects), `ForEach`, drop messages, and Haiku's flat format (ours is different and unversioned).
+- Haiku's own `BLooper` behaviours not implemented: message filters, per-looper message queue and `PreviousMessage`/`DetachCurrentMessage`, `LockLooper*` helpers, `WaitForQuit`, the reply-to/preferred-handler plumbing in `BMessage`, lock-ordering diagnostics, and enforcement of the "hold `Lock()` while changing handlers" rule.
+- No registrar: `BMessenger(signature)` finds the app by a hashed port name. There is no single-launch, no team registry and no `be_roster`. `BApplication` reads its argv from `/proc/self/cmdline`.
+- Ports are still not bus endpoints, so the bus-fits-BeOS-messaging claim remains untested; latency (open question 7) is unmeasured.
+- Open questions 1, 2, 4 and 5 are untouched. Question 6 is answered for the non-drawing case by the stubs above, and not at all for a drawing application.
+- The first demo run had an intermittent failure: a client could send between the port's creation and `ReadyToRun`, and hit a handler that was not yet added. It was found by repeating the test and fixed in the demo, not in the kit; Haiku's registrar is what hides this window on a real system.
+
 ## Open questions
 
 1. **Sourcing: upstream Haiku or the VOS fork.** The kits are upstream Haiku MIT code, so they could be taken from Haiku directly. VOS's distinctive contribution is the narrow port delta: 60 `__VOS__` marks across 30 files and six VOS-specific headers. That is a map of what must change to build Haiku's kits off Haiku, and it may be worth more than the code. The choice is undecided.

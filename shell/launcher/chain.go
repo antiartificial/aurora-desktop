@@ -32,11 +32,13 @@ func cmdChain(env *Env, args []string) int {
 	fs.Var(&verbs, "verb", "verb to run (give exactly twice: first, then second)")
 	fs.Var(&kv, "arg", "argument key=value; prefix 1: or 2: to target a step (repeatable)")
 	app := fs.String("app", "", "disambiguate verbs when several apps offer one")
+	yes := fs.Bool("yes", false, "TEST AFFORDANCE: allow approval requests without asking (defeats approval)")
 	output := fs.String("output", "", "final output path (default: next to the input)")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return parseFailed(err)
 	}
+	env.Yes = *yes
 	if len(pos) != 1 || len(verbs) != 2 {
 		fmt.Fprintln(env.Err, "aurora chain: need one file and exactly two --verb flags")
 		return 2

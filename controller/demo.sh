@@ -102,5 +102,41 @@ ls "$W/pics/refused.png" 2>&1 | sed 's/^/   /'
 echo "-- input and output inside ~/Pictures (ambient): must succeed"
 $C invoke org.aurora.demo copy@v1 --input "$W/home/Pictures/in.png" --output "$W/home/Pictures/out.png" | grep -A12 '"grants"'
 
+step "approval: destructive verb (org.aurora.demo delete@v1) on a gesture grant must block until decided"
+echo "(decider here is SCRIPTED: 'controller decide' over the session socket. A script cannot drive /dev/tty;"
+echo " the interactive route is 'aurora approvals' / 'aurora open', see shell/README.md)"
+kill "${PIDS[-1]}" 2>/dev/null; wait "${PIDS[-1]}" 2>/dev/null
+HOME=$W/home "$W/bin/controllerd" --apps "$APPS" --domain-bin "$W/bin/domain" --approval-timeout 4s "${EXEC[@]}" >"$W/controllerd3.log" 2>&1 & PIDS+=($!)
+for _ in $(seq 50); do grep -q 'registered service' "$W/controllerd3.log" && break; sleep 0.1; done
+grep -- 'approval' "$W/controllerd3.log"
+"$W/bin/bus" sub approval.requested >"$W/approvals.log" 2>&1 & PIDS+=($!)
+sleep 0.5
+reqid() { for _ in $(seq 50); do id=$(grep -o '"request_id":"[a-f0-9]*"' "$W/approvals.log" | tail -n +"$1" | head -1 | cut -d'"' -f4); [ -n "$id" ] && { echo "$id"; return; }; sleep 0.1; done; }
+DEL=(invoke org.aurora.demo delete@v1 --input "$W/pics/probe.png")
+echo "-- 1. invoke in background, nobody has decided yet"
+$C "${DEL[@]}" --output "$W/pics/deny.png" >"$W/deny.out" 2>&1 & DP=$!
+ID1=$(reqid 1); sleep 1
+echo "request $ID1 published; invoke still running: $(kill -0 $DP 2>/dev/null && echo yes || echo NO); output file: $(ls "$W/pics/deny.png" 2>&1 | sed 's/.*No such.*/absent/')"
+grep -o '"verb":"[^"]*","effect":"[^"]*","grants":\[[^]]*\],"args":{[^}]*}' "$W/approvals.log" | head -1
+echo "-- 2. DENY"
+$C decide "$ID1" deny | grep -E '"decision"|"by"'; wait $DP
+grep -E '"code"|"error"' "$W/deny.out" | head -2
+echo "output file after denial: $(ls "$W/pics/deny.png" 2>&1 | sed 's/.*No such.*/absent/')"
+echo "-- 3. ALLOW"
+$C "${DEL[@]}" --output "$W/pics/allow.png" >"$W/allow.out" 2>&1 & DP=$!
+ID2=$(reqid 2); sleep 0.5
+echo "output file while pending: $(ls "$W/pics/allow.png" 2>&1 | sed 's/.*No such.*/absent/')"
+$C decide "$ID2" allow | grep -E '"decision"|"by"'; wait $DP
+grep -A8 '"approval"' "$W/allow.out" | head -9
+echo "output file after allow: $(ls "$W/pics/allow.png" 2>&1)"
+echo "-- provenance xattr on the output:"
+$C provenance "$W/pics/allow.png" | grep -A8 '"approval"'
+echo "-- 4. timeout (4s) with nobody answering"
+$C "${DEL[@]}" --output "$W/pics/late.png" 2>&1 | grep -E '"code"|"error"' | head -2
+echo "output file after timeout: $(ls "$W/pics/late.png" 2>&1 | sed 's/.*No such.*/absent/')"
+echo "-- 5. destructive but ALL grants ambient (~/Pictures declared): no approval needed"
+cp "$W/pics/probe.png" "$W/home/Pictures/in2.png"
+$C invoke org.aurora.demo delete@v1 --input "$W/home/Pictures/in2.png" --output "$W/home/Pictures/gone.png" | grep -A5 '"approval"' | head -6
+
 echo
 echo "done; cleaning up"

@@ -28,6 +28,33 @@ const (
 	SourcePowerbox = "powerbox"
 )
 
+// How an approval was obtained (Approval.Route).
+const (
+	// RouteAmbient: a destructive/external verb whose grants are all ambient;
+	// the manifest's declared capabilities were consented to at install time,
+	// so no per-invoke approval was required.
+	RouteAmbient = "ambient"
+	// RouteInteractive: a decision arrived on approval.decide@v1 from the
+	// session socket (the launcher's prompt, or anything else of the user's
+	// that can reach the socket).
+	RouteInteractive = "interactive"
+	// RouteAutoApprove: controllerd --auto-approve. A test affordance that
+	// defeats the point of approval.
+	RouteAutoApprove = "auto-approve"
+)
+
+// Approval records whether a destructive or external verb needed approval and
+// how it got it. Only written for those effect classes. A denied or timed-out
+// invoke produces no record at all (it errors).
+type Approval struct {
+	Required  bool   `json:"required"`
+	Route     string `json:"route"`
+	Decision  string `json:"decision,omitempty"` // "allow" when Required
+	RequestID string `json:"request_id,omitempty"`
+	By        string `json:"by,omitempty"` // bus identity that decided; "controllerd" for auto-approve
+	At        string `json:"at"`           // RFC3339Nano, when decided (or when the invoke was checked)
+}
+
 // Grant is one filesystem grant given to the app's domain for one invoke.
 type Grant struct {
 	Path   string `json:"path"`
@@ -50,6 +77,7 @@ type Record struct {
 	Args           json.RawMessage `json:"args"`
 	Isolated       bool            `json:"isolated"`
 	Grants         []Grant         `json:"grants"`
+	Approval       *Approval       `json:"approval,omitempty"`
 	TS             string          `json:"ts"`
 }
 

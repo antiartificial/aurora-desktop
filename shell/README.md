@@ -27,8 +27,8 @@ GOWORK=off go test ./...
 2. `registry.verbs@v1 {"accepts": MIME}`, filtered again client-side (wildcards like
    `image/*` understood).
 3. A numbered list: name, app, effect class, summary. **destructive and external
-   verbs are marked `!!` with a note** (the plan will require approval for them;
-   today the launcher only warns).
+   verbs are marked `!!` with a note** (the controller blocks them until approved, see
+   "Approvals" below).
 4. Pick by number or name, or `--verb NAME` to skip the picker.
 5. `registry.describe@v1` gives the argument schema; each argument is prompted with
    its type and default. `--arg k=v` supplies values and skips all prompting.
@@ -52,6 +52,19 @@ The picker draws on `/dev/tty` and prints one JSON line `{path, mode, ticket}` o
 
 **Not a trusted path.** This is a mechanism, not the final property. The powerbox is an ordinary same-user process; any same-user process that can read the key file can forge tickets, and one can run the picker under its own pty and answer for the user. The plan puts the picker in the compositor on a trusted UI path; there is no compositor yet. With `controllerd --require-powerbox`, a bare path request is refused, but this raises the cost of that attack and does not close it. See `contracts/decisions/0007-ambient-and-gesture-grants.md`. A folder can be picked (`--kind dir`) but the controller grants only single regular files, so no folder ticket is consumed yet. `--pick` does not apply to `chain`.
 
+## Approvals (`aurora approvals`, `aurora watch`, `aurora open`)
+
+A destructive or external verb that needs a grant its manifest did not declare is blocked in the controller until someone answers (`controller/README.md`, "Approval"). The launcher is that someone. It subscribes to `approval.requested` on its own bus connection and, for each request, draws on `/dev/tty`: app, domain, verb, effect class, every grant (mode, source, path) and the arguments. `y`/`yes`/`allow` allows; anything else, an empty line or end of input denies. It then calls `approval.decide@v1`. Text from the request is stripped of control characters before printing, so an app cannot repaint the prompt. Requests published by a `domain:` identity are ignored, and a request already past its `expires_at` is skipped.
+
+- `aurora approvals [--count N]`: only answer requests (run it in a second terminal).
+- `aurora watch`: the provenance log **and** the same responder (`--no-approvals` turns it off).
+- `aurora open` / `chain` of a destructive or external verb starts the responder for the duration of that invoke, so the prompt appears in the same terminal flow. The invoke call is allowed to outlast `--timeout` by 75s while it waits. The result prints `approval: {...}`. A denial exits 1 with `approval_denied`; silence ends in `approval_timeout` (60s by default).
+- Several responders can run at once; the first answer wins and the others print that theirs was not accepted.
+
+**`--yes` (open, chain, watch, approvals) is a test affordance that defeats the point of approval.** It allows every request without asking, and prints `AUTO-ALLOWING ... defeats the point of approval` each time. It exists because a script cannot drive `/dev/tty`. `controllerd --auto-approve` is the controller-side equivalent.
+
+**Not a trusted path.** The prompt is text in a terminal; any process that can write to that terminal can draw a fake one, and any same-user process can answer or publish requests. The plan (Phase 10) puts this prompt in the compositor, which draws it from the real verb and arguments and attributes the answer to the user's input. There is no compositor yet.
+
 ## Commands
 
 ```sh
@@ -68,6 +81,8 @@ aurora chain photo.png --verb resize --verb export \
         --arg 1:width=800 --arg 2:format=jpeg          # A's output becomes B's input
 aurora watch                                           # live provenance log
 aurora watch --count 1                                 # exit after one event
+aurora approvals                                       # answer approval requests on /dev/tty
+aurora open photo.png --verb delete                    # a destructive verb: prompts, then runs or not
 ```
 
 `--verb` accepts `resize` or `resize@v1`. If two apps offer the same verb, use
@@ -99,7 +114,7 @@ manifest notation) or an object `{type, default, description, optional}`. For
 (png, jpeg, text, lying extension), verb filtering, non-interactive `--verb`/`--arg`
 (stdin is empty, so any prompt would fail), interactive pick and arg prompting,
 `--pick` (tickets carried opaquely, read verbs ask for no output ticket, cancel invokes nothing, wrong type refused, plain `open` sends no ticket; `launcher/pick_test.go`), chain wiring, chain stopping on step-1 failure, registry absent / bus down messages,
-destructive/external marking, watch formatting, `-h`.
+destructive/external marking, watch formatting, `-h`. `launcher/approvals_test.go`: the prompt shows app, verb, effect, grants and args; terminal escapes in app-supplied text are neutralised; only an explicit yes allows (no, empty, EOF deny); `open` of a destructive verb prompts in the same flow and allows or denies; `--yes` asks nothing and says so; write verbs start no responder; `approvals` and `watch` answer. The real bus path (`WatchApprovals`, `Decide`) is exercised by hand and in `controller/demo.sh`, not by a Go test.
 
 ## Not implemented
 
@@ -108,8 +123,7 @@ destructive/external marking, watch formatting, `-h`.
 - No graphical launcher: no layer-shell window, fuzzy search or keyboard-driven UI.
   It is a terminal prompt.
 - No trusted-path picker (see Powerbox v0); `chain` has no `--pick`.
-- No approval UI. Destructive and external verbs are marked and the user is told
-  approval will be needed, but nothing blocks or asks; running the verb is the consent.
+- No trusted approval UI: approval is a terminal prompt (see Approvals). The compositor-drawn one is Phase 10.
 - No recipes or saved chains; chains are exactly two verbs, no general pipeline.
 - No argument validation beyond type coercion (no enums, ranges, path pickers).
 - Chains are not atomic: if step 2 fails, step 1's output stays.

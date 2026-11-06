@@ -147,24 +147,20 @@ func TestReadVerbNeverGetsRWGrant(t *testing.T) {
 	}
 }
 
-func TestDestructiveGestureNeedsApproval(t *testing.T) {
-	inv, _, dir, _, _ := setup(t)
+// Superseded: this used to assert that a destructive verb on a gesture grant
+// was only flagged and still ran. Approval is enforced now (approval_test.go
+// has the full set); with no approval channel at all it fails closed.
+func TestDestructiveGestureWithoutApproverIsRefused(t *testing.T) {
+	inv, fk, dir, _, _ := setup(t)
 	homeWith(t, inv)
-	app := inv.Reg.Apps()[0]
-	for i := range app.Manifest.Verbs {
-		if app.Manifest.Verbs[i].Name == "copy@v1" {
-			app.Manifest.Verbs[i].Effect = "destructive" // test-local mutation of the loaded manifest
-		}
-	}
-	var logs []string
-	inv.Logf = func(f string, a ...any) { logs = append(logs, f) }
 	in := putPNG(t, dir, "in.png")
-	res, e := inv.Invoke(t.Context(), Request{App: "org.aurora.demo", Verb: "copy@v1", Input: in, Output: filepath.Join(dir, "o.png")})
-	if e != nil {
-		t.Fatal(e, e.Detail)
+	out := filepath.Join(dir, "o.png")
+	_, e := inv.Invoke(t.Context(), Request{App: "org.aurora.demo", Verb: "delete@v1", Input: in, Output: out})
+	if e == nil || e.Code != "approval_unavailable" {
+		t.Fatalf("want approval_unavailable, got %+v", e)
 	}
-	if !res.NeedsApproval || len(logs) == 0 || !strings.Contains(logs[0], "NEEDS APPROVAL") {
-		t.Fatalf("needs_approval=%v logs=%q", res.NeedsApproval, logs)
+	if _, err := os.Stat(out); err == nil || len(fk.Calls) != 0 {
+		t.Fatalf("it ran anyway: out exists=%v calls=%v", err == nil, fk.Calls)
 	}
 }
 

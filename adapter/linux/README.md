@@ -21,7 +21,7 @@ data dir is `$AURORA_DOMAINS_DIR` or `${XDG_DATA_HOME:-~/.local/share}/aurora/do
 | Grant device | (none) | would be a `--dev-bind` of one node | not built |
 | Snapshot / roll back | `snapshot [--tag]`, `rollback` | `btrfs subvolume snapshot` of all three subvolumes; rollback deletes the live subvolume and re-snapshots the snapshot (so it can be reused) | implemented on btrfs, clear error elsewhere |
 | Resource budget | `limit --memory --pids --cpu` | cgroup2 files in a per-domain cgroup under the user's delegated `user@UID.service`; `run` starts the domain inside it (`CLONE_INTO_CGROUP`) | partial: see below |
-| Identity | `exec-id`, `sockpath` | see below | implemented (MVP) |
+| Identity | `exec-id`, `sockpath`, `cgroup` | see below | implemented (MVP) |
 | Suspend / resume | (none) | cgroup freezer (`cgroup.freeze`) is in the same delegated tree and would work; not built | not built |
 | Shared memory | (none) | memfd + seals; belongs to the bus work | not built |
 | Show / list | `list`, `show` | reads metadata | implemented |
@@ -56,20 +56,42 @@ with two real domains; the bus README has the capability handles that hang
 off that identity. The test suite
 connects from inside a domain to a host-side listener on that socket.
 
+### Kernel-attested membership (`domain cgroup`)
+
+Every `domain run` now starts the sandbox inside the domain's own cgroup
+(`<user@UID.service>/aurora-domains/<name>`, created if missing, with or
+without limits, via `CLONE_INTO_CGROUP`). `domain cgroup <name>` prints that
+path in the form `/proc/<pid>/cgroup` uses (not `/sys/fs/cgroup/...`), for the
+bus to register: `busd --domain ID=SOCK --domain-cgroup ID=$(domain cgroup N)`
+or `"cgroup"` in `bus.domain.add@v1`. The bus then reads SO_PEERCRED's pid and
+`/proc/<pid>/cgroup` and refuses a connection from outside it
+(`bus/README.md`, "Attestation"). No controller is needed, only a delegated
+cgroup subtree; without one `domain cgroup` fails with the reason and `run`
+warns `running WITHOUT a domain cgroup`. Tested (`TestRunPlacesProcessInDomainCgroup`):
+a python process started by `Run` connects to a host listener and its
+SO_PEERCRED pid's cgroup is the domain's; a host process's is not.
+
+The cgroup is named after the domain only, so two stores on one host with a
+domain of the same name share it. The path is as seen from the host cgroup
+namespace; a bus daemon in another cgroup namespace would see different paths.
+
 Weaknesses, stated plainly:
 
-- The identity is the socket, not the credentials. All domains run as the same
-  host uid, so `SO_PEERCRED` alone cannot tell them apart. A same-uid host
-  process (or any domain granted the directory) can also connect to the socket
-  and impersonate the domain.
-- The pid in `SO_PEERCRED` is not mapped back to a domain: the CLI keeps no
-  run table. A stronger version records the bwrap pid/cgroup per run and has
-  the bus check `/proc/<pid>/cgroup` against the domain's cgroup (needs the
-  delegated cgroup, which exists here for pids only).
+- Membership is attested, intent is not. The domain cgroup directory is owned
+  by the host user, so any same-uid host process can write its pid to
+  `cgroup.procs` and BE the domain to the bus (`bus/demo-identity.sh` 8c does
+  exactly this). Inside the domain nothing can: `/sys/fs/cgroup` is not
+  mounted and caps are dropped. A per-domain uid (root/subuid) or a root-owned
+  cgroup manager would close it.
+- Any process the domain starts is in the cgroup and is that domain; the bus
+  cannot tell the app from a shell it spawned.
+- A domain given another domain's socket directory still cannot use it: its
+  processes are in the wrong cgroup.
 - `AURORA_DOMAIN_ID` in the environment is a convenience, not an attestation:
   the domain can read and forward it.
-- A real fix is a per-domain uid range (needs root/subuid) or the Ginux native
-  domain id.
+- Without cgroup delegation (no systemd user session) there is nothing to
+  attest with and the bus falls back to socket identity (loudly; or refuses
+  under `--attest-domains=require`).
 
 ## What is and is not isolated (honest caveats)
 

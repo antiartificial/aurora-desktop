@@ -14,6 +14,7 @@ func main() {
 		In:      bufio.NewReader(os.Stdin),
 		Out:     os.Stdout,
 		Err:     os.Stderr,
+		Tty:     launcher.OpenTTY,
 	}
 	os.Exit(launcher.Run(env, os.Args[1:]))
 }

@@ -42,11 +42,14 @@ type Result struct {
 	Result   json.RawMessage `json:"result,omitempty"`
 	Isolated bool            `json:"isolated"`
 	Grants   []prov.Grant    `json:"grants"`
-	// NeedsApproval is set when an external or destructive verb ran on a
-	// gesture grant. There is no approval UI yet: this is a flag, not a gate.
-	NeedsApproval bool         `json:"needs_approval,omitempty"`
-	Log           string       `json:"log,omitempty"` // tail of the app's stderr
-	Provenance    *prov.Record `json:"provenance,omitempty"`
+	// NeedsApproval is set when approval was required and given (the verb is
+	// external/destructive and a grant was not ambient). Approval says how.
+	NeedsApproval bool `json:"needs_approval,omitempty"`
+	// Approval is set for external and destructive verbs only: whether it was
+	// required, the route (interactive, auto-approve, ambient) and when.
+	Approval   *prov.Approval `json:"approval,omitempty"`
+	Log        string         `json:"log,omitempty"` // tail of the app's stderr
+	Provenance *prov.Record   `json:"provenance,omitempty"`
 }
 
 // Error is the failure reply: {"ok":false,"error":...,"detail":...}.
@@ -74,6 +77,9 @@ type Invoker struct {
 	// RequirePowerbox refuses any grant that is neither ambient nor backed by
 	// a valid powerbox ticket: bare gesture grants are rejected.
 	RequirePowerbox bool
+	// Approvals gates external/destructive verbs on non-ambient grants. nil
+	// means no approval channel exists, and such verbs are refused.
+	Approvals *Approver
 	// Tickets verifies grant tickets; nil means every ticket is refused.
 	Tickets *Tickets
 	// Home expands "~/" in manifest paths (default: the user's home).
@@ -178,15 +184,8 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if e != nil {
 		return nil, e
 	}
-	needsApproval := false
-	if g, ok := firstGesture(grants); ok {
-		if iv.NoGestureGrants {
-			return nil, fail("gesture_grant_refused", "%s would need a grant outside its manifest's declared capabilities", fmt.Sprintf("%s (%s) is not covered by any capabilities.paths of %s; --no-gesture-grants is set", g.Path, g.Mode, app.ID()), req.Verb)
-		}
-		if verb.Effect == manifest.EffectExternal || verb.Effect == manifest.EffectDestructive {
-			needsApproval = true
-			iv.logf("WARNING: NEEDS APPROVAL: %s verb %s of %s runs on gesture grant %s (%s), not covered by its manifest; no approval UI exists yet, proceeding", verb.Effect, req.Verb, app.ID(), g.Path, g.Mode)
-		}
+	if g, ok := firstGesture(grants); ok && iv.NoGestureGrants {
+		return nil, fail("gesture_grant_refused", "%s would need a grant outside its manifest's declared capabilities", fmt.Sprintf("%s (%s) is not covered by any capabilities.paths of %s; --no-gesture-grants is set", g.Path, g.Mode, app.ID()), req.Verb)
 	}
 
 	if iv.RequirePowerbox {
@@ -195,6 +194,12 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 				return nil, fail("powerbox_required", "%s needs a grant that was neither declared by its manifest nor picked in the powerbox", fmt.Sprintf("%s (%s) is a bare gesture grant; --require-powerbox is set", g.Path, g.Mode), req.Verb)
 			}
 		}
+	}
+	// Blocks until a human (or --auto-approve) allows it; before any domain
+	// lock, output file, ticket spend or grant, so a denial leaves nothing.
+	approval, e := iv.approve(ctx, app, verb, req.Verb, argsJSON, grants)
+	if e != nil {
+		return nil, e
 	}
 	if e := redeem(); e != nil {
 		return nil, e
@@ -230,7 +235,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if res.Exit != 0 {
 		return nil, fail("app_failed", "%s exited with status %d", tail(res.Stderr), req.Verb, res.Exit)
 	}
-	out := &Result{OK: true, Isolated: isolated, Grants: grants, NeedsApproval: needsApproval, Log: tail(res.Stderr)}
+	out := &Result{OK: true, Isolated: isolated, Grants: grants, NeedsApproval: approval != nil && approval.Required, Approval: approval, Log: tail(res.Stderr)}
 	if t := bytes.TrimSpace(res.Stdout); len(t) > 0 && json.Valid(t) {
 		out.Result = json.RawMessage(t)
 	}
@@ -241,7 +246,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
-		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, TS: iv.clock.Now().String()}
+		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, Approval: approval, TS: iv.clock.Now().String()}
 	set := iv.SetProvenance
 	if set == nil {
 		set = prov.Write

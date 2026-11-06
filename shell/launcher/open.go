@@ -11,7 +11,7 @@ import (
 )
 
 // PrintVerbs writes the verb listing. Destructive and external verbs are
-// flagged with "!!" because the plan will require approval for them.
+// flagged with "!!" because the controller blocks them for approval.
 // numbered adds a 1-based index for the picker.
 func PrintVerbs(w io.Writer, verbs []Verb, numbered bool) {
 	for i, v := range verbs {
@@ -25,7 +25,7 @@ func PrintVerbs(w io.Writer, verbs []Verb, numbered bool) {
 		}
 		fmt.Fprintf(w, "%s%-14s %-20s %-14s %s\n", prefix, v.Name, v.App, effect, v.Summary)
 		if v.NeedsApproval() {
-			fmt.Fprintf(w, "%s   ^ %s effect: will require approval (approval UI not built yet; running anyway on your say-so)\n", strings.Repeat(" ", len(prefix)), v.Effect)
+			fmt.Fprintf(w, "%s   ^ %s effect: blocks for approval unless every grant is declared by the app\n", strings.Repeat(" ", len(prefix)), v.Effect)
 		}
 	}
 }
@@ -163,6 +163,16 @@ func runVerb(ctx context.Context, env *Env, be Backend, input string, v Verb, o 
 		req.Output, req.OutputTicket = pr.Path, pr.Ticket
 	}
 	fmt.Fprintf(env.Out, "Running %s (%s) on %s ...\n", v.Name, v.App, input)
+	if v.NeedsApproval() {
+		// The invoke blocks in the controller until someone answers; answer
+		// here, in the same terminal flow, on /dev/tty.
+		req.MayBlock = true
+		if stop, err := startResponder(ctx, env, be, env.Yes); err != nil {
+			fmt.Fprintf(env.Err, "aurora: cannot watch for approval requests (%v); run `aurora approvals` elsewhere or it will be denied on timeout\n", err)
+		} else {
+			defer stop()
+		}
+	}
 	res, err := be.Invoke(ctx, req)
 	if err != nil {
 		return "", err
@@ -185,6 +195,9 @@ func runVerb(ctx context.Context, env *Env, be Backend, input string, v Verb, o 
 	if len(res.Grants) > 0 && string(res.Grants) != "null" {
 		fmt.Fprintf(env.Out, "    grants: %s\n", res.Grants)
 	}
+	if len(res.Approval) > 0 && string(res.Approval) != "null" {
+		fmt.Fprintf(env.Out, "    approval: %s\n", res.Approval)
+	}
 	if len(res.Provenance) > 0 && string(res.Provenance) != "null" {
 		fmt.Fprintf(env.Out, "    provenance: %s\n", res.Provenance)
 	}
@@ -197,6 +210,7 @@ func cmdOpen(env *Env, args []string) int {
 	verb := fs.String("verb", "", "run this verb without the picker")
 	app := fs.String("app", "", "disambiguate --verb when several apps offer it")
 	output := fs.String("output", "", "output path (default: next to the input)")
+	yes := fs.Bool("yes", false, "TEST AFFORDANCE: allow approval requests without asking (defeats approval)")
 	pick := fs.Bool("pick", false, "choose the input (and the output) in the powerbox instead of the command line")
 	var kv listFlag
 	fs.Var(&kv, "arg", "verb argument key=value (repeatable); skips prompting")
@@ -204,6 +218,7 @@ func cmdOpen(env *Env, args []string) int {
 	if err != nil {
 		return parseFailed(err)
 	}
+	env.Yes = *yes
 	if *pick {
 		if len(pos) != 0 {
 			fmt.Fprintln(env.Err, "aurora open: --pick takes no file; the powerbox chooses it")

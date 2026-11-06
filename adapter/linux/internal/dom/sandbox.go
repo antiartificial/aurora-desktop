@@ -97,6 +97,9 @@ func termOr() string {
 // Run executes argv inside the domain and returns its exit code.
 // Warnings (e.g. unenforced limits) are written to stderr.
 func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if stderr == nil {
+		stderr = io.Discard
+	}
 	m, err := s.Load(name)
 	if err != nil {
 		return 0, err
@@ -122,18 +125,21 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	cmd.Env = []string{} // bwrap itself needs nothing; the domain env is set via --setenv
 	if m.Limits != (Limits{}) {
-		results := ApplyLimits(name, m.Limits)
-		for _, r := range results {
+		for _, r := range ApplyLimits(name, m.Limits) {
 			if !r.Applied {
 				fmt.Fprintf(stderr, "domain: warning: %s limit NOT enforced: %s\n", r.Controller, r.Detail)
 			}
 		}
-		if d, err := CgroupDir(name); err == nil {
-			if fd, err := syscall.Open(d, syscall.O_RDONLY|syscall.O_DIRECTORY, 0); err == nil {
-				defer syscall.Close(fd)
-				cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: fd}
-			}
-		}
+	}
+	// Every run goes into the domain's own cgroup, limits or not: this is what
+	// lets a bus daemon attest that a connecting pid is inside the domain.
+	if d, err := EnsureCgroup(name); err != nil {
+		fmt.Fprintf(stderr, "domain: warning: running WITHOUT a domain cgroup, the bus cannot attest this process: %v\n", err)
+	} else if fd, err := syscall.Open(d, syscall.O_RDONLY|syscall.O_DIRECTORY, 0); err != nil {
+		fmt.Fprintf(stderr, "domain: warning: running WITHOUT a domain cgroup, the bus cannot attest this process: %v\n", err)
+	} else {
+		defer syscall.Close(fd)
+		cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: fd}
 	}
 	err = cmd.Run()
 	var ee *exec.ExitError

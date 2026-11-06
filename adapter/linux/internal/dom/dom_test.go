@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // homeTemp makes a scratch dir under $HOME (a btrfs fs on the dev box) and removes it afterwards.
@@ -378,5 +380,72 @@ func TestGrantPathExactRefusesNonCanonical(t *testing.T) {
 	}
 	if p, err := st.GrantPathExact("x", a, "ro"); err != nil || p != a {
 		t.Fatalf("canonical path refused or altered: %q %v", p, err)
+	}
+}
+
+// peerCgroup accepts one connection on ln and returns the kernel's record of
+// the connecting process's cgroup (SO_PEERCRED pid -> /proc/<pid>/cgroup).
+func peerCgroup(t *testing.T, ln *net.UnixListener) string {
+	t.Helper()
+	c, err := ln.AcceptUnix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	raw, _ := c.SyscallConn()
+	var cred *syscall.Ucred
+	raw.Control(func(fd uintptr) { cred, _ = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED) })
+	if cred == nil {
+		t.Fatal("no SO_PEERCRED")
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", cred.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "0::"))
+}
+
+func TestRunPlacesProcessInDomainCgroup(t *testing.T) {
+	st, _ := sandboxed(t)
+	if _, err := delegatedBase(); err != nil {
+		t.Skipf("no delegated cgroup: %v", err)
+	}
+	if _, err := os.Stat("/usr/bin/python3"); err != nil {
+		t.Skip("python3 missing")
+	}
+	if _, _, err := st.Create("cg"); err != nil {
+		t.Fatal(err)
+	}
+	want, err := CgroupPath("cg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(SockDir("cg"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(SockDir("cg"), "bus.sock")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
+	if err != nil {
+		t.Skip("cannot listen: ", err)
+	}
+	defer ln.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st.Run("cg", []string{"python3", "-c", "import socket;s=socket.socket(socket.AF_UNIX);s.connect('/run/aurora/bus.sock')"}, nil, nil, nil)
+	}()
+	if got := peerCgroup(t, ln); got != want {
+		t.Fatalf("process in the domain is in cgroup %q, want %q", got, want)
+	}
+	<-done
+	// A host process connecting to the same socket is not in that cgroup.
+	go func() {
+		if c, err := net.Dial("unix", sock); err == nil {
+			defer c.Close()
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	if got := peerCgroup(t, ln); got == want {
+		t.Fatalf("host process reports the domain cgroup %q", got)
 	}
 }

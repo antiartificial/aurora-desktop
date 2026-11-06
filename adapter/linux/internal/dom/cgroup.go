@@ -32,6 +32,8 @@ func ParseSize(s string) (int64, error) {
 	return n * mult, nil
 }
 
+const cgroupRoot = "/sys/fs/cgroup"
+
 // delegatedBase finds the cgroup systemd delegated to this user (user@UID.service).
 func delegatedBase() (string, error) {
 	b, err := os.ReadFile("/proc/self/cgroup")
@@ -48,7 +50,7 @@ func delegatedBase() (string, error) {
 		return "", fmt.Errorf("cgroup v2 not in use")
 	}
 	want := fmt.Sprintf("user@%d.service", os.Getuid())
-	acc := "/sys/fs/cgroup"
+	acc := cgroupRoot
 	for _, part := range strings.Split(strings.Trim(path, "/"), "/") {
 		acc = filepath.Join(acc, part)
 		if part == want {
@@ -65,6 +67,30 @@ func CgroupDir(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "aurora-domains", name), nil
+}
+
+// CgroupPath is the domain's cgroup as the kernel reports it in
+// /proc/<pid>/cgroup for a process in the host's cgroup namespace (the form a
+// bus daemon compares against), e.g. /user.slice/.../user@1000.service/aurora-domains/alpha.
+func CgroupPath(name string) (string, error) {
+	d, err := CgroupDir(name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(d, cgroupRoot), nil
+}
+
+// EnsureCgroup creates the domain's cgroup (no controllers needed: membership
+// is what the bus attests) and returns its directory.
+func EnsureCgroup(name string) (string, error) {
+	d, err := CgroupDir(name)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		return "", fmt.Errorf("cannot create cgroup %s: %w", d, err)
+	}
+	return d, nil
 }
 
 func removeCgroup(name string) {

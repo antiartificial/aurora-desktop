@@ -41,7 +41,9 @@ type Config struct {
 	// MaxSegmentBytes caps one segment (default 256 MiB). The daemon hashes
 	// every segment it accepts, so this bounds the work a sender can cause.
 	MaxSegmentBytes int64
-	Logf            func(format string, args ...any)
+	// AttestDomains is the domain-socket attestation mode (zero: prefer).
+	AttestDomains AttestMode
+	Logf          func(format string, args ...any)
 }
 
 type conn struct {
@@ -52,8 +54,9 @@ type conn struct {
 	viaDomain bool // arrived on a per-domain socket (identity from the socket)
 	since     time.Time
 	out       *outbox
-	subs      []string // guarded by Server.mu
-	services  []string // guarded by Server.mu
+	att       *attestState // nil unless attested at accept
+	subs      []string     // guarded by Server.mu
+	services  []string     // guarded by Server.mu
 
 	segsIn, segBytesIn int64 // accepted from this client; guarded by Server.mu
 }
@@ -93,6 +96,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
+	cfg.Logf("domain attestation mode: %s", cfg.AttestDomains)
 	lg, err := buslog.Open(cfg.DataDir, cfg.SegmentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("open log: %w", err)
@@ -137,7 +141,7 @@ func listen(path string) (net.Listener, error) {
 
 // Serve accepts clients on the session socket until Close is called.
 func (s *Server) Serve() error {
-	err := s.acceptLoop(s.ln, "")
+	err := s.acceptLoop(s.ln, "", "")
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -236,6 +240,10 @@ func (s *Server) readLoop(c *conn) {
 			e.CloseAttachments()
 			continue
 		}
+		if !s.stillAttested(c) {
+			e.CloseAttachments()
+			return
+		}
 		s.dispatch(c, e)
 		e.CloseAttachments() // enqueue gave every recipient its own dup
 	}
@@ -246,6 +254,7 @@ func (s *Server) drop(c *conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.conns, c.id)
+	c.att.close()
 	for _, name := range c.services {
 		if s.services[name] == c {
 			delete(s.services, name)

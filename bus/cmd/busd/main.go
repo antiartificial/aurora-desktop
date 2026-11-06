@@ -46,6 +46,9 @@ func main() {
 	legacy := fs.Bool("legacy-caps", false, "do NOT enforce the capability table: caps stay opaque, forgeable strings (old behaviour)")
 	var doms domFlags
 	fs.Var(&doms, "domain", "listen for a domain: IDENTITY=SOCKET (identity as printed by `domain exec-id`, socket by `domain sockpath`); repeatable")
+	var cgs domFlags
+	fs.Var(&cgs, "domain-cgroup", "cgroup of a --domain: IDENTITY=CGROUP (as printed by `domain cgroup`); repeatable. Connections are accepted only from processes in it")
+	attest := fs.String("attest-domains", "prefer", "domain socket attestation: require (refuse anything unattestable), prefer (attest when a cgroup is registered and the host can; otherwise accept loudly), off (socket is the identity)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: busd [flags]\n\nThe Aurora message bus daemon. Sender identity comes from SO_PEERCRED.")
 		fs.PrintDefaults()
@@ -54,20 +57,36 @@ func main() {
 
 	log.SetFlags(log.Ltime)
 	log.SetPrefix("busd: ")
+	mode, err := server.ParseAttestMode(*attest)
+	if err != nil {
+		log.Fatalf("--attest-domains: %v", err)
+	}
 	srv, err := server.New(server.Config{
-		SocketPath: *sock, DataDir: *data, SegmentBytes: *segBytes, AllowReplay: *allowReplay, EnforceCaps: !*legacy,
+		AttestDomains: mode,
+		SocketPath:    *sock, DataDir: *data, SegmentBytes: *segBytes, AllowReplay: *allowReplay, EnforceCaps: !*legacy,
 		Logf: log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	cgroups := map[string]string{}
+	for _, c := range cgs {
+		id, cg, _ := strings.Cut(c, "=")
+		cgroups[id] = cg
+	}
+	for id := range cgroups {
+		if !doms.has(id) {
+			srv.Close()
+			log.Fatalf("--domain-cgroup %s: no --domain with that identity", id)
+		}
+	}
 	for _, d := range doms {
 		id, path, _ := strings.Cut(d, "=")
-		if err := srv.AddDomain(id, path); err != nil {
+		if err := srv.AddDomainCgroup(id, path, cgroups[id]); err != nil {
 			srv.Close()
 			log.Fatalf("--domain %s: %v", d, err)
 		}
-		log.Printf("domain socket %s -> %s", path, id)
+		log.Printf("domain socket %s -> %s (cgroup %q)", path, id, cgroups[id])
 	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -90,8 +109,17 @@ type domFlags []string
 func (d *domFlags) String() string { return strings.Join(*d, ",") }
 func (d *domFlags) Set(v string) error {
 	if !strings.Contains(v, "=") {
-		return fmt.Errorf("want IDENTITY=SOCKET, got %q", v)
+		return fmt.Errorf("want IDENTITY=VALUE, got %q", v)
 	}
 	*d = append(*d, v)
 	return nil
+}
+
+func (d domFlags) has(id string) bool {
+	for _, v := range d {
+		if strings.HasPrefix(v, id+"=") {
+			return true
+		}
+	}
+	return false
 }

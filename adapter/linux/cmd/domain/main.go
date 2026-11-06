@@ -27,6 +27,7 @@ const usage = `usage: domain <command> [args]
   limit <name> [--memory 512M] [--pids N] [--cpu PCT]   cgroup2 limits
   destroy <name> [--keep-data]          remove the domain
   exec-id <name>                        print the attested domain identity
+  cgroup <name>                         print the domain's cgroup (as /proc/<pid>/cgroup shows it); the bus attests membership
   sockpath <name>                       print the host path of the domain's bus socket
 
 data dir: $AURORA_DOMAINS_DIR or ${XDG_DATA_HOME:-~/.local/share}/aurora/domains
@@ -184,6 +185,17 @@ func main() {
 			die("%v", err)
 		}
 		fmt.Println(dom.ExecID(m))
+	case "cgroup":
+		pos := parse(fs, args)
+		need(pos, 1, "cgroup <name>")
+		if _, err := st.Load(pos[0]); err != nil {
+			die("%v", err)
+		}
+		p, err := dom.CgroupPath(pos[0])
+		if err != nil {
+			die("no attestable cgroup on this host: %v", err)
+		}
+		fmt.Println(p)
 	case "sockpath":
 		pos := parse(fs, args)
 		need(pos, 1, "sockpath <name>")

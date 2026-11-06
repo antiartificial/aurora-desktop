@@ -1,11 +1,16 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"regexp"
+	"strings"
 	"time"
+
+	"github.com/antiartificial/aurora/bus/proto"
 )
 
 // identityRE is the shape of `domain exec-id`: domain:<name>:<hex id>. The
@@ -15,19 +20,29 @@ var identityRE = regexp.MustCompile(`^domain:[A-Za-z0-9_.-]+:[0-9a-f]{8,64}$`)
 
 type domainSock struct {
 	identity, path string
+	cgroup         string // "" = none registered, connections cannot be attested
 	ln             net.Listener
 }
 
 // AddDomain makes the daemon also listen on path. Every connection accepted
 // there is attributed to identity, a fact about WHICH SOCKET it came in on,
 // not about anything the client sends. SO_PEERCRED is still read (uid, pid).
+// With no cgroup the domain cannot be attested (see AddDomainCgroup).
 func (s *Server) AddDomain(identity, path string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.addDomainLocked(identity, path)
+	return s.AddDomainCgroup(identity, path, "")
 }
 
-func (s *Server) addDomainLocked(identity, path string) error {
+// AddDomainCgroup is AddDomain plus the cgroup the domain's processes live in
+// (`domain cgroup <name>`, in /proc/<pid>/cgroup form). Unless the daemon's
+// AttestDomains is off, a connection is accepted only if the kernel says its
+// peer process is in that cgroup or below it.
+func (s *Server) AddDomainCgroup(identity, path, cgroup string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.addDomainLocked(identity, path, cgroup)
+}
+
+func (s *Server) addDomainLocked(identity, path, cgroup string) error {
 	if !identityRE.MatchString(identity) {
 		return fmt.Errorf("identity %q must look like domain:<name>:<hex id> (see `domain exec-id`)", identity)
 	}
@@ -36,6 +51,16 @@ func (s *Server) addDomainLocked(identity, path string) error {
 	}
 	if s.closed {
 		return errors.New("daemon is closed")
+	}
+	if cgroup != "" {
+		if err := checkCgroup(cgroup); err != nil {
+			return err
+		}
+		for _, d := range s.doms {
+			if d.cgroup != "" && (inCgroup(d.cgroup, cgroup) || inCgroup(cgroup, d.cgroup)) {
+				return fmt.Errorf("cgroup %s overlaps %s of %s: one process would be both", cgroup, d.cgroup, d.identity)
+			}
+		}
 	}
 	if s.doms[identity] != nil {
 		return fmt.Errorf("domain %s is already registered", identity)
@@ -49,8 +74,18 @@ func (s *Server) addDomainLocked(identity, path string) error {
 	if err != nil {
 		return err
 	}
-	s.doms[identity] = &domainSock{identity, path, ln}
-	go s.acceptLoop(ln, identity)
+	s.doms[identity] = &domainSock{identity, path, cgroup, ln}
+	switch {
+	case cgroup != "" && s.cfg.AttestDomains != AttestOff:
+		s.cfg.Logf("domain %s: connections must come from cgroup %s (attest mode %s)", identity, cgroup, s.cfg.AttestDomains)
+	case s.cfg.AttestDomains == AttestOff:
+		s.cfg.Logf("WARNING: domain %s: attestation is OFF, any same-uid process that opens %s is this domain", identity, path)
+	case s.cfg.AttestDomains == AttestRequire:
+		s.cfg.Logf("WARNING: domain %s has no cgroup registered and mode is require: every connection will be refused", identity)
+	default:
+		s.cfg.Logf("WARNING: domain %s has no cgroup registered: its connections are UNATTESTED (mode prefer)", identity)
+	}
+	go s.acceptLoop(ln, identity, cgroup)
 	return nil
 }
 
@@ -88,7 +123,7 @@ func (s *Server) removeDomainLocked(identity string) error {
 
 // acceptLoop serves one listener. identity "" is the session socket, whose
 // clients are named by Config.Resolver; otherwise by the listener's domain.
-func (s *Server) acceptLoop(ln net.Listener, identity string) error {
+func (s *Server) acceptLoop(ln net.Listener, identity, cgroup string) error {
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
@@ -100,9 +135,18 @@ func (s *Server) acceptLoop(ln net.Listener, identity string) error {
 			nc.Close()
 			continue
 		}
+		var att *attestState
+		if identity != "" {
+			if att, err = s.admit(nc, cred, identity, cgroup); err != nil {
+				s.cfg.Logf("%v", err)
+				refuse(nc, err)
+				continue
+			}
+		}
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
+			att.close()
 			nc.Close()
 			return net.ErrClosed
 		}
@@ -111,7 +155,7 @@ func (s *Server) acceptLoop(ln net.Listener, identity string) error {
 			name = s.cfg.Resolver(cred)
 		}
 		s.nextConn++
-		c := &conn{id: s.nextConn, nc: nc, cred: cred, domain: name, viaDomain: identity != "", since: time.Now(), out: newOutbox()}
+		c := &conn{id: s.nextConn, nc: nc, cred: cred, domain: name, viaDomain: identity != "", since: time.Now(), out: newOutbox(), att: att}
 		s.conns[c.id] = c
 		s.wg.Add(2)
 		s.mu.Unlock()
@@ -119,6 +163,25 @@ func (s *Server) acceptLoop(ln net.Listener, identity string) error {
 		go s.writeLoop(c)
 		go s.readLoop(c)
 	}
+}
+
+// refuse tells the peer why, best effort, then hangs up. The reason names no
+// cgroup the peer could not already read about itself.
+func refuse(nc net.Conn, why error) {
+	pl, _ := json.Marshal(map[string]string{"code": "attestation_failed", "message": why.Error()})
+	line, _ := json.Marshal(proto.Envelope{From: "bus", Kind: proto.KindError, Payload: pl})
+	nc.SetWriteDeadline(time.Now().Add(time.Second))
+	nc.Write(append(line, '\n'))
+	nc.Close()
+}
+
+// checkCgroup rejects cgroup paths that would match too much or are not in
+// the /proc/<pid>/cgroup form ("/" would match every process on the host).
+func checkCgroup(cg string) error {
+	if !strings.HasPrefix(cg, "/") || cg == "/" || path.Clean(cg) != cg {
+		return fmt.Errorf("cgroup %q must be a clean absolute path below the root, as in /proc/<pid>/cgroup", cg)
+	}
+	return nil
 }
 
 func (s *Server) closeDomains() {
@@ -135,12 +198,13 @@ func (s *Server) closeDomains() {
 type InspectDomain struct {
 	Identity string `json:"identity"`
 	Socket   string `json:"socket"`
+	Cgroup   string `json:"cgroup,omitempty"`
 }
 
 func (s *Server) inspectDomains() []InspectDomain {
 	out := []InspectDomain{}
 	for _, d := range s.doms {
-		out = append(out, InspectDomain{d.identity, d.path})
+		out = append(out, InspectDomain{d.identity, d.path, d.cgroup})
 	}
 	return out
 }

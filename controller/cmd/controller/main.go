@@ -23,6 +23,7 @@ const usage = `usage: controller [--socket S] <command>
   describe <app> <verb>                      a verb's input/output schema and effect
   invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]
                                              run a verb (values: JSON if valid, else string)
+  decide <request_id> allow|deny             answer an approval.requested (from the session socket)
   provenance <file>                          read back the file's provenance xattr
 `
 
@@ -115,6 +116,12 @@ func main() {
 			p["output_ticket"] = *otk
 		}
 		call(sock, "registry.invoke@v1", p)
+	case "decide":
+		pos := split(fs, rest)
+		if len(pos) != 2 {
+			die("usage: controller decide <request_id> allow|deny")
+		}
+		call(sock, "approval.decide@v1", map[string]any{"request_id": pos[0], "decision": pos[1]})
 	case "provenance":
 		pos := split(fs, rest)
 		if len(pos) != 1 {

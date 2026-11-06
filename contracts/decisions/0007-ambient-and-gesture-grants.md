@@ -17,17 +17,17 @@ Every filesystem grant for an invoke is classified and the class is recorded.
 2. **gesture.** Not covered. Legitimate because the user's action for this one invocation is the authority, as with the powerbox picker: it grants that path and nothing more, even if the manifest never named it. Nothing checks that action happened: a bare gesture is only a caller's request.
 3. **powerbox.** Not covered by the manifest, but backed by a valid grant ticket (below) that the powerbox picker minted for exactly this path, mode, app and verb. This is a gesture the controller can distinguish from a bare request, to the limited extent the ticket scheme allows.
 
-**Recorded.** The `registry.invoke@v1` reply, the `provenance.created` event and the `user.aurora.provenance` xattr carry `grants: [{"path","mode":"ro|rw","source":"ambient|gesture|powerbox"}]`. The reply also carries `needs_approval:true` when an `external` or `destructive` verb ran on a gesture grant.
+**Recorded.** The `registry.invoke@v1` reply, the `provenance.created` event and the `user.aurora.provenance` xattr carry `grants: [{"path","mode":"ro|rw","source":"ambient|gesture|powerbox"}]`. For `external` and `destructive` verbs the reply and the record also carry `approval:{required, route, decision, request_id, by, at}` (see Approval, below).
 
 **Enforced today.**
 - A `read` verb takes no output and so never receives an `rw` grant.
 - A verb's `capabilities` refs must name declared capabilities; otherwise the manifest validator rejects it and the controller skips the app with the reason.
 - `controllerd --no-gesture-grants` (default off) refuses any invoke that needs a gesture grant (`gesture_grant_refused`), before touching a domain.
-- `needs_approval` is set and logged loudly for `external`/`destructive` verbs on gesture grants. It is a flag. It does not stop the invoke.
+- Approval is enforced (see "Approval is enforced", below). `needs_approval` is now true when approval was required and given.
 
 - `registry.invoke@v1` takes optional `ticket` (authorises the input grant) and `output_ticket` (the output grant). A valid ticket reclassifies that grant from gesture (or ambient) to `powerbox`. A ticket that is expired, reused, tampered, minted under another key, or for a different app, verb, mode or path is refused with its own error (`ticket_expired`, `ticket_reused`, `ticket_bad_signature`, `ticket_malformed`, `ticket_wrong_app|verb|mode|path`); it is never downgraded to a gesture. A refused request does not spend the ticket.
 - `controllerd --require-powerbox` (default off) refuses any grant that is neither `ambient` nor `powerbox` (`powerbox_required`). This is the setting that makes the distinction bite.
-- `needs_approval` is set only for gesture grants. A powerbox grant is not flagged, on the reasoning that the user chose that file for that verb; the approval design is still open.
+- Approval applies to powerbox grants too (amended: see below).
 
 **The ticket (powerbox v0).** `controller/ticket`; picker in `shell/cmd/powerbox`. A ticket is `base64url(claims) "." base64url(HMAC-SHA256(key, claims))` with claims `{v, path, mode, app, verb, nonce, exp}`. The picker resolves the path (symlinks) before signing; the controller compares against its own resolved path. Default lifetime 60s. The controller keeps spent nonces in memory and redeems all of an invoke's tickets atomically, after every other check has passed. The key is 32 random bytes in `$XDG_RUNTIME_DIR/aurora/powerbox.key` (or `$AURORA_POWERBOX_KEY`), mode 0600, owner-checked on load, created by whichever of controllerd or powerbox starts first. The launcher carries tickets as opaque strings.
 
@@ -41,11 +41,23 @@ What it does NOT guarantee, plainly:
 - The nonce ledger is in memory: a controllerd restart forgets it, so a ticket spent before a restart can be spent again if still unexpired.
 - The folder kind exists in the picker but the controller grants only single regular files, so no folder ticket is consumed yet.
 
-**Not decided.** The shape of the approval prompt and what a recorded approval looks like (Open questions).
+**Approval is enforced (amended).** An `external` or `destructive` verb whose invoke needs any grant that is not `ambient` (so gesture or powerbox) no longer runs on a flag. The controller does not run it. It publishes `approval.requested` carrying a request id, the app, its domain identity, the verb, the effect class, every grant (path, mode, source) and the arguments, and waits `--approval-timeout` (default 60s). No decision is a deny (`approval_timeout`); a deny is `approval_denied`. Either leaves no output file, no spent ticket and no provenance. A destructive verb whose grants are all `ambient` needs none: the declared capability was consented to at install, and the record says `route:"ambient", required:false`.
+
+A decision is `approval.decide@v1 {request_id, decision}` to the `registry` service. The controller accepts it only when busd's SO_PEERCRED-derived `from` is `uid<its own uid>:<process>`. A `domain:` identity is refused `not_permitted`, so an app cannot approve its own request (tested over a real busd with the app's registered domain socket). The reply and provenance say how it was approved: `interactive`, `auto-approve` (`controllerd --auto-approve`, a test affordance that defeats the point, logged on every use) or `ambient`. With no approval channel configured the verb is refused (`approval_unavailable`), never run.
+
+**This is NOT the trusted approval Phase 10 specifies.** The prompt is a terminal prompt drawn by `aurora` on `/dev/tty`. What that does not give:
+- Any process that can write to that terminal can draw a convincing fake prompt, or answer for the user.
+- Any unconfined process of the same uid is `uid<N>:<comm>` to the bus, passes the decider check, and can call `approval.decide@v1` or publish a spoofed `approval.requested`. The check separates confined apps from the user's session, not one session process from another.
+- The decision is bound to a random request id, not to what the user was shown or to their input. Nothing proves a human pressed a key.
+- `registry.invoke@v1` itself has no caller attribution, so a request is not tied to who asked.
+
+Still needs the compositor: drawing the approval from the real verb and arguments on a surface no client can write to, and attributing the answer to the user's input events rather than to a socket peer.
+
+**Not decided.** Whether a powerbox ticket should count as approval for non-destructive-but-external verbs, and whether approvals can be remembered (none are; each invoke asks).
 
 ## Open questions
 
-- **Approval UI.** What the user sees for `needs_approval`, and whether the invoke is held until they answer. Phase 6.
+- **Trusted approval UI.** Mechanism done (blocking, timeout, decider check, record); the compositor-drawn, user-attributed prompt is Phase 10.
 - **Powerbox trusted path.** Gesture grants must come from a picker the user actually operated. What exists (the third source above) is the mechanism: tickets, binding, single use, `--require-powerbox`. What still waits for Phase 6 and the compositor: the picker drawn by the compositor on its trusted UI path, with input the compositor attributes to the user, and the signing capability held by the compositor rather than a key file any same-user process can read. Until then the property "this grant came from the user" is NOT achieved; only "this grant came from something holding the key".
 - **Shared coverage rule.** `contracts/manifest` keeps its path-coverage rule unexported, so the controller has its own in `controller/internal/invoke/grants.go`. It should move into the manifest package so the consent diff and the grant check cannot drift. Phase 6.
 - **Gesture grant in the provenance chain.** Whether a later reader should treat output from a gesture-granted run differently. Phase 6.

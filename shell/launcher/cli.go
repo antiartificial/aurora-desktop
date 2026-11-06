@@ -21,6 +21,12 @@ type Env struct {
 	Err     io.Writer
 	// Pick asks the powerbox for a grant (default ExecPicker); tests inject one.
 	Pick func(PickRequest) (PickResult, error)
+	// Tty opens the terminal approval prompts are drawn on and read from
+	// (default none; main sets OpenTTY). Tests inject a scripted one.
+	Tty func() (io.ReadWriter, error)
+	// Yes auto-allows approval requests raised by this command's own invokes
+	// (--yes). A test affordance that defeats approval.
+	Yes bool
 }
 
 const usage = `aurora - the Aurora launcher
@@ -33,7 +39,12 @@ Usage:
                                 run A, then feed its output to B
   aurora verbs [--accepts MIME] list verbs the registry knows
   aurora apps                   list installed apps
-  aurora watch                  live log of provenance.created events
+  aurora watch [--yes]          live log of provenance.created events, and
+                                answers approval requests on /dev/tty
+  aurora approvals [--yes]      only answer approval requests on /dev/tty
+                                (a destructive or external verb blocks until you do)
+  --yes (open, chain, watch, approvals) allows every request WITHOUT asking.
+                                A test affordance that defeats the point.
 
 Every command takes -h, --socket PATH (default $AURORA_BUS_SOCK or
 $XDG_RUNTIME_DIR/aurora/bus.sock) and --timeout DURATION (default 10s).
@@ -97,6 +108,8 @@ func Run(env *Env, args []string) int {
 		return cmdVerbs(env, rest)
 	case "apps":
 		return cmdApps(env, rest)
+	case "approvals":
+		return cmdApprovals(env, rest)
 	case "watch":
 		return cmdWatch(env, rest)
 	}
@@ -162,8 +175,10 @@ func cmdVerbs(env *Env, args []string) int {
 
 func cmdWatch(env *Env, args []string) int {
 	var c common
-	fs := newFlags(env, "watch", "watch [--count N]", &c)
+	fs := newFlags(env, "watch", "watch [--count N] [--yes] [--no-approvals]", &c)
 	count := fs.Int("count", 0, "exit after N events (0 = run until interrupted)")
+	yes := fs.Bool("yes", false, "TEST AFFORDANCE: allow every approval request without asking (defeats approval)")
+	noAppr := fs.Bool("no-approvals", false, "do not answer approval requests")
 	if _, err := parseInterleaved(fs, args); err != nil {
 		return parseFailed(err)
 	}
@@ -173,6 +188,14 @@ func cmdWatch(env *Env, args []string) int {
 	defer stop()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if _, can := be.(Approver); can && !*noAppr {
+		if stopA, err := startResponder(ctx, env, be, *yes); err != nil {
+			fmt.Fprintf(env.Err, "aurora: not answering approvals: %v\n", err)
+		} else {
+			defer stopA()
+			fmt.Fprintln(env.Out, "also answering approval.requested on /dev/tty")
+		}
+	}
 	fmt.Fprintln(env.Out, "watching provenance.created (Ctrl-C to stop)")
 	n := 0
 	err := be.Watch(ctx, func(e ProvEvent) {
@@ -198,4 +221,8 @@ func FormatProv(e ProvEvent) string {
 		s += "  <- " + strings.Join(e.Inputs, ", ")
 	}
 	return s
+}
+
+func signalCtx() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt)
 }

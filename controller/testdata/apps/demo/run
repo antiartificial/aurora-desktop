@@ -12,6 +12,12 @@ case $verb in
     echo "demo: /home entries visible to me: $(ls /home 2>/dev/null | wc -l)" >&2
     echo "{\"ok\":true,\"output\":\"$out\"}"
     ;;
+  delete@v1)
+    # Destructive stand-in: the real harm would be removing $in, which the
+    # sandbox grants read-only anyway. The tombstone is what tests look for.
+    echo "tombstone for $in" > "$out" || exit 1
+    echo "{\"ok\":true,\"output\":\"$out\"}"
+    ;;
   size@v1)
     echo "{\"ok\":true,\"bytes\":$(wc -c < "$in" | tr -d ' ')}"
     ;;

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,6 +64,14 @@ func (b *busBackend) Close() error {
 
 // call sends one request to the registry service and decodes the reply.
 func (b *busBackend) call(ctx context.Context, verb string, req, resp any) error {
+	return b.callWithin(ctx, b.timeout, verb, req, resp)
+}
+
+// approvalGrace is added to the call timeout for an invoke that may wait on an
+// approval (the controller's own default wait is 60s).
+const approvalGrace = 75 * time.Second
+
+func (b *busBackend) callWithin(ctx context.Context, timeout time.Duration, verb string, req, resp any) error {
 	c, err := b.conn()
 	if err != nil {
 		return err
@@ -71,7 +80,7 @@ func (b *busBackend) call(ctx context.Context, verb string, req, resp any) error
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, b.timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	r, err := c.Call(ctx, proto.Envelope{To: "registry", Verb: verb, Payload: payload})
 	if err != nil {
@@ -129,7 +138,11 @@ func (b *busBackend) Describe(ctx context.Context, app, verb string) (Descriptio
 
 func (b *busBackend) Invoke(ctx context.Context, r InvokeRequest) (InvokeResult, error) {
 	var out InvokeResult
-	err := b.call(ctx, "registry.invoke@v1", r, &out)
+	timeout := b.timeout
+	if r.MayBlock {
+		timeout += approvalGrace
+	}
+	err := b.callWithin(ctx, timeout, "registry.invoke@v1", r, &out)
 	return out, err
 }
 
@@ -199,4 +212,55 @@ func normTime(t string) string {
 		}
 	}
 	return t
+}
+
+func (b *busBackend) Decide(ctx context.Context, id, decision string) error {
+	var out json.RawMessage
+	return b.call(ctx, "approval.decide@v1", map[string]string{"request_id": id, "decision": decision}, &out)
+}
+
+// WatchApprovals uses its own connection: the main one's event channel
+// belongs to Watch, and a prompt must not steal provenance events. Requests
+// published by a domain are ignored; only the controller (a session-socket
+// process) is a legitimate source. The bus does not stop a same-user process
+// from publishing the topic, so a prompt is only as trustworthy as that.
+func (b *busBackend) WatchApprovals(ctx context.Context) (<-chan ApprovalRequest, error) {
+	c, err := client.Dial(b.socket)
+	if err != nil {
+		return nil, fmt.Errorf("%w (socket %s)", ErrBusDown, b.socket)
+	}
+	sctx, cancel := context.WithTimeout(ctx, b.timeout)
+	err = c.Subscribe(sctx, "approval.requested")
+	cancel()
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("subscribe approval.requested: %w", err)
+	}
+	out := make(chan ApprovalRequest, 16)
+	go func() {
+		defer close(out)
+		defer c.Close()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-c.Events():
+				if !ok {
+					return
+				}
+				if strings.HasPrefix(e.From, "domain:") {
+					continue
+				}
+				var r ApprovalRequest
+				if json.Unmarshal(e.Payload, &r) == nil && r.RequestID != "" {
+					select {
+					case out <- r:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+	}()
+	return out, nil
 }

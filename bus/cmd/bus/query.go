@@ -133,7 +133,11 @@ func cmdInspect(args []string) int {
 	}
 	fmt.Printf("domain sockets (%d):\n", len(r.Domains))
 	for _, d := range r.Domains {
-		fmt.Printf("  %s  %s\n", d.Identity, d.Socket)
+		cg := d.Cgroup
+		if cg == "" {
+			cg = "(none: unattestable)"
+		}
+		fmt.Printf("  %s  %s  cgroup=%s\n", d.Identity, d.Socket, cg)
 	}
 	fmt.Printf("handles (%d outstanding):\n", len(r.Handles))
 	for _, h := range r.Handles {

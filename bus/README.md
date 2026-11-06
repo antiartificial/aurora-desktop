@@ -77,7 +77,7 @@ busd listens on its session socket and, optionally, on one socket per domain.
   never do (tested).
 - **Registration.** `busd --domain IDENTITY=SOCKET` (repeatable), the Go API
   `Server.AddDomain/RemoveDomain`, or the control verbs `bus.domain.add@v1` /
-  `bus.domain.remove@v1` `{"identity","path"}`, which the controller calls over
+  `bus.domain.remove@v1` `{"identity","path","cgroup"}` (cgroup optional), which the controller calls over
   the session socket (a domain connection is refused with `forbidden`, so a
   domain cannot create domains). Chosen over watching the adapter's socket
   directory because it is explicit, needs no inotify or scan races, and the
@@ -86,15 +86,60 @@ busd listens on its session socket and, optionally, on one socket per domain.
   Identities must match `domain:<name>:<hex>`, which a session identity can
   never match, and each identity and path can be registered once. Removing a
   domain closes its socket, disconnects its clients and drops handles it holds.
-- **What this does NOT guarantee.** All domains run as the same host uid, so the
-  socket path IS the identity. Any same-uid host process that can open a
-  domain's socket (it is mode 0600 in a 0700 directory, both owned by that
-  uid) is that domain to the bus, and so is any other domain given that
-  directory. `demo-identity.sh` step 8 shows it happening. SO_PEERCRED cannot
-  help: it says the same uid for everyone. Fixes: per-domain uids (needs
-  root/subuid), or the kernel adapter attesting the connecting process's
-  domain (cgroup or native domain id) so the socket stops being the secret.
-  The pid in SO_PEERCRED is not mapped back to a domain either.
+- **Attestation (kernel-checked membership).** A domain registered with a
+  cgroup (`--domain-cgroup ID=CGROUP`, `AddDomainCgroup`, or `"cgroup"` in
+  `bus.domain.add@v1`; the adapter's `domain cgroup <name>` prints it) is no
+  longer "whoever opens the socket". On accept the daemon reads the peer pid
+  from SO_PEERCRED, reads `/proc/<pid>/cgroup` (`0::` line) and requires it to
+  equal the domain's cgroup or be below it. Otherwise the connection gets an
+  `attestation_failed` error line and is closed, and the log says which pid,
+  uid and comm, which cgroup it was in and which one the domain has.
+  What the kernel attests: the pid that called `connect` (SO_PEERCRED) and the
+  cgroup the kernel has that pid in. What is inferred: that a process in the
+  domain's cgroup is the domain, which holds as long as only `domain run` puts
+  processes there.
+  `--attest-domains=require|prefer|off` (`Config.AttestDomains`, zero value
+  prefer; mode is logged at startup and per domain):
+  `require` refuses anything unattestable (no cgroup registered, `/proc` pid
+  unreadable, no cgroup v2); `prefer` (default) attests whenever a cgroup is
+  registered and refuses mismatches, and accepts only the two cases where
+  attestation does not exist (no cgroup registered; host without cgroup v2),
+  each with a `WARNING ... UNATTESTED` line per connection; an unreadable pid
+  is refused even in prefer; `off` is the old socket-is-identity behaviour.
+  Note a controller that registers domains without a cgroup is, under
+  `prefer`, still unattested: pass the cgroup, or run `require`.
+  Overlapping or nested domain cgroups, `/` and non-absolute paths are
+  refused at registration.
+- **Races, stated.** (1) PID reuse between the SO_PEERCRED read and `/proc`:
+  the daemon also takes `SO_PEERPIDFD` (Linux 6.5+), which pins the exact
+  process, and after reading `/proc` checks with `pidfd_send_signal(0)` that
+  it is still there, so a recycled pid is refused. On kernels without
+  SO_PEERPIDFD it compares `/proc/<pid>/stat` field 22 (start time) before and
+  after the cgroup read, which leaves a residual: a reuse inside that window
+  that matches start time to the tick. (2) A client that exits right after
+  connecting can be gone (reaped) before the daemon reads `/proc`; it is
+  refused (fail closed), so a very short-lived legitimate client can be
+  turned away under load. (3) Leaving the cgroup after connecting: the daemon
+  re-reads the original connector's cgroup at most once a second, on the next
+  message, and disconnects it if it is alive and outside. Messages sent in
+  the up-to-1s window before the next check are delivered. A connector that
+  has exited is not treated as a violation (its connection may live on in a
+  child that inherited it). (4) The connection is attested by its connector;
+  a domain process can pass the connected fd on (SCM_RIGHTS) and the
+  receiver speaks as the domain.
+- **What this does NOT guarantee.** Membership, not intent. The domain's
+  cgroup directory is owned by the same host uid, so a same-uid host process
+  that WRITES ITS PID INTO `cgroup.procs` is then in the cgroup and is that
+  domain (`demo-identity.sh` 8c shows it). Attestation stops impersonation by
+  any process that does not do that: a process that merely finds or is handed
+  the socket, another domain, a confused or sloppy host program. Any process
+  the domain itself started is the domain too. Per-domain uids (root/subuid)
+  or a cgroup tree not writable by the user would close the gap. The session
+  socket is unchanged (uid:comm). The daemon must see the domain's pids in
+  `/proc` (same pid namespace) and use the same cgroup namespace as the one
+  the registered path was computed in. Verified here on cgroup v2 with a
+  systemd-delegated `user@1000.service` subtree; the "no cgroup v2" degrade
+  branch is code only: neither run nor tested here.
 
 ## Capabilities
 
@@ -305,11 +350,17 @@ positional arguments.
 The end-to-end demo, which leaves no process behind, is `./demo.sh`.
 `./demo-identity.sh` runs two real bwrap domains (needs `bwrap`, builds
 `adapter/linux`'s `domain`): distinct identities, mint, transfer, forgery
-rejected, and the same-uid impersonation weakness.
+rejected, then a host process impersonating a domain: refused with attestation
+(8a), accepted with `--attest-domains=off` (8b), and the residual
+join-the-cgroup hole (8c).
 
 ## Tests
 
-`go test ./...`. Covered: SO_PEERCRED identity beats a spoofed `from` (also in
+`go test ./...`. Covered: attestation (`server/attest_test.go`: a process started
+inside a real cgroup is accepted, a host process is refused with a detailed log,
+`off` restores the old behaviour, `require` refuses without a cgroup, leaving the
+cgroup drops the connection; tests skip without a delegated cgroup subtree);
+SO_PEERCRED identity beats a spoofed `from` (also in
 the log); domain-socket identity beats a spoofed `from`, two domains differ and
 one domain is stable, registration rules; invented, held, not-held,
 transferred, revoked and expired handles, inspect, log holds only ids,

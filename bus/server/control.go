@@ -196,13 +196,13 @@ func (s *Server) ctlDomain(c *conn, verb string, raw json.RawMessage) (any, erro
 	if c.viaDomain {
 		return nil, cerr("forbidden", "domain sockets are managed from the session socket only")
 	}
-	var p struct{ Identity, Path string }
+	var p struct{ Identity, Path, Cgroup string }
 	if err := json.Unmarshal(raw, &p); err != nil || p.Identity == "" {
-		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>"}`)
+		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>","cgroup":"<optional, /proc/<pid>/cgroup form>"}`)
 	}
 	if verb == "bus.domain.remove@v1" {
 		return map[string]string{"removed": p.Identity}, s.removeDomainLocked(p.Identity)
 	}
 	// AddDomain takes s.mu, which control's caller already holds.
-	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path)
+	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path, p.Cgroup)
 }

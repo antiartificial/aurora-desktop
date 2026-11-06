@@ -21,6 +21,13 @@
 #define B_BAD_TEAM_ID     (-ESRCH)
 #define B_NO_MORE_PORTS   (-ENFILE)
 #define B_NAME_NOT_FOUND  (B_GENERAL_ERROR_BASE + 9)
+#define B_BAD_INDEX       (B_GENERAL_ERROR_BASE + 5)
+#define B_BAD_TYPE        (B_GENERAL_ERROR_BASE + 6)
+#define B_MISMATCHED_VALUES (B_GENERAL_ERROR_BASE + 8)
+#define B_NAME_IN_USE     (B_GENERAL_ERROR_BASE + 10)
+#define B_NOT_ALLOWED     (B_GENERAL_ERROR_BASE + 16)
+#define B_BAD_DATA        (-EILSEQ)
+#define B_BAD_REPLY       (-EBADMSG)
 
 #define B_BAD_SEM_ID      (B_OS_ERROR_BASE + 1)
 #define B_NO_MORE_SEMS    (B_OS_ERROR_BASE + 2)

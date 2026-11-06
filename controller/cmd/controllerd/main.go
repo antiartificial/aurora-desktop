@@ -33,6 +33,8 @@ func main() {
 	noGesture := fs.Bool("no-gesture-grants", false, "refuse any grant not covered by the app manifest's capabilities.paths (default: gesture grants allowed)")
 	reqPB := fs.Bool("require-powerbox", false, "refuse any grant that is neither ambient nor backed by a valid powerbox ticket (bare gesture grants are rejected)")
 	keyPath := fs.String("powerbox-key", ticket.KeyPath(), "shared key file for powerbox tickets (env AURORA_POWERBOX_KEY), created 0600 if missing")
+	autoApprove := fs.Bool("auto-approve", false, "TEST AFFORDANCE, defeats approval: allow every destructive/external invoke on a non-ambient grant without asking anyone (logged loudly each time)")
+	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
 	fs.Func("exec", "app executable override, id=path (repeatable); for apps whose binary is built outside the app dir", func(v string) error {
@@ -72,6 +74,13 @@ func main() {
 		log.Printf("--require-powerbox: grants must be ambient or backed by a powerbox ticket; bare gesture grants are refused")
 	}
 
+	approver := &invoke.Approver{Timeout: *apprTimeout, AutoApprove: *autoApprove}
+	if *autoApprove {
+		log.Printf("WARNING: --auto-approve: destructive and external verbs on non-ambient grants will be APPROVED WITHOUT ASKING. This is a test affordance and defeats the point of approval.")
+	} else {
+		log.Printf("approval enforced: destructive/external verbs on non-ambient grants wait %s on approval.requested for approval.decide@v1 from the session socket, then are denied", *apprTimeout)
+	}
+
 	runner := domain.CLI{Bin: domain.Locate(*dbin, "")}
 	if err := runner.Available(); err != nil {
 		log.Printf("WARNING: domain tooling unavailable: %v", err)
@@ -89,7 +98,7 @@ func main() {
 	}
 	defer c.Close()
 	inv := &invoke.Invoker{
-		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, RequirePowerbox: *reqPB, Tickets: tickets, Execs: execs, Timeout: *timeout,
+		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, RequirePowerbox: *reqPB, Tickets: tickets, Execs: execs, Timeout: *timeout, Approvals: approver,
 		Bus: busreg.Client{C: c},
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)

@@ -9,8 +9,9 @@ import (
 	"fmt"
 )
 
-// Effect classes. Destructive and external are the ones the plan says will
-// need approval (Phase 5/10); the launcher only marks them for now.
+// Effect classes. Destructive and external are the ones that need approval
+// when they run on a grant their manifest did not declare: the controller
+// blocks them until someone answers (see approvals.go).
 const (
 	EffectRead        = "read"
 	EffectWrite       = "write"
@@ -64,6 +65,9 @@ type InvokeRequest struct {
 	// opaquely from the picker to the controller.
 	Ticket       string `json:"ticket,omitempty"`
 	OutputTicket string `json:"output_ticket,omitempty"`
+	// MayBlock is set for verbs that can wait on an approval; the backend
+	// then allows the call to outlast its usual timeout. Not sent.
+	MayBlock bool `json:"-"`
 }
 
 // InvokeResult is the reply of registry.invoke@v1.
@@ -74,6 +78,7 @@ type InvokeResult struct {
 	Isolated   *bool           `json:"isolated,omitempty"`
 	Provenance json.RawMessage `json:"provenance,omitempty"`
 	Grants     json.RawMessage `json:"grants,omitempty"`
+	Approval   json.RawMessage `json:"approval,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	Detail     string          `json:"detail,omitempty"`
 }

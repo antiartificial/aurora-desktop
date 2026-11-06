@@ -1,4 +1,4 @@
-# kits: BeOS kernel primitives on Linux userspace (Haiku Stage A, foundation)
+# kits: BeOS primitives and a messaging core on Linux userspace (Haiku Stage A)
 
 Earlier this file was a one-line placeholder for a future Rust Interface Kit. That plan is unchanged and unrelated to this directory's current contents.
 
@@ -6,7 +6,9 @@ Earlier this file was a one-line placeholder for a future Rust Interface Kit. Th
 
 A small C library, `libkitsos.a`, linkable from C++, that implements the BeOS/Haiku kernel-kit calls the Haiku messaging core (`src/kits/app`) makes. Decision 0008 (Stage A) lists them: ports, areas, semaphores and threads, reimplemented in userspace rather than in a kernel module.
 
-**This is the primitives layer only.** There is no `BMessage`, no `BLooper`, no `BHandler`, no `BMessenger`, no `BApplication` and no libbe. Nothing here has been compiled against Haiku's kits. The Stage A claim it supports is narrow: the primitives those kits call can exist, work between processes, and pass their own tests.
+**Two layers.** `libkitsos.a` is the primitives layer. `libkitsapp.a` sits on it and is a messaging core: `BMessage`, `BHandler`, `BLooper`, `BMessenger`, `BApplication`. **This is a reimplementation of the API surface, written from scratch. It is not Haiku's kits and not libbe.** Nothing here has been compiled against Haiku's `src/kits/app`; that is a later step and will expose gaps. The claim it supports is narrow: a Haiku-shaped non-drawing application can run on the primitives, and two processes can talk through its looper with synchronous replies.
+
+The API follows Haiku's MIT-licensed public interface (`headers/os/app/*`, `support/*`). The implementation and the flat message format are original; no Haiku or Vitruvian source was copied. The flat format is not Haiku's, so flattened messages are not exchangeable with a real Haiku system.
 
 Signatures follow Haiku's MIT-licensed public API (`headers/os/kernel/OS.h`, `support/Errors.h`, `support/SupportDefs.h`). The implementation is original. No Haiku or Vitruvian source was copied or linked, and `include/*.h` are our own reduced headers using Haiku's names and values.
 
@@ -14,10 +16,13 @@ Signatures follow Haiku's MIT-licensed public API (`headers/os/kernel/OS.h`, `su
 
 - `include/` `OS.h`, `Errors.h`, `SupportDefs.h`
 - `src/` `shm.c` (shared state, deadlines, time), `port.c`, `area.c`, `sem.c`, `thread.c`
-- `tests/test_kits.cpp` 10 test groups, 1594 checks, written in C++
-- `demo/demo_two_process.cpp` the two-process proof
+- `src/app/` `Message.cpp`, `Handler.cpp`, `Looper.cpp`, `Messenger.cpp` (also the port wire format and `BMessage::SendReply`), `Application.cpp`; `include/` also has `Message.h Handler.h Looper.h Messenger.h Application.h AppDefs.h TypeConstants.h`
+- `tests/test_kits.cpp` 10 test groups, 1594 checks, primitives
+- `tests/test_app.cpp` 9 test groups, 151 checks, messaging core (includes two re-exec'd child processes)
+- `demo/demo_two_process.cpp` the primitives proof
+- `demo/haiku_app.cpp` the Haiku-style two-process application (below)
 
-Build and run: `cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build --output-on-failure`, or run `build/demo_two_process`.
+Build and run: `cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build --output-on-failure`, or run `build/demo_two_process`, `build/test_app`, `build/haiku_app`.
 
 ## Mapping
 
@@ -83,6 +88,36 @@ Matched, and exercised by tests:
 
 Areas do match 0008's memfd mapping, including sealing.
 
+## Messaging core above the primitives
+
+- **`BMessage`**: `what`, typed named fields with several items per name: int8/16/32/64, bool, float, double, string, raw data (any `type_code`), nested `BMessage`. `Add*`/`Find*` return Haiku `status_t` (`B_NAME_NOT_FOUND`, `B_BAD_TYPE`, `B_BAD_INDEX`). `Flatten`/`Unflatten` to a buffer; `Unflatten` bounds-checks and rejects truncated or corrupt input. `Equals`. Four-character `what` codes (`-Wno-multichar`).
+- **Wire**: a message crosses a port as a small header (handler token, reply port, reply token, sender pid) plus the flat `BMessage`. Port codes `_PMS` (message) and `_QIT` (loop quit).
+- **`BHandler`**: name, owning looper, token, `SetNextHandler`. Default `MessageReceived` forwards along the chain; `AddHandler` links each handler to its looper, so an unhandled message ends at the looper, whose default replies `B_MESSAGE_NOT_UNDERSTOOD` to a waiting sender.
+- **`BLooper`**: creates one of our ports (capacity 200), runs the loop on a `spawn_thread` thread, holds a recursive lock while dispatching, `AddHandler`/`RemoveHandler`, `SetPreferredHandler`, `PostMessage` (with handler and reply-to), `Quit` (self: finish message, stop, delete; other thread: stop, join, delete), `B_QUIT_REQUESTED` through `QuitRequested`. A handler that never replied to a waiting sender gets an automatic `B_NO_REPLY` reply; messages still queued at shutdown get one too. Looper deletion deletes its handlers, as Haiku does.
+- **`BMessenger`**: (port, token). Built from a handler/looper, from a signature, or from a raw (port, token) pair. `SendMessage` async, with a reply address, and synchronous (`SendMessage(msg, &reply, deliveryTimeout, replyTimeout)`: a private one-slot reply port per call). A synchronous send from the target looper's own thread returns `B_ERROR` instead of deadlocking. `IsTargetLocal`, `Target`, `LockTarget`, `Team`.
+- **`BApplication`**: a `BLooper` with a signature, `Run()` on the calling thread, `ReadyToRun`, `ArgvReceived`, `QuitRequested`, `Quit`, `be_app`, `be_app_messenger`. One per process.
+
+### What is stubbed so `BApplication` needs no app_server and no registrar
+
+- **No registrar.** There is no team registry, no `BRoster`, no single-launch, no `be_roster`. `BMessenger(signature)` finds the app by a port name derived from the signature (`A:` plus the FNV-1a hash in hex; Haiku port names are 31 characters, signatures are longer), via `find_port`. Consequences: the first matching live port wins, two instances of one signature are not prevented, and a port left by a crashed process is found until its slot is reused.
+- **No app_server.** `BApplication` opens no connection and creates no server-side app. Nothing draws; there are no windows, views, cursors, or `BBitmap`s.
+- **argv without a launcher.** Haiku delivers `B_ARGV_RECEIVED` from the registrar's launch message. Here `Run()` reads `/proc/self/cmdline` and posts it to itself if `argc > 1`, then posts `B_READY_TO_RUN`.
+- **Early messages.** The port exists from the constructor, so a peer may send before `Run()`. Such messages are dispatched before `ReadyToRun`. Wire handlers up in the constructor. (The demo hit this as an intermittent failure and now does so.)
+
+### Not implemented, versus real libbe
+
+- No scripting (`B_GET_PROPERTY`, `ResolveSpecifier`, suites), no `BArchivable`/`BString`/`BList`, no `BMessageFilter`, `BMessageQueue`, `BMessageRunner`, `BInvoker`, `BClipboard`, `BRoster`.
+- `BMessage` lacks: `Replace*`, `Has*`, `Find*Pointer/Ref/Point/Rect`, `FindInt8`-style `uint*` variants beyond the ones listed, `AddFlat`, `AddMessenger`, `AddRef`, `AddPointer`, `GetInfo` by index, `Rename`, `Flatten(BDataIO*)`, `ForEach`, drop-message fields, `SendReply` with a reply-to-reply wait, `PreviousMessage`, `DetachCurrentMessage`/`DetachSpecifiers`. The flat format is ours; it has no versioning, no byte-order handling, no compression, no small-message fast path. Fields are `std::vector`/`std::string`; a name holds one type; field order is insertion order.
+- `BLooper`: no `LockLooper*`/`BAutolock` helpers, no `SetCommonFilterList`, no `MessageQueue`, no `Loop`-per-thread bookkeeping beyond a registry, no `WaitForQuit`, no deadlock debugging, no thread-name/priority change after creation. Messages are always dispatched from the port; `PostMessage` to oneself takes the port round trip, not a shortcut queue. Handler-list changes need the caller to hold `Lock()`, and nothing enforces it. The looper deleting a handler mid-dispatch is not guarded.
+- `BMessenger`: no `SetTo`, no team-targeted signature lookup (`team` is ignored), no `BMessenger(const BHandler*)` from another process, no delivery priority, no `B_TIMED_OUT` mapping for a dead looper whose port slot is reused. `LockTarget` and `Target` race with looper deletion (registry lookup, no reference).
+- Capacity limits are the primitives' limits: 128 ports total in a namespace, so each concurrent synchronous send holds one for its duration, and a message is limited to about 256 KiB.
+- Ports are not on the bus (see the primitives section); a looper's port is reachable by any same-uid process in the namespace.
+- Haiku's `BMessage` and `BLooper` run under `app_server`-era assumptions: the team/thread-per-looper model, `BMessage` ownership and reply-wait semantics (`fReplyTo`, `fPreferred`, `_set_reply_to`), and `BHandler` filters. None of that was ported; only the observable behaviour listed above is tested.
+
+### Demo: `haiku_app`
+
+One binary, three modes. With no arguments it forks two processes: `--serve` is `LedgerApp : BApplication` with `LedgerHandler : BHandler` keeping a ledger; `--client` finds it with `BMessenger(signature)` and sends `MSG_ADD_ENTRY`, `MSG_LIST_ENTRIES`, a malformed message and an unknown one, each as a synchronous send with `BMessage reply`, then `B_QUIT_REQUESTED`. The server prints each entry; the client checks the replies (total 1849, three entries nested in the list reply) and the launcher checks both exit codes.
+
 ## Next step
 
-Build Haiku's `Message.cpp`, `Looper.cpp`, `Handler.cpp` and `Messenger.cpp` (taken per 0008's open question 1 on sourcing, which is still undecided) against these headers, and run Haiku's own messaging tests. Expect gaps: the survey found call sites by name, and this library has not been run under real kit code. After that comes the non-drawing `BApplication` question (app_server and registrar stubs, 0008 open question 6), then deciding whether ports should move onto the bus.
+Compile Haiku's own `Message.cpp`, `Looper.cpp`, `Handler.cpp` and `Messenger.cpp` (sourcing question, 0008 open question 1, is still undecided) against the primitives, in place of this reimplementation, and run Haiku's own messaging tests. Expect gaps. Then deciding whether ports should move onto the bus, and the app_server question for Stage B.

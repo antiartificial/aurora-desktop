@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Aurora bus identity demo: two REAL domains (bwrap, via adapter/linux), each
-# with its own bus socket; distinct sender identities; a minted handle, a
-# transfer, a forgery; and the documented residual weakness. Leaves nothing behind.
+# with its own bus socket AND cgroup; distinct sender identities; a minted
+# handle, a transfer, a forgery; then impersonation by a host process, refused
+# by kernel-attested identity, permitted with --attest-domains=off, and the
+# residual hole (a same-uid process can join the cgroup). Leaves nothing behind.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -13,6 +15,7 @@ PIDS=()
 cleanup() {
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   for p in "${PIDS[@]:-}"; do [ -n "$p" ] && wait "$p" 2>/dev/null || true; done
+  for d in "${A:-}" "${B:-}"; do [ -n "$d" ] && "$DOMAIN" destroy "$d" >/dev/null 2>&1 || true; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -27,15 +30,18 @@ export CGO_ENABLED=0
 BUS="$TMP/bus"; DOMAIN="$TMP/domain"
 
 step "two domains; each is given the bus binary (read-only) and nothing else"
-for d in alpha beta; do "$DOMAIN" create $d >/dev/null; "$DOMAIN" grant $d "$BUS" --ro >/dev/null; done
-IDA=$("$DOMAIN" exec-id alpha); IDB=$("$DOMAIN" exec-id beta)
-SA=$("$DOMAIN" sockpath alpha); SB=$("$DOMAIN" sockpath beta)
-echo "alpha: $IDA  socket $SA"
-echo "beta:  $IDB  socket $SB"
+A="alpha-$$"; B="beta-$$"   # unique: a domain's cgroup is named after it
+for d in $A $B; do "$DOMAIN" create $d >/dev/null; "$DOMAIN" grant $d "$BUS" --ro >/dev/null; done
+IDA=$("$DOMAIN" exec-id $A); IDB=$("$DOMAIN" exec-id $B)
+SA=$("$DOMAIN" sockpath $A); SB=$("$DOMAIN" sockpath $B)
+CGA=$("$DOMAIN" cgroup $A); CGB=$("$DOMAIN" cgroup $B)
+printf "alpha: %s\n       socket %s\n       cgroup %s\n" "$IDA" "$SA" "$CGA"
+printf "beta:  %s\n       socket %s\n       cgroup %s\n" "$IDB" "$SB" "$CGB"
 
-step "busd: session socket plus one socket per domain"
-"$TMP/busd" --data-dir "$TMP/log" --domain "$IDA=$SA" --domain "$IDB=$SB" 2>"$TMP/busd.err" &
-PIDS+=($!)
+step "busd --attest-domains=require: session socket plus one socket and one cgroup per domain"
+"$TMP/busd" --data-dir "$TMP/log" --attest-domains=require \
+  --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" --domain "$IDB=$SB" --domain-cgroup "$IDB=$CGB" 2>"$TMP/busd.err" &
+PIDS+=($!); BUSD=$!
 waitfor "$TMP/busd.err" "listening on"
 cat "$TMP/busd.err"
 
@@ -43,8 +49,8 @@ cat "$TMP/busd.err"
 "$BUS" serve vault 'printf "{\"served\":true,\"asked_by\":\"%s\"}" "$BUS_FROM"' 2>"$TMP/serve.err" &
 PIDS+=($!)
 waitfor "$TMP/serve.err" "serving vault"
-inA() { local c=$1; shift; "$DOMAIN" run alpha -- "$BUS" "$c" --socket /run/aurora/bus.sock "$@"; }
-inB() { local c=$1; shift; "$DOMAIN" run beta -- "$BUS" "$c" --socket /run/aurora/bus.sock "$@"; }
+inA() { local c=$1; shift; "$DOMAIN" run $A -- "$BUS" "$c" --socket /run/aurora/bus.sock "$@"; }
+inB() { local c=$1; shift; "$DOMAIN" run $B -- "$BUS" "$c" --socket /run/aurora/bus.sock "$@"; }
 
 step "1. distinct identities: the vault sees which domain called (from = the socket it arrived on)"
 echo "alpha -> $(inA send vault who@v1)"
@@ -82,15 +88,51 @@ step "7. the log has the handle's identity (cap_ids hash) and not the token"
 "$BUS" log --since 5m | grep -c "caps=cap:" | sed 's/^/messages carrying a cap id: /'
 if grep -rqF "$TOK" "$TMP/log"; then echo "!! TOKEN IN LOG"; exit 1; else echo "token absent from log bytes"; fi
 
-step "8. residual weakness, shown honestly: a HOST process (same uid) that reaches alpha's socket IS alpha"
-python3 - "$SA" "$IDB" <<'PY'
+spoof() { python3 - "$1" "$IDB" <<'PY'
 import socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+s.settimeout(1)
+s.sendall(b'{"kind":"event","topic":"demo.spoof","from":"' + sys.argv[2].encode() + b'"}\n')
+try:
+    print("daemon replied: " + s.recv(4096).decode().strip())
+except Exception as e:
+    print("daemon replied nothing:", e)
+PY
+}
+restart() {  # restart busd with the given extra flags; domains stay as they are
+  kill "$BUSD" 2>/dev/null; wait "$BUSD" 2>/dev/null || true
+  rm -rf "$TMP/log"; : >"$TMP/busd.err"
+  "$TMP/busd" --data-dir "$TMP/log" "$@" --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" 2>"$TMP/busd.err" &
+  PIDS+=($!); BUSD=$!
+  waitfor "$TMP/busd.err" "listening on"
+}
+logspoof() { sleep 0.2; "$BUS" log --topic demo.spoof 2>&1 | sed 's/^/log: /'; }
+
+step "8a. impersonation attempt, attestation ON (require): a HOST process opens alpha's socket and claims to be beta"
+spoof "$SA"
+grep -E "REFUSED|attested" "$TMP/busd.err" | sed 's/^[0-9:]* /busd log: /'
+echo "log entries with topic demo.spoof: $("$BUS" log --topic demo.spoof 2>/dev/null | grep -c demo.spoof || true)   (refused; nothing recorded)"
+echo "and a real process in alpha's domain still gets in: $(inA send vault who@v1 2>&1 | head -c 200)" || true
+
+step "8b. the SAME attempt, --attest-domains=off (the old behaviour): the socket is the identity"
+restart --attest-domains=off
+spoof "$SA"
+logspoof
+echo "(claimed from=$IDB; recorded as alpha, because with attestation off the socket is the identity)"
+
+step "8c. attestation back ON; residual hole: a same-uid process that moves itself into alpha's cgroup is alpha"
+restart --attest-domains=require
+python3 - "$SA" "$IDB" "/sys/fs/cgroup$CGA" <<'PY'
+import socket, sys
+try:
+    open(sys.argv[3] + "/cgroup.procs", "w").write("0")   # the attacker joins the cgroup (same uid owns it)
+except OSError as e:
+    print("could not join the cgroup:", e); sys.exit(0)
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
 s.sendall(b'{"kind":"event","topic":"demo.spoof","from":"' + sys.argv[2].encode() + b'"}\n')
 PY
-sleep 0.2
-"$BUS" log --topic demo.spoof | sed 's/^/log: /'
-echo "(claimed from=$IDB; recorded as alpha, because the socket is the identity)"
+logspoof
+echo "(the kernel attests cgroup membership, not intent: cgroup.procs is writable by the owning uid)"
 
 step "stop"
 for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done

@@ -37,9 +37,21 @@ func fail(c *client.Client, req proto.Envelope, e *invoke.Error) {
 }
 
 func (s *Service) handle(c *client.Client, req proto.Envelope) {
-	var out any
-	var e *invoke.Error
+	out, e := s.dispatch(req)
+	if e != nil {
+		fail(c, req, e)
+		return
+	}
+	b, _ := json.Marshal(out)
+	c.Reply(req, b)
+}
+
+// dispatch answers one request. req.From is set by busd from SO_PEERCRED, so
+// it is what the kernel says the caller is, not what the caller claims.
+func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 	switch req.Verb {
+	case "approval.decide@v1":
+		return s.decide(req)
 	case "registry.apps@v1":
 		out = s.listApps()
 	case "registry.verbs@v1":
@@ -62,12 +74,7 @@ func (s *Service) handle(c *client.Client, req proto.Envelope) {
 	default:
 		e = &invoke.Error{Code: "no_such_verb", Msg: "registry has no verb " + req.Verb}
 	}
-	if e != nil {
-		fail(c, req, e)
-		return
-	}
-	b, _ := json.Marshal(out)
-	c.Reply(req, b)
+	return out, e
 }
 
 func invokeResult(r *invoke.Result, e *invoke.Error) (any, *invoke.Error) {

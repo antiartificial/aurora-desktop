@@ -26,6 +26,8 @@ type env struct {
 	events *client.Client // subscribed to provenance.created
 	fake   *domain.Fake
 	dir    string
+	inv    *invoke.Invoker
+	dial   func() *client.Client // a new session-socket client
 }
 
 // start runs a real in-process busd and a registry service on it.
@@ -61,7 +63,8 @@ func start(t *testing.T, runner domain.Runner, dirs ...string) *env {
 	}
 	sc := dial()
 	inv := &invoke.Invoker{Reg: reg, Runner: runner, Logf: t.Logf, Bus: busreg.Client{C: sc}, Timeout: 30 * time.Second,
-		Publish: func(topic string, p []byte) error { return sc.Publish(topic, p, proto.QoSInitiated, false) }}
+		Approvals: &invoke.Approver{Timeout: 10 * time.Second},
+		Publish:   func(topic string, p []byte) error { return sc.Publish(topic, p, proto.QoSInitiated, false) }}
 	ctx := context.Background()
 	if err := sc.Register(ctx, "registry"); err != nil {
 		t.Fatal(err)
@@ -72,7 +75,7 @@ func start(t *testing.T, runner domain.Runner, dirs ...string) *env {
 		t.Fatal(err)
 	}
 	fk, _ := runner.(*domain.Fake)
-	return &env{cli: dial(), events: ec, fake: fk, dir: t.TempDir()}
+	return &env{cli: dial(), events: ec, fake: fk, dir: t.TempDir(), inv: inv, dial: dial}
 }
 
 func (e *env) call(t *testing.T, verb string, payload any) (json.RawMessage, error) {
