@@ -14,14 +14,14 @@ data dir is `$AURORA_DOMAINS_DIR` or `${XDG_DATA_HOME:-~/.local/share}/aurora/do
 | Contract 3 operation | Command | Linux mechanism | Status |
 | --- | --- | --- | --- |
 | Create / destroy domain | `create`, `destroy [--keep-data]` | dir tree with `config/ data/ cache/` as btrfs subvolumes (plain dirs elsewhere, said in the output); metadata in `domain.json` | implemented |
-| Run in domain | `run <n> -- cmd` | `bwrap`: new user, pid, ipc, uts, cgroup (and net) namespaces, tmpfs root, caps dropped, new session, read-only `/usr` + merged-usr links, minimal `/etc` | implemented |
+| Run in domain | `run <n> -- cmd` | `unshare` makes a user namespace and maps the domain's subuid (`newuidmap`), `bwrap` makes new pid, ipc, uts, cgroup (and net) namespaces inside it, tmpfs root, new session, read-only `/usr` + merged-usr links, minimal `/etc`; `setpriv` drops to the domain's uid with two capabilities (see "Per-domain uid") | implemented |
 | Restrict filesystem and syscalls | (none) | the mount namespace is the filesystem restriction; Landlock and seccomp are **not** applied | partial (mount ns only) |
 | Grant file / folder | `grant <n> <path> [--ro\|--rw]`, `revoke` | bind mount of exactly that path at the same absolute path | implemented |
 | Grant net host | `grant <n> --net <host>` | any net grant skips `--unshare-net`, so the domain shares the host network | partial (coarse: host name recorded, not filtered) |
 | Grant device | (none) | would be a `--dev-bind` of one node | not built |
 | Snapshot / roll back | `snapshot [--tag]`, `rollback` | `btrfs subvolume snapshot` of all three subvolumes; rollback deletes the live subvolume and re-snapshots the snapshot (so it can be reused) | implemented on btrfs, clear error elsewhere |
 | Resource budget | `limit --memory --pids --cpu` | cgroup2 files in a per-domain cgroup under the user's delegated `user@UID.service`; `run` starts the domain inside it (`CLONE_INTO_CGROUP`) | partial: see below |
-| Identity | `exec-id`, `sockpath`, `cgroup`, `nsid` | see below | implemented (MVP) |
+| Identity | `exec-id`, `sockpath`, `cgroup`, `nsid`, `uid` | see below | implemented (MVP) |
 | Suspend / resume | (none) | cgroup freezer (`cgroup.freeze`) is in the same delegated tree and would work; not built | not built |
 | Shared memory | (none) | memfd + seals; belongs to the bus work | not built |
 | Show / list | `list`, `show` | reads metadata | implemented |
@@ -96,17 +96,74 @@ warning; a bus that attests namespaces then refuses the domain. Tested:
 `TestNSIDMatchesTheRunningPayload`, `TestRunRegistersWithBus` (registration
 precedes the payload, removal follows).
 
+### Per-domain uid (`domain uid`)
+
+Each domain's processes run under their own SUBORDINATE uid, so
+`SO_PEERCRED` on the bus socket reports a uid that is neither the host user's
+nor another domain's. Needs `/etc/subuid` and `/etc/subgid` entries for the
+user, `newuidmap`/`newgidmap` (setuid helpers, no root needed), util-linux
+`unshare` (2.38+, which calls them) and `setpriv`. Without them `run` warns
+`running WITHOUT its own uid` and uses the old single-uid sandbox.
+
+*Scheme.* The domain's host uid is `subuid_start + (fnv32a(name) mod count)`,
+probing upward past ids other domains hold (under a lock on
+`<store>/.uid.lock`); the result and the gid are recorded in `domain.json`
+(`uid`, `gid`) when the domain is created (or on first use for older domains)
+and kept while still inside the user's range. `domain uid <name>` prints it.
+
+*Sequence.* `run` execs `unshare --user --map-users=0:<real uid>:1
+--map-users=1:<subuid start>:<count>` (and the same for groups): `unshare`
+forks, the parent calls `newuidmap`/`newgidmap` for the child, the child (now
+namespace root, with full capabilities in that namespace only) execs `bwrap`
+WITHOUT `--unshare-user`, which does the mounts and namespaces and execs
+`setpriv --reuid 1+off --regid 1+off --clear-groups`, which keeps only
+`CAP_DAC_OVERRIDE` and `CAP_FOWNER` (bounding, inheritable, ambient),
+sets no-new-privs and execs the payload. cgroup placement, `--info-fd` /
+`--block-fd`, namespace registration and grants are unchanged (the cgroup fd
+goes to the `unshare` process; its children inherit).
+
+*Files (chosen: map the real uid, give the domain DAC_OVERRIDE/FOWNER; not
+chown).* The domain's subvolumes and every path grant are owned by the real
+uid, which appears inside as uid 0. A subuid process cannot normally touch
+them, so the payload keeps the two capabilities that bypass owner checks, in
+the domain's user namespace only; they work exactly over inodes whose owner is
+mapped there (the real user's, and the domain's own subuids), which is the
+set of files the domain could already reach as the real uid. Nothing is
+chowned, so existing data, snapshots, and rw grants keep working unchanged.
+Consequences: (1) files the domain creates are owned by its subuid on the
+host, so the host user cannot read 0600 files in `data/` or delete them
+directly; `destroy`, `rollback` and snapshot cleanup fall back to
+`rm -rf` run as namespace root (`rmInUserns`), and the same is needed for
+files the domain created inside an rw grant; (2) the domain holds
+`CAP_DAC_OVERRIDE`+`CAP_FOWNER` where it used to hold none, so a file in a
+granted directory is readable and chmod-able regardless of its mode; (3) inside
+the domain `id` shows the namespace uid (`1+off`), which has no `/etc/passwd`
+entry. Tested: `TestDomainProcessPeerCredIsItsSubuidAndDomainsDiffer`,
+`TestUIDCollisionProbesToNextFreeID`, `TestDomainFilesAndCapsUnderSubuid`.
+
+*What it attests, and what it does not.* The bus can require the peer's uid
+(`busd --domain-uid ID=$(domain uid N)`), which refuses every host process
+running as the real user on uid grounds alone. It does NOT stop a same-user
+attacker: the subuid range belongs to the same user, so that user can map it in
+a user namespace of its own, and the namespace the domain lives in was created
+by that user, so it can enter it. See Weaknesses and `bus/README.md`.
+
 Weaknesses, stated plainly:
 
-- Membership is attested, intent is not. A same-uid host process can no longer
-  become the domain by writing to `cgroup.procs` alone (the bus also compares
-  namespaces; `bus/demo-identity.sh` 8c refuses it). It CAN still become the
-  domain by entering the sandbox's namespaces: it can open `/proc/<init>/ns/*`
-  (same uid), `setns` into the owning user namespace (full capabilities in a
-  namespace its uid created), then the pid/mnt/ipc/uts namespaces, join the
-  cgroup and fork (`demo-identity.sh` 8f runs it and it works on this host).
-  A different uid for the sandbox (subuid/root) or a policy that denies that
-  access would close it; neither is available unprivileged.
+- Membership is attested, intent is not. A same-user host process can no longer
+  become the domain by writing to `cgroup.procs` (refused on uid and namespaces;
+  `bus/demo-identity.sh` 8c), nor by entering the namespaces while keeping its
+  own uid (8f, refused on uid). It CAN still become the domain: per-domain uids
+  do NOT close the setns attack. The sandbox's user namespace is owned by the
+  host user, who therefore holds every capability in it: the attacker
+  `setns`es into it, enters pid/mnt/ipc/uts, joins the cgroup, takes the
+  domain's uid (`seteuid` to a uid mapped in that namespace), and connects; the
+  bus sees the domain's uid, cgroup and namespaces and accepts (8g, measured on
+  this host). Outside the namespace, a plain `setuid` to the domain's uid fails
+  (8h), but the user can map its own subuid range in a user namespace and
+  forge the uid there (8i); that forger still fails on namespaces (8j). Closing
+  this needs a uid the host user does not control (root-created namespaces) or a
+  policy that denies `setns`/`/proc/<pid>/ns` to the user's other processes.
 - A passed file descriptor still lets the receiver speak as the domain.
 - Any process the domain starts is in the cgroup and is that domain; the bus
   cannot tell the app from a shell it spawned.

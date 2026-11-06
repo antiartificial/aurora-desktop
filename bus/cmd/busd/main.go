@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -50,6 +51,8 @@ func main() {
 	fs.Var(&cgs, "domain-cgroup", "cgroup of a --domain: IDENTITY=CGROUP (as printed by `domain cgroup`); repeatable. Connections are accepted only from processes in it")
 	var nss idFlags
 	fs.Var(&nss, "domain-ns", "IDENTITY of a --domain whose connections must ALSO come from the namespaces of a live run registered with bus.domain.ns@v1 (`domain run` does this when AURORA_BUS_SOCK is set); repeatable")
+	var uids domFlags
+	fs.Var(&uids, "domain-uid", "uid of a --domain: IDENTITY=UID (as printed by `domain uid`); repeatable. Connections are accepted only from processes whose SO_PEERCRED uid is it")
 	attest := fs.String("attest-domains", "prefer", "domain socket attestation: require (refuse anything unattestable), prefer (attest when a cgroup is registered and the host can; otherwise accept loudly), off (socket is the identity)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: busd [flags]\n\nThe Aurora message bus daemon. Sender identity comes from SO_PEERCRED.")
@@ -88,6 +91,16 @@ func main() {
 			log.Fatalf("--domain-ns %s: no --domain with that identity", id)
 		}
 	}
+	uidOf := map[string]uint32{}
+	for _, u := range uids {
+		id, v, _ := strings.Cut(u, "=")
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil || !doms.has(id) {
+			srv.Close()
+			log.Fatalf("--domain-uid %s: want IDENTITY=UID naming a --domain", u)
+		}
+		uidOf[id] = uint32(n)
+	}
 	for _, d := range doms {
 		id, path, _ := strings.Cut(d, "=")
 		add := srv.AddDomainCgroup
@@ -97,6 +110,12 @@ func main() {
 		if err := add(id, path, cgroups[id]); err != nil {
 			srv.Close()
 			log.Fatalf("--domain %s: %v", d, err)
+		}
+		if u, ok := uidOf[id]; ok {
+			if err := srv.SetDomainUID(id, u); err != nil {
+				srv.Close()
+				log.Fatalf("--domain-uid %s: %v", id, err)
+			}
 		}
 		log.Printf("domain socket %s -> %s (cgroup %q)", path, id, cgroups[id])
 	}

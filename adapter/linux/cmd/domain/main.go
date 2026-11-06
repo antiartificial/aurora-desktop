@@ -29,6 +29,7 @@ const usage = `usage: domain <command> [args]
   exec-id <name>                        print the attested domain identity
   cgroup <name>                         print the domain's cgroup (as /proc/<pid>/cgroup shows it); the bus attests membership
   nsid <name>                           print the namespaces (type:inode) of the domain's live run; the bus attests them too
+  uid <name>                            print the host uid (a subordinate uid) the domain's processes run as; the bus attests it
   sockpath <name>                       print the host path of the domain's bus socket
 
 data dir: $AURORA_DOMAINS_DIR or ${XDG_DATA_HOME:-~/.local/share}/aurora/domains
@@ -205,6 +206,14 @@ func main() {
 			die("%v", err)
 		}
 		fmt.Println(strings.Join(ids, "\n"))
+	case "uid":
+		pos := parse(fs, args)
+		need(pos, 1, "uid <name>")
+		u, err := st.UID(pos[0])
+		if err != nil {
+			die("%v", err)
+		}
+		fmt.Println(u)
 	case "sockpath":
 		pos := parse(fs, args)
 		need(pos, 1, "sockpath <name>")
@@ -233,6 +242,9 @@ func show(st dom.Store, name string) {
 	fmt.Printf("name:      %s\nid:        %s\nexec-id:   %s\ncreated:   %s\nstorage:   %s\n", m.Name, m.ID, dom.ExecID(m), m.Created.Format("2006-01-02 15:04:05Z"), storage(m))
 	for _, sd := range dom.Subdirs {
 		fmt.Printf("  %-7s  %s\n", sd, st.Dir(name)+"/"+sd)
+	}
+	if m.UID != 0 {
+		fmt.Printf("uid:       %d (gid %d)\n", m.UID, m.GID)
 	}
 	fmt.Printf("bus socket: %s/bus.sock\ngrants:\n", dom.SockDir(name))
 	for _, g := range m.Grants {

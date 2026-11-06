@@ -69,5 +69,9 @@ func removeTree(path string, subvol bool) error {
 		}
 		return nil
 	})
-	return os.RemoveAll(path)
+	err := os.RemoveAll(path)
+	if err != nil && rmInUserns(path) == nil {
+		return os.RemoveAll(path) // the domain's own files are gone; this removes what the host user owns
+	}
+	return err
 }

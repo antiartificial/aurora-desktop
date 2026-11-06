@@ -5,8 +5,9 @@
 # by kernel-attested identity, permitted with --attest-domains=off; then the
 # join-the-cgroup attack: accepted when only the cgroup is attested (the old
 # hole), REFUSED now that namespaces are attested too, accepted with attestation
-# off; and finally the residual (a process that also enters the domain's
-# namespaces still gets in). Leaves nothing behind.
+# off; then the same-uid attacks against PER-DOMAIN SUBORDINATE UIDS: what
+# setns-into-the-namespaces does now, and whether a same-user attacker can
+# become the domain's uid (attackers: demo-attacks.py). Leaves nothing behind.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,12 +39,17 @@ for d in $A $B; do "$DOMAIN" create $d >/dev/null; "$DOMAIN" grant $d "$BUS" --r
 IDA=$("$DOMAIN" exec-id $A); IDB=$("$DOMAIN" exec-id $B)
 SA=$("$DOMAIN" sockpath $A); SB=$("$DOMAIN" sockpath $B)
 CGA=$("$DOMAIN" cgroup $A); CGB=$("$DOMAIN" cgroup $B)
-printf "alpha: %s\n       socket %s\n       cgroup %s\n" "$IDA" "$SA" "$CGA"
-printf "beta:  %s\n       socket %s\n       cgroup %s\n" "$IDB" "$SB" "$CGB"
+UIDA=$("$DOMAIN" uid $A); UIDB=$("$DOMAIN" uid $B)
+SUBSTART=$(awk -F: -v u="$(id -un)" '$1==u{print $2;exit}' /etc/subuid); SUBCOUNT=$(awk -F: -v u="$(id -un)" '$1==u{print $3;exit}' /etc/subuid)
+INNERA=$((UIDA - SUBSTART + 1))   # alpha's uid inside its user namespace
+ATK="$HERE/demo-attacks.py"
+printf "alpha: %s\n       socket %s\n       cgroup %s\n       uid    %s (this user's real uid: %s)\n" "$IDA" "$SA" "$CGA" "$UIDA" "$(id -u)"
+printf "beta:  %s\n       socket %s\n       cgroup %s\n       uid    %s\n" "$IDB" "$SB" "$CGB" "$UIDB"
 
-step "busd --attest-domains=require: per domain a socket, a cgroup and namespace attestation (each domain run registers its namespaces first)"
+step "busd --attest-domains=require: per domain a socket, a cgroup, a uid and namespace attestation (each domain run registers its namespaces first)"
 "$TMP/busd" --data-dir "$TMP/log" --attest-domains=require --domain-ns "$IDA" --domain-ns "$IDB" \
-  --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" --domain "$IDB=$SB" --domain-cgroup "$IDB=$CGB" 2>"$TMP/busd.err" &
+  --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" --domain-uid "$IDA=$UIDA" \
+  --domain "$IDB=$SB" --domain-cgroup "$IDB=$CGB" --domain-uid "$IDB=$UIDB" 2>"$TMP/busd.err" &
 PIDS+=($!); BUSD=$!
 waitfor "$TMP/busd.err" "listening on"
 cat "$TMP/busd.err"
@@ -102,10 +108,12 @@ except Exception as e:
     print("daemon replied nothing:", e)
 PY
 }
-restart() {  # restart busd with the given extra flags (--domain-ns "$IDA" to attest namespaces)
+restart() {  # restart busd with extra flags (--domain-ns "$IDA" attests namespaces); NOUID=1 / NOCG=1 leave that signal unregistered
   kill "$BUSD" 2>/dev/null; wait "$BUSD" 2>/dev/null || true
   rm -rf "$TMP/log"; : >"$TMP/busd.err"
-  "$TMP/busd" --data-dir "$TMP/log" "$@" --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" 2>"$TMP/busd.err" &
+  local u=(--domain-uid "$IDA=$UIDA") c=(--domain-cgroup "$IDA=$CGA")
+  [ -n "${NOUID:-}" ] && u=(); [ -n "${NOCG:-}" ] && c=()
+  "$TMP/busd" --data-dir "$TMP/log" "$@" --domain "$IDA=$SA" "${c[@]}" "${u[@]}" 2>"$TMP/busd.err" &
   PIDS+=($!); BUSD=$!
   waitfor "$TMP/busd.err" "listening on"
 }
@@ -158,8 +166,8 @@ kill "$TGT" 2>/dev/null || true
 grep -E "REFUSED|attested" "$TMP/busd.err" | sed 's/^[0-9:]* /busd log: /'
 echo "log entries with topic demo.spoof: $("$BUS" log --topic demo.spoof 2>/dev/null | grep -c demo.spoof || true)   (refused; nothing recorded)"
 
-step "8d. BEFORE the fix, for contrast: the same attack when the domain is registered with a cgroup only (no --domain-ns)"
-restart --attest-domains=require
+step "8d. BEFORE the fix, for contrast: the same attack when the domain is registered with a cgroup only (no --domain-ns, no --domain-uid)"
+NOUID=1 restart --attest-domains=require
 joincg
 logspoof
 echo "(cgroup membership alone: the join-the-cgroup attacker WAS alpha)"
@@ -169,32 +177,39 @@ restart --attest-domains=off --domain-ns "$IDA"
 joincg
 logspoof
 
-step "8f. RESIDUAL, not closed: an attacker that also ENTERS the domain's namespaces (setns, same uid) is indistinguishable"
+step "8f. setns attacker, same real uid: joins alpha's cgroup AND enters the domain's pid/mnt/ipc/uts namespaces (it keeps its own uid)"
 restart --attest-domains=require --domain-ns "$IDA"
 live_run
-python3 - "$TGT" "$IDB" "/sys/fs/cgroup$CGA" <<'PY'
-import os, sys, fcntl, socket
-tgt, claim, cg = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    o = lambda t: os.open("/proc/%s/ns/%s" % (tgt, t), os.O_RDONLY)
-    ipc, uts, mnt, pid = o("ipc"), o("uts"), o("mnt"), o("pid")
-    owner = fcntl.ioctl(ipc, 0xb701)          # NS_GET_USERNS: the user namespace that owns the sandbox
-    open(cg + "/cgroup.procs", "w").write("0")  # join the cgroup (host path, before leaving the host mount ns)
-    os.setns(owner, os.CLONE_NEWUSER)          # same uid: full capabilities in a namespace this uid created
-    for fd, f in ((ipc, os.CLONE_NEWIPC), (uts, os.CLONE_NEWUTS), (mnt, os.CLONE_NEWNS), (pid, os.CLONE_NEWPID)):
-        os.setns(fd, f)
-except (OSError, AttributeError) as e:
-    print("attacker could not enter the namespaces:", e); sys.exit(0)
-if os.fork() == 0:                              # setns(pid) applies to children: fork into the domain's pid namespace
-    s = socket.socket(socket.AF_UNIX); s.connect("/run/aurora/bus.sock")
-    s.sendall(b'{"kind":"event","topic":"demo.spoof","from":"' + claim.encode() + b'"}\n')
-    import time; time.sleep(0.3); os._exit(0)
-os.wait()
-PY
+python3 "$ATK" setns /run/aurora/bus.sock "$IDB" "/sys/fs/cgroup$CGA" "$TGT"
 logspoof
-grep -E "REFUSED|attested" "$TMP/busd.err" | tail -2 | sed 's/^[0-9:]* /busd log: /'
+grep -E "REFUSED|attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
 kill "$TGT" 2>/dev/null || true
-echo "(a same-uid process can setns into a sandbox it can read under /proc; closing that needs a different uid or a ptrace/userns policy)"
+
+step "8g. the same attacker, plus it takes alpha's uid after entering the domain's user namespace (it owns that namespace: it was made by this user)"
+restart --attest-domains=require --domain-ns "$IDA"
+live_run
+python3 "$ATK" setns /run/aurora/bus.sock "$IDB" "/sys/fs/cgroup$CGA" "$TGT" "$INNERA"
+logspoof
+grep -E "REFUSED|attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
+kill "$TGT" 2>/dev/null || true
+
+step "8h. can a same-user attacker become alpha's uid ($UIDA) at all? (a) plain setuid from the host"
+python3 "$ATK" setuid "$UIDA"
+
+step "8i. (b) via a user namespace of its own, mapped over this user's subuid range (the one alpha uses): uid is the ONLY signal registered"
+NOCG=1 restart --attest-domains=prefer
+forge() { unshare --user --map-users=0:$(id -u):1 --map-users=1:$SUBSTART:$SUBCOUNT -- python3 "$ATK" forge "$SA" "$IDB" "$INNERA" "$@"; }
+forge
+logspoof
+echo "(uid alone is forgeable by anyone who can use the user's subuid range, which is that same user)"
+
+step "8j. (c) the same forged uid against the full stack (uid + cgroup + namespaces); it even joins the cgroup first"
+restart --attest-domains=require --domain-ns "$IDA"
+live_run
+forge "/sys/fs/cgroup$CGA"
+logspoof
+grep -E "REFUSED|attested" "$TMP/busd.err" | tail -1 | sed 's/^[0-9:]* /busd log: /'
+kill "$TGT" 2>/dev/null || true
 
 step "stop"
 for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done

@@ -166,18 +166,44 @@ busd listens on its session socket and, optionally, on one socket per domain.
   still accepts everything. Namespaces are also re-read with the cgroup
   recheck (at most once a second) and a connector that changes them is
   disconnected (implemented; not covered by a test).
-- **What this does NOT guarantee.** Membership, not intent. (1) Namespace
-  attestation does NOT stop a same-uid host process that enters the domain's
-  namespaces. On this host (Linux 7.2, bwrap 0.11) such a process can open
-  `/proc/<init>/ns/*` of a sandbox (same uid, dumpable), take the owning user
-  namespace with `ioctl(NS_GET_USERNS)`, `setns` into it (it holds all
-  capabilities in a namespace its uid created), then setns ipc, uts, mnt and
-  pid, join the cgroup and fork (setns of a pid ns applies to children): the
-  child is in every attested namespace and the daemon accepts it (`demo-identity.sh`
-  8f runs this and it succeeds). So the cheap attack (write one file) is
-  closed; a determined same-uid attacker is not. Closing it needs a different
-  uid for the sandbox (subuid/root) or a policy that denies the `/proc/<pid>/ns`
-  access and `setns`; neither is available unprivileged here. (2) The session
+- **uid attestation (per-domain subordinate uids).** `domain run` puts a
+  domain's processes under their own subuid (`adapter/linux/README.md`, "Per-domain
+  uid"), so SO_PEERCRED's uid names the domain. Register it with
+  `busd --domain-uid ID=$(domain uid N)`, `SetDomainUID`, or `"uid":N` in
+  `bus.domain.add@v1`; it is a third signal in the same `--attest-domains`
+  modes (checked first; off ignores it; two domains cannot register one uid).
+  A mismatch is refused: `signals uid=MISMATCH (peer uid 1000, domain uid is
+  105539) cgroup=not checked namespaces=not checked`; other lines end `uid=ok`
+  or `uid=not-registered`. A domain registered with a uid and no cgroup is,
+  under `prefer`, accepted when the uid matches (still logged unattested for the
+  rest); `require` still needs the cgroup. Not re-checked after admission.
+  *Measured (`demo-identity.sh` 8f to 8j, tests `TestUID*`):* a host process
+  with the real uid is refused on uid alone (8a, `TestUIDRefusesRealUIDHostProcessOnUIDAlone`);
+  the cgroup-joiner is refused (8c); the setns attacker that keeps its own uid
+  is refused (8f); a plain `setuid` to the domain's uid fails with EPERM (8h);
+  a user namespace of the attacker's own, mapped over the user's subuid range,
+  forges the uid and is ACCEPTED when uid is the only signal (8i), and refused
+  by the namespaces under the full stack (8j). **But the setns attacker that
+  also takes the domain's uid is ACCEPTED (8g, `TestUIDSetnsAttacker`).** The
+  hypothesis that its uid "stays its own" is wrong: the sandbox's user namespace
+  is created by, and so owned by, the host user, which holds every capability
+  in it (and in anything nested); inside it the domain's uid is mapped and the
+  attacker may take it. Note a first run of 8g was refused for an accidental
+  reason: changing euid makes the attacker non-dumpable, so the daemon (not
+  owner of the attacker's mm) could not read its `/proc/<pid>/ns`; calling
+  `prctl(PR_SET_DUMPABLE, 1)` removes that, so do not rely on it.
+- **What this does NOT guarantee.** Membership, not intent. (1) Namespace and
+  uid attestation do NOT stop a same-user host process that enters the
+  domain's namespaces and takes the domain's uid (see above; 8g). It opens
+  `/proc/<init>/ns/*`, takes the owning user namespace with
+  `ioctl(NS_GET_USERNS)`, `setns` into it, then ipc, uts, mnt and pid, joins the
+  cgroup, takes the uid and forks: the child matches every signal. So the cheap
+  attacks (write one file; connect with the real uid; setns without the uid)
+  are closed; a determined same-user attacker is not. Closing it needs a uid
+  the user does not control (a namespace created by a privileged helper) or a
+  policy that denies `setns`/`/proc/<pid>/ns` to the user's other processes;
+  neither is available unprivileged. The same power lets it ptrace or inject
+  into the domain's real processes. (2) The session
   socket (uid:comm) is trusted at the same-uid level: a same-uid client can
   call `bus.domain.ns@v1` and register a sandbox of its own making, or
   remove/re-add a domain. (3) Any process the domain itself starts is the
@@ -401,8 +427,12 @@ The end-to-end demo, which leaves no process behind, is `./demo.sh`.
 rejected, then a host process impersonating a domain: refused with attestation
 (8a), accepted with `--attest-domains=off` (8b); the join-the-cgroup attack
 refused with namespaces attested (8c), accepted on a cgroup-only domain (8d, the
-old hole) and with attestation off (8e); and the residual, an attacker that also
-enters the domain's namespaces, which still succeeds (8f).
+old hole) and with attestation off (8e); then against per-domain subuids: the
+setns attacker with its own uid is refused (8f) but one that also takes the
+domain's uid is still accepted (8g); a plain setuid to the domain's uid fails
+(8h); a forged uid in the attacker's own user namespace passes when uid is the
+only signal (8i) and is refused by the namespaces under the full stack (8j).
+The attacker code is `demo-attacks.py`.
 
 ## Tests
 

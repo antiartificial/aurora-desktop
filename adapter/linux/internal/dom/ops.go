@@ -53,6 +53,11 @@ func (s Store) Create(name string) (*Meta, string, error) {
 		_ = s.removeAll(m, dir)
 		return nil, "", err
 	}
+	if err := s.AssignUID(m); err != nil {
+		note += "\n  uid: none (" + err.Error() + "); runs will share the host uid"
+	} else {
+		note += fmt.Sprintf("\n  uid: %d (gid %d), a subordinate id; the bus can attest it", m.UID, m.GID)
+	}
 	return m, note, nil
 }
 

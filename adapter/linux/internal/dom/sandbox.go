@@ -31,11 +31,15 @@ func HasNet(m *Meta) bool {
 	return false
 }
 
-// BwrapArgs builds the bubblewrap argument vector (without the command).
-func (s Store) BwrapArgs(m *Meta) []string {
-	a := []string{
-		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
-		"--die-with-parent", "--new-session", "--cap-drop", "ALL", "--hostname", m.Name,
+// BwrapArgs builds the bubblewrap argument vector (without the command). With
+// ownUID, bwrap is already running as root of the domain's user namespace (see
+// uid.go): it makes no user namespace of its own, and the payload drops to the
+// domain's subuid via setpriv instead of bwrap's --cap-drop.
+func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
+	a := []string{"--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try",
+		"--die-with-parent", "--new-session", "--hostname", m.Name}
+	if !ownUID {
+		a = append(a, "--unshare-user", "--cap-drop", "ALL")
 	}
 	net := HasNet(m)
 	if !net {
@@ -134,11 +138,32 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 	}
 	defer infoR.Close()
 	defer blockW.Close()
-	args := append([]string{"--info-fd", "3", "--block-fd", "4"}, s.BwrapArgs(m)...)
-	cmd := exec.Command(bw, append(append(args, "--"), argv...)...)
+	own, why := false, s.AssignUID(m)
+	if why == nil {
+		why = subTools()
+	}
+	if why != nil {
+		fmt.Fprintf(stderr, "domain: warning: running WITHOUT its own uid (shares the host user's): %v\n", why)
+	} else {
+		own = true
+	}
+	args := append([]string{"--info-fd", "3", "--block-fd", "4"}, s.BwrapArgs(m, own)...)
+	full := append(append([]string{bw}, args...), "--")
+	if own {
+		pre, err1 := usernsPrefix(m)
+		drop, err2 := privDrop(m)
+		if err1 != nil || err2 != nil {
+			return 0, fmt.Errorf("per-domain uid: %v %v", err1, err2)
+		}
+		// unshare maps the ids and execs bwrap as namespace root; bwrap execs
+		// setpriv in the sandbox, which becomes the subuid and execs the payload.
+		full = append(append(pre, full...), drop...)
+	}
+	full = append(full, argv...)
+	cmd := exec.Command(full[0], full[1:]...)
 	cmd.ExtraFiles = []*os.File{infoW, blockR}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	cmd.Env = []string{} // bwrap itself needs nothing; the domain env is set via --setenv
+	cmd.Env = []string{"PATH=/usr/bin:/bin"} // unshare finds newuidmap; the domain env is set via --setenv
 	if m.Limits != (Limits{}) {
 		for _, r := range ApplyLimits(name, m.Limits) {
 			if !r.Applied {

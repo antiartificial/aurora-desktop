@@ -227,6 +227,8 @@ func (s *Server) admitDomain(nc net.Conn, cred Cred, dom *domainSock) (*attestSt
 	switch {
 	case s.cfg.AttestDomains == AttestOff:
 		return nil, nil
+	case dom.uidOn && cred.UID != dom.uid:
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s: signals uid=MISMATCH (peer uid %d, domain uid is %d) cgroup=not checked namespaces=not checked; the socket is not the identity", who, d, cred.UID, dom.uid)
 	case cg == "":
 		return degrade("no cgroup registered for this domain")
 	}
@@ -236,7 +238,7 @@ func (s *Server) admitDomain(nc net.Conn, cred Cred, dom *domainSock) (*attestSt
 	case errors.Is(err, errNoCgroup2):
 		return degrade(err.Error())
 	case errors.As(err, &mm):
-		return nil, fmt.Errorf("attestation REFUSED for %s on %s: signals cgroup=MISMATCH (%v, domain cgroup is %q) namespaces=not checked; the socket is not the identity", who, d, err, cg)
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s: signals cgroup=MISMATCH (%v, domain cgroup is %q) namespaces=not checked uid=%s; the socket is not the identity", who, d, err, cg, uidSignal(dom))
 	case err != nil:
 		return nil, fmt.Errorf("attestation FAILED for %s on %s (mode %s): %w", who, d, s.cfg.AttestDomains, err)
 	}
@@ -248,11 +250,18 @@ func (s *Server) admitDomain(nc net.Conn, cred Cred, dom *domainSock) (*attestSt
 	ns, run, err := attestNS(a, cred.PID, dom)
 	if err != nil {
 		a.close()
-		return nil, fmt.Errorf("attestation REFUSED for %s on %s (mode %s): signals cgroup=ok namespaces=FAILED: %w", who, d, s.cfg.AttestDomains, err)
+		return nil, fmt.Errorf("attestation REFUSED for %s on %s (mode %s): signals cgroup=ok namespaces=FAILED uid=%s: %w", who, d, s.cfg.AttestDomains, uidSignal(dom), err)
 	}
 	a.ns = ns
-	s.cfg.Logf("attested %s on %s: signals cgroup=ok (%s) namespaces=ok (%s, run init pid %d) (pidfd %v)", who, d, got, ns, run.pid, a.pidfd >= 0)
+	s.cfg.Logf("attested %s on %s: signals cgroup=ok (%s) namespaces=ok (%s, run init pid %d) uid=%s (pidfd %v)", who, d, got, ns, run.pid, uidSignal(dom), a.pidfd >= 0)
 	return a, nil
+}
+
+func uidSignal(d *domainSock) string {
+	if d.uidOn {
+		return "ok"
+	}
+	return "not-registered"
 }
 
 // stillAttested re-verifies c (cgroup and, if attested on them, namespaces); on failure it logs and hangs up (no error line:

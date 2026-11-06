@@ -201,13 +201,20 @@ func (s *Server) ctlDomain(c *conn, verb string, raw json.RawMessage) (any, erro
 	var p struct {
 		Identity, Path, Cgroup string
 		NS                     bool
+		UID                    *uint32
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.Identity == "" {
-		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>","cgroup":"<optional, /proc/<pid>/cgroup form>","ns":<optional bool: attest namespaces too>}`)
+		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>","cgroup":"<optional, /proc/<pid>/cgroup form>","ns":<optional bool: attest namespaces too>,"uid":<optional: required peer uid>}`)
 	}
 	if verb == "bus.domain.remove@v1" {
 		return map[string]string{"removed": p.Identity}, s.removeDomainLocked(p.Identity)
 	}
 	// AddDomain takes s.mu, which control's caller already holds.
-	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path, p.Cgroup, p.NS)
+	err := s.addDomainLocked(p.Identity, p.Path, p.Cgroup, p.NS)
+	if err == nil && p.UID != nil {
+		if err = s.setDomainUIDLocked(p.Identity, *p.UID); err != nil {
+			s.removeDomainLocked(p.Identity)
+		}
+	}
+	return map[string]string{"added": p.Identity}, err
 }

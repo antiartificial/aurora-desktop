@@ -24,6 +24,8 @@ type domainSock struct {
 	cgroup         string // "" = none registered, connections cannot be attested
 	ln             net.Listener
 	nsOn           bool // namespace attestation enabled (see ns.go)
+	uidOn          bool // the peer's SO_PEERCRED uid must equal uid
+	uid            uint32
 	nsMu           sync.Mutex
 	runs           []*nsRun // live sandbox runs the daemon was told of
 }
@@ -93,6 +95,30 @@ func (s *Server) addDomainLocked(identity, path, cgroup string, ns bool) error {
 		s.cfg.Logf("WARNING: domain %s has no cgroup registered: its connections are UNATTESTED (mode prefer)", identity)
 	}
 	go s.acceptLoop(ln, identity, d)
+	return nil
+}
+
+// SetDomainUID makes the domain require that a connecting peer's SO_PEERCRED
+// uid is uid (`domain uid <name>`: the subordinate uid its processes run as).
+// It is one more signal alongside cgroup and namespaces and is checked first.
+func (s *Server) SetDomainUID(identity string, uid uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setDomainUIDLocked(identity, uid)
+}
+
+func (s *Server) setDomainUIDLocked(identity string, uid uint32) error {
+	d := s.doms[identity]
+	if d == nil {
+		return fmt.Errorf("domain %s is not registered", identity)
+	}
+	for _, o := range s.doms {
+		if o != d && o.uidOn && o.uid == uid {
+			return fmt.Errorf("uid %d already belongs to %s: two domains cannot share a uid", uid, o.identity)
+		}
+	}
+	d.uid, d.uidOn = uid, true
+	s.cfg.Logf("domain %s: connections must come from uid %d", identity, uid)
 	return nil
 }
 
@@ -207,13 +233,19 @@ type InspectDomain struct {
 	Socket   string  `json:"socket"`
 	Cgroup   string  `json:"cgroup,omitempty"`
 	NS       bool    `json:"ns,omitempty"`   // namespace attestation on
+	UID      *uint32 `json:"uid,omitempty"`  // required peer uid, if registered
 	RunPIDs  []int32 `json:"runs,omitempty"` // live registered sandbox runs (init pids)
 }
 
 func (s *Server) inspectDomains() []InspectDomain {
 	out := []InspectDomain{}
 	for _, d := range s.doms {
-		out = append(out, InspectDomain{d.identity, d.path, d.cgroup, d.nsOn, d.liveRunPIDs()})
+		id := InspectDomain{Identity: d.identity, Socket: d.path, Cgroup: d.cgroup, NS: d.nsOn, RunPIDs: d.liveRunPIDs()}
+		if d.uidOn {
+			u := d.uid
+			id.UID = &u
+		}
+		out = append(out, id)
 	}
 	return out
 }

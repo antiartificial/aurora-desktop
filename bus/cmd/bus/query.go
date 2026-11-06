@@ -137,7 +137,11 @@ func cmdInspect(args []string) int {
 		if cg == "" {
 			cg = "(none: unattestable)"
 		}
-		fmt.Printf("  %s  %s  cgroup=%s\n", d.Identity, d.Socket, cg)
+		uid := "-"
+		if d.UID != nil {
+			uid = fmt.Sprint(*d.UID)
+		}
+		fmt.Printf("  %s  %s  cgroup=%s uid=%s\n", d.Identity, d.Socket, cg, uid)
 	}
 	fmt.Printf("handles (%d outstanding):\n", len(r.Handles))
 	for _, h := range r.Handles {
