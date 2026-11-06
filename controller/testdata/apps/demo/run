@@ -1,0 +1,19 @@
+#!/bin/sh
+# Fixture app. Protocol: run --verb NAME, request JSON on stdin:
+# {"input":F,"output":F,"args":{...}}; result JSON on stdout.
+verb=$2
+req=$(cat)
+in=$(printf '%s' "$req" | sed -n 's/.*"input":"\([^"]*\)".*/\1/p')
+out=$(printf '%s' "$req" | sed -n 's/.*"output":"\([^"]*\)".*/\1/p')
+case $verb in
+  copy@v1)
+    cp "$in" "$out" || exit 1
+    echo "demo: copied $in -> $out; request=$req" >&2
+    echo "demo: /home entries visible to me: $(ls /home 2>/dev/null | wc -l)" >&2
+    echo "{\"ok\":true,\"output\":\"$out\"}"
+    ;;
+  size@v1)
+    echo "{\"ok\":true,\"bytes\":$(wc -c < "$in" | tr -d ' ')}"
+    ;;
+  *) echo "unknown verb $verb" >&2; exit 2;;
+esac

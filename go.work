@@ -2,6 +2,9 @@ go 1.27.1
 
 use (
 	./adapter/linux
+	./apps/lumen
 	./bus
 	./contracts/manifest
+	./controller
+	./shell
 )

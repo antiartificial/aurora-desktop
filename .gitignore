@@ -40,3 +40,6 @@ OVMF_VARS*
 
 # Go workspace sum file (local resolution state)
 go.work.sum
+
+# Built app binaries (rebuilt via go build; see each app README)
+apps/*/bin/

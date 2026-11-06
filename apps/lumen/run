@@ -1,0 +1,9 @@
+#!/bin/sh
+# Lumen's entrypoint for the controller.
+# Protocol: run --verb NAME, request JSON on stdin:
+#   {"input":F,"output":F,"args":{...}}
+# Result JSON on stdout, messages on stderr, non-zero exit on failure.
+#
+# The controller copies this whole directory into the app's domain, so the
+# lumen binary must live here. Build it with:  go build -o bin/lumen ./cmd/lumen
+exec "$(dirname "$0")/bin/lumen" "$@"

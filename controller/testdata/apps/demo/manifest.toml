@@ -1,0 +1,32 @@
+# Demo fixture app used by controller tests and demo.sh. A shell script, not Lumen.
+[app]
+id = "org.aurora.demo"
+name = "Demo copier"
+version = "0.0.1"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+
+[[capabilities.paths]]
+path = "~/Pictures"
+access = "write"
+
+[types]
+opens = ["image/png"]
+creates = ["image/png"]
+
+[[verb]]
+name = "copy@v1"
+summary = "Copy an image (and report what the sandbox can see)"
+effect = "write"
+accepts = ["image/png"]
+capabilities = ["path:~/Pictures"]
+input = { tag = "string?" }
+output = { image = "image/png" }
+
+[[verb]]
+name = "size@v1"
+summary = "Report the size of an image in bytes"
+effect = "read"
+accepts = ["image/png"]
+output = { bytes = "int" }

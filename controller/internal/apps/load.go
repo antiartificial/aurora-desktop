@@ -1,0 +1,94 @@
+// Package apps loads and indexes app manifests.
+package apps
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/antiartificial/aurora/contracts/manifest"
+)
+
+// App is one loaded, validated manifest and the directory it came from.
+type App struct {
+	Dir      string
+	Manifest *manifest.Manifest
+}
+
+// ID is the app's reverse-DNS id.
+func (a *App) ID() string { return a.Manifest.App.ID }
+
+// Verb finds a verb by exact versioned name.
+func (a *App) Verb(name string) (manifest.Verb, bool) {
+	for _, v := range a.Manifest.Verbs {
+		if v.Name == name {
+			return v, true
+		}
+	}
+	return manifest.Verb{}, false
+}
+
+// Skipped is a manifest that was found but not loaded.
+type Skipped struct {
+	Path   string
+	Reason string
+}
+
+// Registry is the set of loaded apps, ordered by id.
+type Registry struct {
+	apps []*App
+	byID map[string]*App
+}
+
+// Load reads every <dir>/<app>/manifest.toml under each dir. Invalid
+// manifests and duplicate ids are skipped and returned with a reason.
+func Load(dirs ...string) (*Registry, []Skipped) {
+	r := &Registry{byID: map[string]*App{}}
+	var skipped []Skipped
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			skipped = append(skipped, Skipped{dir, err.Error()})
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			appDir, err := filepath.Abs(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			path := filepath.Join(appDir, "manifest.toml")
+			src, err := os.ReadFile(path)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				skipped = append(skipped, Skipped{path, err.Error()})
+				continue
+			}
+			m, err := manifest.Load(src)
+			if err != nil {
+				skipped = append(skipped, Skipped{path, err.Error()})
+				continue
+			}
+			if prev, dup := r.byID[m.App.ID]; dup {
+				skipped = append(skipped, Skipped{path, fmt.Sprintf("duplicate app id %s (already loaded from %s)", m.App.ID, prev.Dir)})
+				continue
+			}
+			a := &App{Dir: appDir, Manifest: m}
+			r.byID[a.ID()] = a
+			r.apps = append(r.apps, a)
+		}
+	}
+	sort.Slice(r.apps, func(i, j int) bool { return r.apps[i].ID() < r.apps[j].ID() })
+	return r, skipped
+}
+
+// Apps returns all apps ordered by id.
+func (r *Registry) Apps() []*App { return r.apps }
+
+// App looks an app up by id.
+func (r *Registry) App(id string) (*App, bool) { a, ok := r.byID[id]; return a, ok }
