@@ -36,7 +36,7 @@ cat "$W/comp.out"; grep WARNING "$W/comp.err"
 WL=$(sed -n 's/^aurora-compositor: socket //p' "$W/comp.out")
 WAYLAND_DISPLAY=$WL "$ROOT/compositor/target/release/examples/testclient" >"$W/client.log" 2>&1 & PIDS+=($!)
 for _ in $(seq 100); do grep -q enter "$W/client.log" && break; sleep 0.1; done
-"$W/bin/controllerd" --apps "$ROOT/apps,$CTL/testdata/apps" --domain-bin "$W/bin/domain" --approval-timeout 30s >"$W/controllerd.log" 2>&1 & PIDS+=($!)
+"$W/bin/controllerd" --apps "$ROOT/apps,$CTL/testdata/apps" --domain-bin "$W/bin/domain" --approval-timeout 30s >"$W/controllerd.log" 2>&1 & CTLPID=$!; PIDS+=($CTLPID)
 for _ in $(seq 50); do grep -q 'registered service' "$W/controllerd.log" && break; sleep 0.1; done
 grep -E 'compositor|approval' "$W/controllerd.log"
 C="$W/bin/controller"
@@ -88,6 +88,33 @@ grep -A8 '"approval"' "$W/allow.out" | head -9
 echo "output file after allow: $(ls "$W/pics/allow.png" 2>&1)"
 echo "-- provenance xattr on the output:"; $C provenance "$W/pics/allow.png" | grep -A8 '"approval"'
 echo "-- client log, whole run (no key from the overlay interaction):"; cat "$W/client.log" | tr '\n' ' '; echo
+
+step "2b. TIMEOUT: the overlay is drawn and no key is ever pressed"
+# Deny and allow were covered above; nobody had ever let a compositor-route
+# prompt expire. A timeout must deny, must leave no output file, and must not
+# wedge the compositor with an overlay that never comes down.
+kill $CTLPID 2>/dev/null; wait $CTLPID 2>/dev/null
+"$W/bin/controllerd" --apps "$ROOT/apps,$CTL/testdata/apps" --domain-bin "$W/bin/domain" --approval-timeout 2s >"$W/controllerd-to.log" 2>&1 & CTLPID=$!; PIDS+=($CTLPID)
+for _ in $(seq 50); do grep -q 'registered service' "$W/controllerd-to.log" && break; sleep 0.1; done
+rm -f "$W/overlay.png"
+T0=$(date +%s.%N)
+$C "${DEL[@]}" --output "$W/pics/timeout.png" >"$W/to.out" 2>&1 & DP=$!
+for _ in $(seq 100); do [ -f "$W/overlay.png" ] && break; sleep 0.1; done
+echo "overlay drawn: $([ -f "$W/overlay.png" ] && echo yes || echo NO)"
+wait $DP; T1=$(date +%s.%N)
+echo "invoke returned after $(printf '%.1f' "$(echo "$T1 - $T0" | bc)")s (approval-timeout was 2s)"
+grep -E '"code"|"message"' "$W/to.out" | head -2
+echo "output file after timeout: $(ls "$W/pics/timeout.png" 2>&1 | sed 's/.*No such.*/absent (correct)/')"
+# the overlay must have come down: a fresh capture should match one taken later
+"$CAP" --display "$WL" -o "$W/after-timeout-1.png" >/dev/null 2>&1; sleep 0.5
+"$CAP" --display "$WL" -o "$W/after-timeout-2.png" >/dev/null 2>&1
+cmp -s "$W/after-timeout-1.png" "$W/after-timeout-2.png" && echo "compositor still serving steady frames after the timeout (two captures identical)" || echo "WARNING: frames still changing after the timeout"
+echo "-- a key pressed AFTER the prompt expired must decide nothing:"
+key a; sleep 0.3
+grep -cE 'allowed at the compositor' "$W/controllerd-to.log" | sed 's/^/   late-allow lines in controllerd log: /'
+kill $CTLPID 2>/dev/null; wait $CTLPID 2>/dev/null
+"$W/bin/controllerd" --apps "$ROOT/apps,$CTL/testdata/apps" --domain-bin "$W/bin/domain" --approval-timeout 30s >>"$W/controllerd.log" 2>&1 & CTLPID=$!; PIDS+=($CTLPID)
+for _ in $(seq 50); do grep -q 'registered service' "$W/controllerd.log" && break; sleep 0.1; done
 
 step "3. FALLBACK: compositor stopped; the same verb must use the bus route"
 kill $COMPPID; wait $COMPPID 2>/dev/null; sleep 0.3
