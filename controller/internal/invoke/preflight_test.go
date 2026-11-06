@@ -95,6 +95,8 @@ func (o onlyRunner) Identity(n string) (string, string, error)   { return o.r.Id
 func (o onlyRunner) Cgroup(n string) (string, error)             { return o.r.Cgroup(n) }
 func (o onlyRunner) Grant(n, p, m string) error                  { return o.r.Grant(n, p, m) }
 func (o onlyRunner) Revoke(n, p string) error                    { return o.r.Revoke(n, p) }
+func (o onlyRunner) GrantDevice(n, c string) error               { return o.r.GrantDevice(n, c) }
+func (o onlyRunner) RevokeDevice(n, c string) error              { return o.r.RevokeDevice(n, c) }
 func (o onlyRunner) Run(c context.Context, n string, a []string, s []byte) (domain.Result, error) {
 	return o.r.Run(c, n, a, s)
 }

@@ -76,7 +76,7 @@ func (b *Client) Verify(rec prov.Record) prov.CapReport {
 	}
 	for _, g := range claims {
 		v := prov.CapVerdict{Path: g.Path, Mode: g.Mode, Cap: g.Cap}
-		want := prov.Resource(g.Path, g.Mode)
+		want := g.Resource()
 		if h, ok := live[g.Cap]; ok {
 			switch {
 			case h.Minter != self:

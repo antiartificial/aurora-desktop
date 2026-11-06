@@ -14,11 +14,26 @@ import (
 // has no output, so it can only ever get the ro input grant. The paths are
 // canonical and are resolved here exactly once: classification and the grant
 // call use these very strings, and the domain binds them without re-resolving.
-func (iv *Invoker) planGrants(m *manifest.Manifest, input, output string) []prov.Grant {
+func (iv *Invoker) planGrants(m *manifest.Manifest, verb manifest.Verb, input, output string) []prov.Grant {
 	var gs []prov.Grant
 	for _, c := range []struct{ path, mode string }{{input, "ro"}, {output, "rw"}} {
 		if c.path != "" {
 			gs = append(gs, prov.Grant{Path: c.path, Mode: c.mode, Source: iv.classify(m, c.path, c.mode)})
+		}
+	}
+	return append(gs, planDevices(m, verb)...)
+}
+
+// planDevices turns the device capabilities a verb lists ("device:gpu") into
+// grants. A device is only ever granted because the verb asked for it, and the
+// manifest validator has already refused a verb that names a device the
+// manifest does not declare. A device a manifest declares but no verb lists
+// is never granted: the declaration is a request, not a grant.
+func planDevices(m *manifest.Manifest, verb manifest.Verb) []prov.Grant {
+	var gs []prov.Grant
+	for _, c := range verb.Capabilities {
+		if class, ok := strings.CutPrefix(c, "device:"); ok && class != "" {
+			gs = append(gs, prov.Grant{Path: "device:" + class, Mode: prov.ModeUse, Device: class, Source: prov.SourceAmbient})
 		}
 	}
 	return gs

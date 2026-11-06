@@ -48,6 +48,17 @@ func (r *CapReport) Summarise() {
 	}
 }
 
+// ModeUse is the Mode of a device grant: there is no read or write to narrow.
+const ModeUse = "use"
+
+// Resource is the name this grant's handle is minted for.
+func (g Grant) Resource() string {
+	if g.Device != "" {
+		return "device:" + g.Device
+	}
+	return Resource(g.Path, g.Mode)
+}
+
 var resourceOK = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,128}$`)
 
 // Resource is the name a grant's handle is minted for. It must fit the

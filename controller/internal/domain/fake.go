@@ -54,6 +54,14 @@ func (f *Fake) Revoke(n, p string) error {
 	f.rec("revoke %s %s", n, p)
 	return nil
 }
+func (f *Fake) GrantDevice(n, c string) error {
+	f.rec("grant-device %s %s", n, c)
+	return f.GrantErr
+}
+func (f *Fake) RevokeDevice(n, c string) error {
+	f.rec("revoke-device %s %s", n, c)
+	return nil
+}
 func (f *Fake) Run(_ context.Context, n string, argv []string, stdin []byte) (Result, error) {
 	f.rec("run %s %s", n, strings.Join(argv, " "))
 	if f.OnRun != nil {

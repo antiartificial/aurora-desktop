@@ -31,19 +31,33 @@ func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv 
 	if err != nil {
 		return domain.Result{}, false, fail("domain_error", "cannot install app image into %s", err.Error(), name)
 	}
-	var granted []string
+	var undo []func()
 	defer func() {
-		for i := len(granted) - 1; i >= 0; i-- {
-			if err := iv.Runner.Revoke(name, granted[i]); err != nil {
-				iv.logf("WARNING: revoke %s from %s failed (stale grant): %v", granted[i], name, err)
-			}
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
 		}
 	}()
 	for _, g := range grants {
+		g := g
+		if g.Device != "" {
+			if err := iv.Runner.GrantDevice(name, g.Device); err != nil {
+				return domain.Result{}, false, fail("domain_error", "grant device %s to %s failed", err.Error(), g.Device, name)
+			}
+			undo = append(undo, func() {
+				if err := iv.Runner.RevokeDevice(name, g.Device); err != nil {
+					iv.logf("WARNING: revoke device %s from %s failed (stale grant): %v", g.Device, name, err)
+				}
+			})
+			continue
+		}
 		if err := iv.Runner.Grant(name, g.Path, g.Mode); err != nil {
 			return domain.Result{}, false, fail("domain_error", "grant %s (%s) to %s failed", err.Error(), g.Path, g.Mode, name)
 		}
-		granted = append(granted, g.Path)
+		undo = append(undo, func() {
+			if err := iv.Runner.Revoke(name, g.Path); err != nil {
+				iv.logf("WARNING: revoke %s from %s failed (stale grant): %v", g.Path, name, err)
+			}
+		})
 	}
 	res, err := iv.Runner.Run(ctx, name, append([]string{imgExe}, argv...), stdin)
 	if err != nil {

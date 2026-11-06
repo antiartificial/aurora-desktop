@@ -50,7 +50,7 @@ func (iv *Invoker) mintCaps(grants []prov.Grant) *capSet {
 	}
 	var errs []error
 	for i := range grants {
-		h, err := iv.Caps.Mint(prov.Resource(grants[i].Path, grants[i].Mode), ttl)
+		h, err := iv.Caps.Mint(grants[i].Resource(), ttl)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s (%s): %w", grants[i].Path, grants[i].Mode, err))
 			continue

@@ -1,0 +1,37 @@
+# Fixture app for decision 0014 (device grants). It declares gpu and wayland
+# but each is granted only to the verb that lists it; plain@v1 lists neither.
+[app]
+id = "org.aurora.devprobe"
+name = "Device probe"
+version = "0.0.1"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+devices = ["gpu", "wayland"]
+
+[types]
+opens = ["image/png"]
+creates = ["image/png"]
+
+[[verb]]
+name = "plain@v1"
+summary = "Report which device nodes and sockets exist in the domain (no device asked for)"
+effect = "write"
+accepts = ["image/png"]
+output = { image = "image/png" }
+
+[[verb]]
+name = "gpu@v1"
+summary = "As plain@v1, with device:gpu"
+effect = "write"
+accepts = ["image/png"]
+capabilities = ["device:gpu"]
+output = { image = "image/png" }
+
+[[verb]]
+name = "display@v1"
+summary = "As plain@v1, with device:wayland"
+effect = "write"
+accepts = ["image/png"]
+capabilities = ["device:wayland"]
+output = { image = "image/png" }
