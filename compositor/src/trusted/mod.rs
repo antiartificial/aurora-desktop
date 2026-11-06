@@ -153,7 +153,8 @@ impl Aurora {
                 kb.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Intercept(()));
                 return;
             }
-            kb.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Forward);
+            let _ = serial;
+            self.switcher_key(code, state, time);
             return;
         }
         let head = self.trusted.queue.front().map(|p| p.id);

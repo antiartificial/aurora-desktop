@@ -51,6 +51,7 @@ pub struct Aurora {
 
     pub seat: Seat<Self>,
     pub trusted: crate::trusted::Trusted,
+    pub fx: crate::fx::Fx,
 }
 
 impl Aurora {
@@ -125,6 +126,7 @@ impl Aurora {
             pending_frames: Vec::new(),
             seat,
             trusted: Default::default(),
+            fx: crate::fx::Fx::new(None),
         }
     }
 

@@ -35,6 +35,13 @@ fn keycode(name: &str) -> Option<Keycode> {
     ];
     let evdev = match name {
         "Escape" => 1,
+        "Tab" => 15,
+        "alt" => 56,
+        "shift" => 42,
+        "Up" => 103,
+        "Left" => 105,
+        "Right" => 106,
+        "Down" => 108,
         "Return" => 28,
         "space" => 57,
         "m" => 50,
@@ -96,6 +103,15 @@ fn serve(h: &LoopHandle<'static, Aurora>, s: UnixStream) {
 fn run(state: &mut Aurora, cmd: &str) -> String {
     let t = InputTime::now();
     let mut it = cmd.split_whitespace();
+    if cmd.starts_with("move ") {
+        // `move N X Y`: place the Nth window in stacking order (0 = bottom); test scenes only.
+        let v: Vec<i32> = it.skip(1).filter_map(|t| t.parse().ok()).collect();
+        let w = v.first().and_then(|&n| state.space.elements().nth(n as usize).cloned());
+        return match (w, v.as_slice()) {
+            (Some(w), [_, x, y]) => { state.space.relocate_element(&w, (*x, *y)); "ok".into() }
+            _ => "err bad move".into(),
+        };
+    }
     let (verb, name) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
     let Some(code) = keycode(name) else { return format!("err unknown key {name:?}") };
     match verb {

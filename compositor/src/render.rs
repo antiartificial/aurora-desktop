@@ -28,18 +28,31 @@ pub fn render_and_capture(
     tracker: &mut OutputDamageTracker,
     size: Size<i32, Physical>,
 ) {
-    smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
-        output,
-        renderer,
-        framebuffer,
-        1.0,
-        0, // buffer age 0: always repaint everything, so a capture sees a full frame
-        [&state.space],
-        &[],
-        tracker,
-        CLEAR,
-    )
-    .unwrap();
+    state.fx.poll(renderer);
+    if state.overlay_up() {
+        state.fx.switcher.open = false;
+    }
+    let mut done = false;
+    if state.fx.active() {
+        match state.fx.render_scene(renderer, framebuffer, output, size, &state.space) {
+            Ok(()) => done = true,
+            Err(e) => tracing::error!("effects pipeline failed, drawing flat this frame: {e}"),
+        }
+    }
+    if !done {
+        smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+            output,
+            renderer,
+            framebuffer,
+            1.0,
+            0, // buffer age 0: always repaint everything, so a capture sees a full frame
+            [&state.space],
+            &[],
+            tracker,
+            CLEAR,
+        )
+        .unwrap();
+    }
     state.serve_pending(renderer, framebuffer, size, state.start_time.elapsed());
     // The trusted overlay goes on last, after captures were served from the
     // framebuffer above, so no capture can contain it.

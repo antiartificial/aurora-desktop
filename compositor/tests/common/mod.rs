@@ -85,6 +85,17 @@ impl Comp {
         log
     }
 
+    /// A test client with extra arguments (see examples/testclient.rs); waits until it is mapped.
+    pub fn client_args(&mut self, args: &[&str]) -> PathBuf {
+        let log = self.dir.path().join(format!("client{}.log", self.clients.len()));
+        let c = Command::new(example("testclient")).args(args).env("XDG_RUNTIME_DIR", self.dir.path()).env("WAYLAND_DISPLAY", &self.display)
+            .stdout(fs::File::create(&log).unwrap()).spawn().unwrap();
+        self.clients.push(c);
+        wait_for("client mapped", || read(&log).contains("mapped"));
+        std::thread::sleep(Duration::from_millis(150));
+        log
+    }
+
     pub fn capture(&self, name: &str) -> Img {
         let out = self.dir.path().join(name);
         let st = Command::new(capture_bin()).args(["--display", &self.display, "-o"]).arg(&out)
@@ -156,4 +167,52 @@ impl Img {
     pub fn at(&self, x: usize, y: usize) -> [u8; 3] { let i = (y * self.w + x) * 3; [self.px[i], self.px[i + 1], self.px[i + 2]] }
     pub fn count(&self, c: [u8; 3]) -> usize { self.px.chunks(3).filter(|p| **p == c).count() }
     pub fn load_file(p: &Path) -> Img { Img::load(p) }
+}
+
+impl Img {
+    pub fn diff_count(&self, o: &Img) -> usize { self.px.chunks(3).zip(o.px.chunks(3)).filter(|(a, b)| a != b).count() }
+    pub fn save(&self, p: &Path) {
+        let mut e = png::Encoder::new(fs::File::create(p).unwrap(), self.w as u32, self.h as u32);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(&self.px).unwrap();
+    }
+}
+
+/// A private copy of `contracts/theme/` that a test may edit while the compositor runs.
+pub struct Theme { pub dir: tempfile::TempDir }
+
+impl Theme {
+    pub fn new() -> Theme {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/theme");
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("shaders")).unwrap();
+        fs::copy(src.join("aurora-glass.toml"), dir.path().join("aurora-glass.toml")).unwrap();
+        for f in ["down", "up", "glass", "card"] {
+            fs::copy(src.join(format!("shaders/{f}.frag")), dir.path().join(format!("shaders/{f}.frag"))).unwrap();
+        }
+        Theme { dir }
+    }
+    pub fn path(&self) -> &str { self.dir.path().to_str().unwrap() }
+    /// Replace `from` with `to` in the theme file (and assert it was there).
+    pub fn edit(&self, from: &str, to: &str) {
+        let p = self.dir.path().join("aurora-glass.toml");
+        let t = fs::read_to_string(&p).unwrap();
+        assert!(t.contains(from), "theme has no {from:?}");
+        fs::write(&p, t.replace(from, to)).unwrap();
+    }
+    pub fn write_shader(&self, name: &str, src: &str) { fs::write(self.dir.path().join(format!("shaders/{name}.frag")), src).unwrap(); }
+}
+
+/// The demo scene: opaque patterned windows at the back, translucent glass ones in front.
+pub fn demo_scene(c: &mut Comp) {
+    c.client_args(&["--size", "760x520", "--pattern", "checker"]);
+    c.client_args(&["--size", "600x420", "--pattern", "bars"]);
+    c.client_args(&["--size", "520x360", "--pattern", "split"]);
+    c.client_args(&["--size", "480x320", "--pattern", "glass", "--rgb", "255,255,255", "--alpha", "0.14"]);
+    c.client_args(&["--size", "420x300", "--pattern", "glass", "--rgb", "200,230,255", "--alpha", "0.14"]);
+    for (i, (x, y)) in [(40, 60), (520, 40), (120, 400), (380, 200), (760, 360)].iter().enumerate() {
+        c.inject(&format!("move {i} {x} {y}"));
+    }
+    std::thread::sleep(Duration::from_millis(300));
 }

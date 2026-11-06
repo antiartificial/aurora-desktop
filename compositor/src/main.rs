@@ -3,6 +3,7 @@
 mod handlers;
 
 mod capture;
+mod fx;
 mod grabs;
 mod headless;
 mod render;
@@ -27,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.test_input.is_some() && args.headless.is_none() {
         return Err("--test-input is a test affordance that exists only with --headless (no input device); refusing".into());
     }
+    state.fx = fx::Fx::new(args.theme.clone().or_else(default_theme_dir));
     state.trusted.dump_path = args.dump_overlay.clone();
     if let Some(uids) = args.trusted_uids.clone() {
         state.trusted.allow.uids = uids;
@@ -91,6 +93,13 @@ struct Args {
     deny_cgroups: Vec<String>,
     test_input: Option<std::path::PathBuf>,
     dump_overlay: Option<std::path::PathBuf>,
+    theme: Option<std::path::PathBuf>,
+}
+
+/// The repo's theme directory, if this binary runs from its build tree.
+fn default_theme_dir() -> Option<std::path::PathBuf> {
+    let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/theme");
+    d.is_dir().then_some(d)
 }
 
 fn default_trusted_socket() -> std::path::PathBuf {
@@ -101,7 +110,7 @@ fn default_trusted_socket() -> std::path::PathBuf {
 fn parse_args() -> Args {
     let mut args = Args {
         headless: None, command: None, trusted_socket: None, trusted_uids: None,
-        deny_cgroups: vec![], test_input: None, dump_overlay: None,
+        deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -114,6 +123,7 @@ fn parse_args() -> Args {
             }
             "--deny-cgroup" => args.deny_cgroups.extend(it.next()),
             "--test-input" => args.test_input = it.next().map(Into::into),
+            "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
             "--headless" => args.headless = Some((1280, 800)),
             s if s.starts_with("--headless=") => {

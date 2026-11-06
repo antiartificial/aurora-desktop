@@ -1,7 +1,10 @@
 //! Test client for the trusted-path tests: one solid-colour xdg toplevel that
 //! prints every keyboard event it receives (`enter`, `leave`, `key <code> <state>`)
 //! to stdout, one per line, so a test can see exactly what a focused client sees.
-//! Usage: testclient [--size WxH] [--rgb R,G,B]   (connects via WAYLAND_DISPLAY)
+//! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|split|bars|glass] [--alpha A]
+//! (connects via WAYLAND_DISPLAY). `glass` is a translucent ARGB panel with rounded
+//! corners (what the compositor's blur shows through); the others are opaque, with
+//! sharp edges so blur is easy to see behind them.
 
 use std::{io::Write, os::fd::AsFd};
 
@@ -66,11 +69,14 @@ delegate_noop!(App: ignore XdgToplevel);
 
 fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
+    let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
     let mut a = std::env::args().skip(1);
     while let Some(f) = a.next() {
         match f.as_str() {
             "--size" => { let v = a.next().unwrap(); let (x, y) = v.split_once('x').unwrap(); w = x.parse().unwrap(); h = y.parse().unwrap(); }
             "--rgb" => { let v: Vec<u8> = a.next().unwrap().split(',').map(|n| n.parse().unwrap()).collect(); rgb = [v[0], v[1], v[2]]; }
+            "--pattern" => pattern = a.next().unwrap(),
+            "--alpha" => alpha = a.next().unwrap().parse().unwrap(),
             o => panic!("unknown argument {o}"),
         }
     }
@@ -83,10 +89,11 @@ fn main() {
     let _seat: WlSeat = globals.bind(&qh, 1..=5, ()).unwrap();
 
     let mut file = tempfile::tempfile().unwrap();
-    let px: Vec<u8> = [rgb[2], rgb[1], rgb[0], 255].iter().copied().cycle().take(w * h * 4).collect();
+    let px = pixels(&pattern, w, h, rgb, alpha);
+    let format = if pattern == "glass" { wl_shm::Format::Argb8888 } else { wl_shm::Format::Xrgb8888 };
     file.write_all(&px).unwrap();
     let pool = shm.create_pool(file.as_fd(), (w * h * 4) as i32, &qh, ());
-    let buffer = pool.create_buffer(0, w as i32, h as i32, (w * 4) as i32, wl_shm::Format::Xrgb8888, &qh, ());
+    let buffer = pool.create_buffer(0, w as i32, h as i32, (w * 4) as i32, format, &qh, ());
     let surface = comp.create_surface(&qh, ());
     let xs = wm.get_xdg_surface(&surface, &qh, ());
     let top = xs.get_toplevel(&qh, ());
@@ -94,4 +101,31 @@ fn main() {
     surface.commit();
     let mut app = App { surface, buffer, configured: false };
     loop { q.blocking_dispatch(&mut app).expect("dispatch"); }
+}
+
+/// BGRA bytes (premultiplied for `glass`).
+fn pixels(pattern: &str, w: usize, h: usize, rgb: [u8; 3], alpha: f32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(w * h * 4);
+    let r = 12.0f32; // corner radius, matches the theme's glass.corner_radius
+    for y in 0..h {
+        for x in 0..w {
+            let c: [u8; 4] = match pattern {
+                "checker" => { let v = if (x / 40 + y / 40) % 2 == 0 { 0 } else { 255 }; [v, v, v, 255] }
+                "split" => { let v = if x < w / 2 { 0 } else { 255 }; [v, v, v, 255] }
+                "bars" => { let b: [[u8; 3]; 4] = [[230, 30, 30], [30, 200, 60], [40, 70, 240], [250, 220, 20]]; let c = b[(x / 50) % 4]; [c[2], c[1], c[0], 255] }
+                "glass" => {
+                    // rounded-corner coverage
+                    let (dx, dy) = ((x as f32 + 0.5 - w as f32 / 2.0).abs() - (w as f32 / 2.0 - r), (y as f32 + 0.5 - h as f32 / 2.0).abs() - (h as f32 / 2.0 - r));
+                    let d = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - r;
+                    let cov = (0.5 - d).clamp(0.0, 1.0);
+                    let a = if y < 28 { alpha + 0.18 } else { alpha } * cov;
+                    let p = |v: u8| (v as f32 * a).round() as u8;
+                    [p(rgb[2]), p(rgb[1]), p(rgb[0]), (a * 255.0).round() as u8]
+                }
+                _ => [rgb[2], rgb[1], rgb[0], 255],
+            };
+            out.extend_from_slice(&c);
+        }
+    }
+    out
 }

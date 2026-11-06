@@ -49,6 +49,18 @@ The compositor prints `aurora-compositor: socket wayland-N`. Capture with:
 Run a terminal inside it with `WAYLAND_DISPLAY=wayland-N ghostty` (unset
 `DISPLAY` so it uses Wayland).
 
+## Glass and the switcher (Phase 1's look, ported)
+
+Code: `src/fx/`. Parameters and shaders: `contracts/theme/` (`aurora-glass.toml`, `shaders/{down,up,glass,card}.frag`). Evidence: `demos/phase-1/`.
+
+- **Glass.** With `glass.enabled`, the scene is composed in an offscreen texture, window by window from the back. Before each window is drawn, everything below it is blurred and drawn under the window's rectangle: a **dual-Kawase blur** (Bjorge's kernel: 5-tap downsample, centre x4 plus four diagonals, /8; 8-tap upsample, edge midpoints x1 plus diagonals x2, /12), `blur_passes` downsamples and as many upsamples, `blur_radius` scaling the tap offset. Then the glass shader tints (Oklab token converted to sRGB on load), clips to a rounded rectangle and adds a highlight along the inside of the edge (full at the top of the window, 45% at the bottom). The window's own pixels go on top, so a translucent client shows the blurred desktop through itself. The finished scene is blitted into the output framebuffer, **before** captures are served and the trusted overlay is drawn: ordering is unchanged and a test re-checks overlay exclusion on a glass scene.
+- **What it approximates.** Blending and blur run on sRGB-encoded values (not linear light; Oklab is used only for the theme's colour tokens). The whole scene below a window is blurred, not just the part under it (cost grows with window count: 2 x passes full-chain draws per window). Every window gets glass under its geometry; there is no per-window opt-out, and glass is only visible under a translucent client. Textures are 8-bit, so the lowest levels band slightly. Each glass window re-blurs the scene, so a glass window above another glass window blurs the lower one's glass (correct, but not shared work).
+- **Theme file and hot reload.** `--theme DIR` (default: `../contracts/theme` of this source tree, else built-in copies). The files are polled every 250 ms; on a change the theme is re-parsed and the shaders recompiled. A theme that does not parse, or a shader that fails to compile, is logged (`theme: ... keeping last good`) and the previous one stays in force; a shader that has never compiled falls back to the built-in copy. Not done: a frame-time watchdog (a shader that compiles but is too slow is not caught), and a shader that compiles but fails at draw time only drops that frame to the flat renderer.
+- **Switcher.** Alt+Tab opens it (Tab / Shift+Tab / arrows move the selection, Return or releasing Alt commits, Escape cancels). Keys are filtered in `keyboard_input` (`src/fx/switcher.rs`): while open, no key reaches the client; Alt's own press and release are forwarded (so the client never sees a stuck Alt) and the release commits. Modifiers do work headless: `--test-input` takes `down alt`, `key Tab`, `up alt`. Each card is the window's live texture, re-rendered every frame into its own texture, drawn by `card.frag`, which inverts a perspective projection per pixel, so one shader draws both layouts: `grid` (flat cards, scaled to fit) and `flip` (a receding, rotated stack, `flip_angle_deg`). The layout is a theme key, so it hot-reloads while the switcher is open. The backdrop is the blurred, dimmed desktop. The selected card has an accent border.
+- **Switcher limits.** A card is the window's surfaces only: a translucent window's card shows no glass behind it. No titles or icons on cards (no font path for client text, deliberately). No animation between layouts. Clicking cards does nothing (pointer events are not routed to the switcher). Popups are not on cards. A raised overlay closes the switcher.
+- **Test affordance added:** `--test-input` also takes `move N X Y` (place the Nth window in stacking order), to build overlapping scenes.
+- **Tests** (`tests/glass.rs`, run with the others): glass on/off frames differ; the blur turns a black/white step into a gradient with 27 intermediate pixels in an 80-pixel row, largest neighbour jump 8 (the glass-off control is a one-pixel step); a hot reload changes the frame, also for the pass count; a deliberately broken shader and a broken theme file are rejected, the frame is identical to the last good one and the compositor keeps serving captures; a valid edit afterwards is picked up; the switcher shows N cards for N windows (2, 3, 4) and the flip layout is perspective-slanted; the trusted overlay is still absent from captures of a glass scene. `tests/evidence.rs` regenerates `demos/phase-1/` when `AURORA_EVIDENCE_DIR` is set.
+
 ## Trusted path
 
 Decision 0003 reserved "a surface class only the compositor can draw". This is its first implementation: approval prompts for destructive and external verbs, requested by the controller (`controller/README.md`, "Approval"). Code: `src/trusted/`.
@@ -104,9 +116,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 ## What from Phase 4 does NOT exist
 
-- No glass or blur: flat rendering only.
-- No Alt-Tab or any window switcher; no window management beyond smallvil's
-  move and resize grabs.
+- Glass and the switcher exist (see "Glass and the switcher"), but no window management beyond smallvil's move and resize grabs, and no animation: the switcher appears and changes between frames.
 - No multi-monitor: one output.
 - No HiDPI: scale is fixed at 1.
 - No XWayland.
@@ -117,4 +127,4 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 - No cursor capture (`paint_cursors`), no toplevel capture source, no
   rotated output.
 - Capture is served on the next redraw, so a request waits up to one frame.
-- Tests: only the trusted-path tests below; no test of the plain capture path beyond the manual runs in `demos/phase-0` and the control capture in `tests/trusted.rs`. The winit backend has no test at all.
+- Tests: the glass/switcher tests above and the trusted-path tests below; no test of the plain capture path beyond the manual runs in `demos/phase-0` and the control capture in `tests/trusted.rs`. The winit backend has no test at all.

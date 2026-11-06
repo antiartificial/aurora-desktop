@@ -1,0 +1,41 @@
+# Aurora theme parameters, v1: Phase 1's glass and window switcher.
+#
+# Read by compositor/ (src/fx/theme.rs) and HOT-RELOADED: save this file and
+# the next frame (polled every 250 ms) uses the new values. A file that does not
+# parse is rejected whole and the last good theme stays in force. Phase 8's
+# theme engine is meant to consume exactly this shape: tokens in Oklab, plus
+# the shaders in shaders/. Unknown keys are ignored; missing keys take the
+# defaults written here.
+#
+# Colours are Oklab [L, a, b] (L 0..1, a and b about -0.4..0.4). The compositor
+# converts them to sRGB on load. Blending itself is done on sRGB-encoded
+# values, not in linear light or in Oklab (see compositor/README.md).
+
+[theme]
+name = "aurora-glass"
+version = 1
+
+[glass]
+enabled = true
+# Dual-Kawase sampling offset multiplier (1.0 = the textbook kernel).
+# Visible blur extent is roughly blur_radius * 2^blur_passes pixels.
+blur_radius = 2.0
+# Number of downsample steps (and the same number of upsample steps), 1..6.
+blur_passes = 3
+# Pixels. The glass layer is clipped to a rounded rectangle of the window.
+corner_radius = 12.0
+
+[glass.tint]
+oklab = [0.80, -0.01, -0.04]
+strength = 0.22        # 0 = pure blur, 1 = flat colour
+
+[glass.edge]
+oklab = [0.98, 0.0, 0.0]
+width = 1.5            # pixels, measured inward from the window edge
+strength = 0.75        # fades from top (full) to bottom (45%) of the window
+
+[switcher]
+layout = "flip"        # "grid" or "flip"
+backdrop_dim = 0.45    # black over the blurred desktop, 0..1
+flip_angle_deg = 42.0
+accent = [0.72, 0.10, 0.12]  # Oklab, the selected card's border
