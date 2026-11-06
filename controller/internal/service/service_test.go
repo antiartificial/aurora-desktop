@@ -15,6 +15,7 @@ import (
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/bus/server"
 	"github.com/antiartificial/aurora/controller/internal/apps"
+	"github.com/antiartificial/aurora/controller/internal/busreg"
 	"github.com/antiartificial/aurora/controller/internal/domain"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/prov"
@@ -59,7 +60,7 @@ func start(t *testing.T, runner domain.Runner, dirs ...string) *env {
 		t.Fatalf("skipped %v", skipped)
 	}
 	sc := dial()
-	inv := &invoke.Invoker{Reg: reg, Runner: runner, Logf: t.Logf, Timeout: 30 * time.Second,
+	inv := &invoke.Invoker{Reg: reg, Runner: runner, Logf: t.Logf, Bus: busreg.Client{C: sc}, Timeout: 30 * time.Second,
 		Publish: func(topic string, p []byte) error { return sc.Publish(topic, p, proto.QoSInitiated, false) }}
 	ctx := context.Background()
 	if err := sc.Register(ctx, "registry"); err != nil {

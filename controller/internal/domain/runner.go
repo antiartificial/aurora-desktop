@@ -31,6 +31,9 @@ type Runner interface {
 	// elsewhere, into the domain's own storage and returns the executable's
 	// path as seen inside the domain.
 	InstallImage(name, srcDir, exe string) (string, error)
+	// Identity returns the domain's attested bus identity (`domain exec-id`)
+	// and the host path of its bus socket (`domain sockpath`).
+	Identity(name string) (id, sock string, err error)
 	Grant(name, path, mode string) error // mode "ro" or "rw"
 	Revoke(name, path string) error
 	Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error)
@@ -124,6 +127,28 @@ func (c CLI) Ensure(name string) error {
 		return fmt.Errorf("domain create %s: %s", name, strings.TrimSpace(string(res.Stderr)))
 	}
 	return nil
+}
+
+func (c CLI) Identity(name string) (string, string, error) {
+	out := func(verb string) (string, error) {
+		res, err := c.do(context.Background(), nil, verb, name)
+		if err != nil {
+			return "", err
+		}
+		if res.Exit != 0 {
+			return "", fmt.Errorf("domain %s %s: %s", verb, name, strings.TrimSpace(string(res.Stderr)))
+		}
+		return strings.TrimSpace(string(res.Stdout)), nil
+	}
+	id, err := out("exec-id")
+	if err != nil {
+		return "", "", err
+	}
+	sock, err := out("sockpath")
+	if err != nil {
+		return "", "", err
+	}
+	return id, sock, nil
 }
 
 func (c CLI) Grant(name, path, mode string) error {

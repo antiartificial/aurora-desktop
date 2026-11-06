@@ -1,0 +1,19 @@
+# Fixture app that connects to the bus from inside its domain (demo.sh, tests).
+[app]
+id = "org.aurora.busprobe"
+name = "Bus probe"
+version = "0.0.1"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+
+[types]
+opens = ["image/png"]
+creates = ["image/png"]
+
+[[verb]]
+name = "probe@v1"
+summary = "Copy an image and announce itself on the bus from inside the domain"
+effect = "write"
+accepts = ["image/png"]
+output = { image = "image/png" }

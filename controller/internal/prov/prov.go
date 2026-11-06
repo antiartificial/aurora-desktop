@@ -37,14 +37,20 @@ type Grant struct {
 
 // Record says where a file came from.
 type Record struct {
-	File     string          `json:"file"`
-	App      string          `json:"app"`
-	Verb     string          `json:"verb"`
-	Inputs   []string        `json:"inputs"`
-	Args     json.RawMessage `json:"args"`
-	Isolated bool            `json:"isolated"`
-	Grants   []Grant         `json:"grants"`
-	TS       string          `json:"ts"`
+	File string `json:"file"`
+	App  string `json:"app"`
+	// Domain is the app's domain identity (`domain exec-id`), the name the bus
+	// attributes the domain's connections to. DomainAttested says busd had
+	// the domain registered when the verb ran; if false the name is only
+	// what the adapter reported, not something the bus could vouch for.
+	Domain         string          `json:"domain,omitempty"`
+	DomainAttested bool            `json:"domain_attested,omitempty"`
+	Verb           string          `json:"verb"`
+	Inputs         []string        `json:"inputs"`
+	Args           json.RawMessage `json:"args"`
+	Isolated       bool            `json:"isolated"`
+	Grants         []Grant         `json:"grants"`
+	TS             string          `json:"ts"`
 }
 
 // Write stores the record on path as an extended attribute.

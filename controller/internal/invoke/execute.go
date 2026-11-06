@@ -14,7 +14,7 @@ import (
 // Inside the domain the grants are exactly the planned ones (input ro, the
 // output file rw, see planGrants), revoked afterwards. Without domain tooling it runs the app
 // directly on the host, says so loudly, and reports isolated=false.
-func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv []string, stdin []byte, grants []prov.Grant) (domain.Result, bool, *Error) {
+func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv []string, stdin []byte, grants []prov.Grant, ident *domIdent) (domain.Result, bool, *Error) {
 	if err := iv.Runner.Available(); err != nil {
 		if iv.RequireIsolation {
 			return domain.Result{}, false, fail("isolation_unavailable", "domain tooling unavailable and isolation is required", err.Error())
@@ -26,6 +26,7 @@ func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv 
 	if err := iv.Runner.Ensure(name); err != nil {
 		return domain.Result{}, false, fail("domain_error", "cannot create domain %s", err.Error(), name)
 	}
+	ident.ID, ident.Attested = iv.domainIdentity(name)
 	imgExe, err := iv.Runner.InstallImage(name, app.Dir, exe)
 	if err != nil {
 		return domain.Result{}, false, fail("domain_error", "cannot install app image into %s", err.Error(), name)

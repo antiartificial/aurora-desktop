@@ -16,6 +16,7 @@ import (
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/controller/internal/apps"
+	"github.com/antiartificial/aurora/controller/internal/busreg"
 	"github.com/antiartificial/aurora/controller/internal/config"
 	"github.com/antiartificial/aurora/controller/internal/domain"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
@@ -89,6 +90,7 @@ func main() {
 	defer c.Close()
 	inv := &invoke.Invoker{
 		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, RequirePowerbox: *reqPB, Tickets: tickets, Execs: execs, Timeout: *timeout,
+		Bus: busreg.Client{C: c},
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)
 		},
@@ -108,6 +110,7 @@ func main() {
 	select {
 	case s := <-sig:
 		log.Printf("%v: stopping", s)
+		inv.Close()
 	case <-c.Done():
 		log.Fatalf("bus connection lost")
 	}

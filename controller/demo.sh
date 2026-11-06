@@ -15,21 +15,22 @@ cleanup() {
 trap cleanup EXIT
 step() { printf '\n== %s\n' "$*"; }
 
-export AURORA_BUS_SOCK=$W/bus.sock AURORA_DOMAINS_DIR=$W/domains
-mkdir -p "$W/bin" "$W/pics"
+export AURORA_BUS_SOCK=$W/bus.sock AURORA_DOMAINS_DIR=$W/domains XDG_RUNTIME_DIR=$W/run
+mkdir -p "$W/bin" "$W/pics" "$W/run"
 
 step "build"
 (cd "$ROOT/bus" && go build -o "$W/bin/" ./cmd/busd ./cmd/bus) || { echo "cannot build bus"; exit 1; }
 (cd "$ROOT/adapter/linux" && go build -o "$W/bin/domain" ./cmd/domain) || echo "cannot build domain CLI: verbs will run UNISOLATED"
 go build -o "$W/bin/" ./cmd/controllerd ./cmd/controller || exit 1
+CGO_ENABLED=0 go build -o "$W/bin/busprobe" ./cmd/busprobe || exit 1
 echo "built into $W/bin"
 
 # Pick the app to invoke: real Lumen if its binary builds, else the fixture.
-APPS="$ROOT/apps,$CTL/testdata/apps"
-EXEC=()
+APPS="$ROOT/apps,$CTL/testdata/apps,$CTL/testdata/probeapps"
+EXEC=(--exec "org.aurora.busprobe=$W/bin/busprobe")
 if (cd "$ROOT/apps/lumen" && go build -o "$W/bin/lumen" ./cmd/lumen 2>/dev/null); then
   APP=org.aurora.lumen; VERB=resize@v1; ARGS=(--arg width=300); OUT=$W/pics/small.png
-  EXEC=(--exec "org.aurora.lumen=$W/bin/lumen")
+  EXEC+=(--exec "org.aurora.lumen=$W/bin/lumen")
   (cd "$ROOT/apps/lumen" && go build -o "$W/bin/genimage" ./cmd/genimage) && "$W/bin/genimage" "$W/pics/in.png"
   echo "using real Lumen (apps/lumen/cmd/lumen)"
 else
@@ -74,6 +75,21 @@ step "isolation proof: the fixture app (org.aurora.demo) runs in a domain and re
 printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$W/pics/probe.png"
 $C invoke org.aurora.demo copy@v1 --input "$W/pics/probe.png" --output "$W/pics/probe-out.png" | grep -E '"isolated"|"log"'
 echo "(0 entries in /home means the domain cannot see the host's home; only the granted input and output files exist)"
+step "bus identity: an app INSIDE its domain connects to the bus (AURORA_BUS_SOCKET=/run/aurora/bus.sock)"
+"$W/bin/bus" sub app.probe >"$W/probe-events.log" 2>&1 & PIDS+=($!)
+sleep 0.5
+grep -E 'registered .* with the bus|WARNING.*bus' "$W/controllerd.log" || echo "(no registration logged yet; first invoke registers)"
+cp "$W/pics/probe.png" "$W/pics/pin.png"
+$C invoke org.aurora.busprobe probe@v1 --input "$W/pics/pin.png" --output "$W/pics/pout.png" | grep -E '"isolated"|"domain|"ok"'
+sleep 0.5
+echo "-- what busd saw (from= is decided by the socket, not by the app):"
+grep -o '"from":"[^"]*"' "$W/probe-events.log" | sort -u
+grep -q '"from":"domain:app-org-aurora-' "$W/probe-events.log" && ! grep -q '"from":"uid' "$W/probe-events.log" && echo "RESULT: app appears as its domain identity, not uid:comm" || echo "RESULT: FAILED to appear as a domain identity"
+echo "-- bus inspect: registered domain sockets"
+"$W/bin/bus" inspect | sed -n '/^domain sockets/,/^$/p' | head -8
+echo "-- provenance record now names the domain identity:"
+$C provenance "$W/pics/pout.png" | grep -E '"domain|"app"'
+
 step "grant sources: restart controllerd with --no-gesture-grants and HOME=$W/home (fixture declares ~/Pictures write)"
 kill "${PIDS[1]}" 2>/dev/null; wait "${PIDS[1]}" 2>/dev/null
 mkdir -p "$W/home/Pictures"; cp "$W/pics/probe.png" "$W/home/Pictures/in.png"

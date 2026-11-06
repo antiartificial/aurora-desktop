@@ -81,12 +81,17 @@ type Invoker struct {
 	Timeout time.Duration
 	// SetProvenance writes the record onto the output file (default xattr).
 	SetProvenance func(path string, r prov.Record) error
+	// Bus, if set, gets each app domain registered when it is ensured so the
+	// bus attributes the domain's connections to it; nil disables that.
+	Bus DomainBus
 	// Execs overrides executable lookup: app id to host path.
 	Execs map[string]string
 
-	clock *hlc.Clock
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	clock      *hlc.Clock
+	mu         sync.Mutex
+	regMu      sync.Mutex
+	registered map[string]string // domain name -> identity registered with the bus
+	locks      map[string]*sync.Mutex
 }
 
 func (iv *Invoker) logf(f string, a ...any) {
@@ -217,7 +222,8 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 			}()
 		}
 	}
-	res, isolated, e := iv.execute(ctx, app, exe, argv, stdin, grants)
+	var ident domIdent
+	res, isolated, e := iv.execute(ctx, app, exe, argv, stdin, grants, &ident)
 	if e != nil {
 		return nil, e
 	}
@@ -235,7 +241,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
-		Args: argsJSON, Isolated: isolated, Grants: grants, TS: iv.clock.Now().String()}
+		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, TS: iv.clock.Now().String()}
 	set := iv.SetProvenance
 	if set == nil {
 		set = prov.Write

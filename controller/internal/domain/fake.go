@@ -10,11 +10,12 @@ import (
 
 // Fake records every call, for tests. OnRun may produce side effects.
 type Fake struct {
-	mu       sync.Mutex
-	Calls    []string
-	Unusable error                                    // if set, Available returns it
-	OnRun    func(argv []string, stdin []byte) Result // default: exit 0, no output
-	GrantErr error
+	mu          sync.Mutex
+	Calls       []string
+	Unusable    error                                    // if set, Available returns it
+	OnRun       func(argv []string, stdin []byte) Result // default: exit 0, no output
+	GrantErr    error
+	IdentityErr error
 }
 
 func (f *Fake) rec(format string, a ...any) {
@@ -31,6 +32,14 @@ func (f *Fake) Ensure(n string) error {
 func (f *Fake) InstallImage(n, src, exe string) (string, error) {
 	f.rec("install %s", n)
 	return "/domain/data/app/" + filepath.Base(exe), nil
+}
+
+// Identity mimics `domain exec-id` / `domain sockpath` with a fixed shape.
+func (f *Fake) Identity(n string) (string, string, error) {
+	if f.IdentityErr != nil {
+		return "", "", f.IdentityErr
+	}
+	return "domain:" + n + ":00112233aabbccdd", "/fake/run/" + n + "/bus.sock", nil
 }
 func (f *Fake) Grant(n, p, m string) error {
 	f.rec("grant %s %s %s", n, p, m)

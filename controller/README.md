@@ -66,13 +66,19 @@ So the domain sees `/usr` read-only, its own `/domain/*`, the input file and the
 
 **Fallback:** if the CLI or `bwrap` is missing, controllerd warns at start and at every invoke (`WARNING: running ... UNISOLATED on the host`), runs the app directly, and reports `"isolated":false` in the reply, the event and the xattr. `--require-isolation` turns this into an `isolation_unavailable` error instead.
 
+## Bus identity of app domains
+
+When controllerd ensures an app's domain it asks the adapter for `domain exec-id` and `domain sockpath` and registers the pair with busd (`bus.domain.add@v1`, over its session-socket connection). `domain run` binds that socket's directory into the domain at `/run/aurora` and sets `AURORA_BUS_SOCKET=/run/aurora/bus.sock`, so an app that dials it appears on the bus as `domain:<name>:<hex>` instead of `uid1000:<comm>` (`cmd/busprobe` and `demo.sh` show this with a real bwrap domain). Registration is once per domain per controllerd run; "already registered" counts as success. On SIGINT/SIGTERM controllerd unregisters what it registered (`Invoker.Close`/`Teardown`); domains themselves are never destroyed by the controller.
+
+Failure is not fatal: busd refusing, the identity lookup failing or no bus all log a WARNING and the invoke proceeds. The record then has `domain_attested:false` (or no `domain`), and the app cannot reach the bus as its domain. The socket is the identity, with the weaknesses in `bus/README.md`.
+
 ## Provenance v0
 
 For every verb that writes a file, after the file exists, controllerd publishes on `provenance.created`:
 
-    {"file":"/abs/out.png","app":"org.aurora.lumen","verb":"resize@v1","inputs":["/abs/in.png"],"args":{"width":800},"isolated":true,"grants":[{"path":"/abs/in.png","mode":"ro","source":"gesture"},{"path":"/abs/out.png","mode":"rw","source":"gesture"}],"ts":"<hlc>"}
+    {"file":"/abs/out.png","app":"org.aurora.lumen","domain":"domain:app-org-aurora-921cd3f28d8d99c9:4b6f615504be4fd5","domain_attested":true,"verb":"resize@v1","inputs":["/abs/in.png"],"args":{"width":800},"isolated":true,"grants":[{"path":"/abs/in.png","mode":"ro","source":"gesture"},{"path":"/abs/out.png","mode":"rw","source":"gesture"}],"ts":"<hlc>"}
 
-and writes the same JSON to the output file's `user.aurora.provenance` xattr (a failure logs a warning; the event is still sent). `ts` is a hybrid logical clock from the bus's `hlc` package, local to controllerd. A failed invoke publishes nothing. `controller provenance <file>` reads the xattr back. Paths are canonical (symlinks resolved).
+and writes the same JSON to the output file's `user.aurora.provenance` xattr (a failure logs a warning; the event is still sent). `ts` is a hybrid logical clock from the bus's `hlc` package, local to controllerd. `domain` is the app's domain identity, the name the bus can attest, beside `app` (a manifest id). The event itself is still published by the controller, so its envelope `from` stays `uid1000:controllerd`: that is the truthful actor (the controller ran the verb; the app is not the publisher and never touches the bus for this). The app's identity belongs in the payload. `domain_attested` says busd had that domain registered when the verb ran. A failed invoke publishes nothing. `controller provenance <file>` reads the xattr back. Paths are canonical (symlinks resolved).
 
 ## Ambient, gesture and powerbox grants
 
@@ -110,12 +116,14 @@ Limitation: plain `aurora open <file>` passes whatever path was typed, so it is 
 
 ## Not implemented
 
+- Capability handles: not wired. A handle minted for the input would be held by the controller, and `bus.transfer@v1` needs the domain to have a live connection at invoke time, which a one-shot app does not have yet. A recorded handle that nothing checks would be decoration, so provenance does not name one.
+
 - The manifest's `capabilities.paths` are consulted only to classify grants (ambient or gesture). By default a gesture grant is given on request, so a verb declaring `~/Pictures` can still be asked to write anywhere the caller names; only `--no-gesture-grants` refuses that. The powerbox v0 tickets make a gesture distinguishable from a bare request but are not a trusted path (see above), and there is no approval UI behind `needs_approval`. The `net`/`device` capabilities are never granted.
 - No consent, no installation step, no signature or `image_hash` check, no hot reload of manifests: apps are read once at start.
 - The domain has no Landlock/seccomp, no enforced memory/CPU limits and no btrfs snapshot per invoke (all adapter limits, see `adapter/linux/README.md`).
 - Grants are persisted by the domain CLI: if controllerd is killed mid-invoke the grants stay until the next invoke of that app re-grants and revokes them. Nothing sweeps stale grants. Domains are never destroyed.
 - Granting the input as a single file means a verb with several inputs is not supported; `inputs` in provenance is always one entry. Provenance does not chain to the input's own record, and an app that wants to write its output atomically (temp file, then rename) cannot: the output is a bind-mounted file and a rename over it fails inside the domain, so apps must write it in place (Lumen does, via `os.Create`). If the invoke fails, an output file the controller created is removed; one that already existed has already been truncated. A path swapped between the grant check and `domain run` (bwrap resolves again at start) is not closed, only the controller-to-grant gap is.
-- Provenance on the bus is attributed by the bus's MVP `uid:comm` identity, so any same-user process can publish a fake `provenance.created`; the xattr is unauthenticated and can be edited or lost on copy. There is no event log of provenance beyond the bus log.
+- The provenance event's envelope `from` is the controller's MVP `uid:comm` identity, so any same-user process can publish a fake `provenance.created`; the xattr is unauthenticated and can be edited or lost on copy. There is no event log of provenance beyond the bus log.
 - Effect classes: read versus non-read decides whether an output is granted; `destructive` and `external` only add the `needs_approval` flag on gesture grants.
 - Output size, stdout size and CPU are not capped beyond the timeout; stdout and stderr are buffered whole in memory.
 - Tests: the real-domain test skips itself when `bwrap` is absent or the domain CLI cannot be built; Lumen itself is not exercised by `go test` (the demo does that).
