@@ -25,6 +25,7 @@
 #include <Shape.h>
 #include <ServerProtocol.h>
 #include <Menu.h>
+#include <Accelerant.h>
 #include <Palette.h>
 #include <ServerProtocolStructs.h>
 #include <View.h>
@@ -56,6 +57,9 @@ namespace {
 std::recursive_mutex gMu;
 bool gTrace = false;
 int gUnhandled = 0, gUnhandledReply = 0;
+// The view that gets every pointer event until the button goes up: the one pressed on, or the one that called
+// SetMouseEventMask(B_POINTER_EVENTS) from its MouseDown (BMenuField does, so that it, not the menu bar inside it, sees the up).
+int32 gPtrGrab = B_NULL_TOKEN;
 double gScale = 1.0;
 uint32 gMods = 0;		// last modifier state seen on any window
 au_wl* gWl = NULL;
@@ -306,6 +310,13 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 			if (it != gBitmaps.end()) { delete_area(it->second.area); gBitmaps.erase(it); }
 			return;
 		}
+		case AS_SET_VIEW_CURSOR:
+		{
+			// Acknowledged, not shown: the cursor is the compositor's, and there is no protocol yet to pass a BCursor's bitmap on.
+			// BSplitView sets one (a resize cursor) as the pointer crosses its divider, and asks for the answer.
+			if (link.NeedsReply()) { reply.StartMessage(B_OK); reply.Flush(); }
+			return;
+		}
 		case AS_GET_SCREEN_FRAME:
 		{
 			// The output's logical size (wl_output.mode / scale); 1280x800 with no compositor. One screen, id 0.
@@ -314,6 +325,26 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 			reply.StartMessage(B_OK);
 			reply.Attach<BRect>(BRect(0, 0, sw - 1, sh - 1));
 			reply.Flush();
+			return;
+		}
+		case AS_VALID_SCREEN_ID:
+		{
+			int32 id = -1; link.Read<int32>(&id);
+			reply.StartMessage(id == 0 ? B_OK : B_BAD_VALUE);	// one screen, id 0
+			reply.Flush();
+			return;
+		}
+		case AS_SCREEN_GET_MODE:
+		{
+			// One 32-bit screen the size of the output; no timings (there is no CRTC).
+			int32 id = -1; uint32 workspace; link.Read<int32>(&id); link.Read<uint32>(&workspace);
+			if (id != 0) { reply.StartMessage(B_BAD_VALUE); reply.Flush(); return; }
+			int sw = 1280, sh = 800;
+			if (gWl) au_wl_output_size(gWl, &sw, &sh);
+			display_mode m; memset(&m, 0, sizeof(m));
+			m.virtual_width = m.timing.h_display = sw; m.virtual_height = m.timing.v_display = sh;
+			m.space = B_RGB32;
+			reply.StartMessage(B_OK); reply.Attach(&m, sizeof(m)); reply.Flush();
 			return;
 		}
 		case AS_GET_SCREEN_ID_FROM_WINDOW:
@@ -693,6 +724,7 @@ BRect ToWindow(const SView* v, BRect r)
 
 void SetupClip(SWindow* w, SView* v)
 {
+	if (EffectivelyHidden(v)) { w->canvas.SetClip(DRect{0, 0, 0, 0}); return; }	// a view on a hidden tab page draws nothing (BAbstractSpinner repaints its focus ring when the window deactivates)
 	if (!w->inUpdate) w->directDraw = true;	// drawing outside an update (BTextView's caret): present it, see WindowThread
 	BRect vis = VisibleRect(v);
 	BRect c = vis;
@@ -993,7 +1025,6 @@ void HandleInternal(SWindow* w, const Internal& e)
 			// Same fields app_server's EventDispatcher sends. The client's BWindow adds "where" and
 			// "be:view_where" itself from "screen_where".
 			static int buttons = 0;
-			static int32 grab = B_NULL_TOKEN;
 			static BPoint where;
 			if (e.kind == AU_EV_POINTER_MOVE)
 				where = BPoint(floorf(e.a / 256.0f), floorf(e.b / 256.0f));
@@ -1011,8 +1042,8 @@ void HandleInternal(SWindow* w, const Internal& e)
 					if (!c->hidden && VisibleRect(c).Contains(where)) { hit = c; found = true; break; }
 				}
 			}
-			if (e.kind == AU_EV_POINTER_BUTTON && e.b) grab = hit ? hit->token : B_NULL_TOKEN;
-			int32 token = grab != B_NULL_TOKEN ? grab : (hit ? hit->token : B_NULL_TOKEN);
+			if (e.kind == AU_EV_POINTER_BUTTON && e.b) gPtrGrab = hit ? hit->token : B_NULL_TOKEN;
+			int32 token = gPtrGrab != B_NULL_TOKEN ? gPtrGrab : (hit ? hit->token : B_NULL_TOKEN);
 			BMessage m(e.kind == AU_EV_POINTER_MOVE ? B_MOUSE_MOVED : (e.b ? B_MOUSE_DOWN : B_MOUSE_UP));
 			m.AddInt64("when", system_time());
 			m.AddPoint("screen_where", BPoint(where.x + w->frame.left, where.y + w->frame.top));
@@ -1029,7 +1060,7 @@ void HandleInternal(SWindow* w, const Internal& e)
 				m.AddInt32("clicks", w->clicks);
 			}
 			if (token != B_NULL_TOKEN) m.AddInt32("_view_token", token);
-			if (e.kind == AU_EV_POINTER_BUTTON && !e.b) grab = B_NULL_TOKEN;
+			if (e.kind == AU_EV_POINTER_BUTTON && !e.b) gPtrGrab = B_NULL_TOKEN;
 			BMessenger reply;
 			BMessage::Private(&m).SendMessage(w->clientLooperPort, w->app->team, B_PREFERRED_TOKEN, 0, false, reply);
 			break;
@@ -1072,6 +1103,19 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			return;
 		case AS_ACTIVATE_WINDOW:
 		case AS_SET_LOOK: case AS_SET_FEEL: case AS_SET_FLAGS: case AS_SET_WORKSPACES:
+		case AS_GET_DECORATOR_SETTINGS:
+		{
+			// There is no decorator (the compositor draws the window's frame), so: no tab and no border. BAlert asks, to
+			// centre itself on the screen by its decorated frame.
+			BMessage settings;
+			settings.AddRect("tab frame", BRect(0, 0, 0, 0));
+			settings.AddFloat("border width", 0.0f);
+			ssize_t size = settings.FlattenedSize();
+			std::vector<char> buf(size);
+			if (settings.Flatten(buf.data(), size) != B_OK) { reply.StartMessage(B_ERROR); reply.Flush(); return; }
+			reply.StartMessage(B_OK); reply.Attach<int32>((int32)size); reply.Attach(buf.data(), size); reply.Flush();
+			return;
+		}
 		case AS_SET_SIZE_LIMITS:
 		{
 			// Needs a reply (BWindow::SetSizeLimits blocks on it): the limits as enforced, and the frame. BMenuWindow's
@@ -1170,7 +1214,13 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			reply.Flush();
 			return;
 		}
-		case AS_VIEW_SET_EVENT_MASK: case AS_VIEW_SET_MOUSE_EVENT_MASK: return;
+		case AS_VIEW_SET_EVENT_MASK: return;
+		case AS_VIEW_SET_MOUSE_EVENT_MASK:
+		{
+			uint32 mask = 0; link.Read<uint32>(&mask);
+			if ((mask & B_POINTER_EVENTS) && gPtrGrab != B_NULL_TOKEN) gPtrGrab = v->token;
+			return;
+		}
 		case AS_VIEW_GET_COORD:
 			reply.StartMessage(B_OK);
 			reply.Attach<BPoint>(v->frame.LeftTop());
@@ -1348,7 +1398,7 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			BRect wr = ToWindow(v, r);
 			FRect f{wr.left, wr.top, wr.right, wr.bottom};
 			if (code == AS_FILL_ROUNDRECT) w->canvas.FillRoundRect(f, rx, ry, DrawColor(v->st));
-			else w->canvas.StrokeRect(f, DrawColor(v->st), v->st.penSize * v->st.scale);	// gap: not rounded
+			else w->canvas.StrokeRoundRect(f, rx, ry, DrawColor(v->st), v->st.penSize * v->st.scale);
 			return;
 		}
 		case AS_FILL_RECT_GRADIENT: case AS_FILL_ROUNDRECT_GRADIENT:
@@ -1407,8 +1457,29 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			BRect r; if (link.Read<BRect>(&r) != B_OK) return;
 			SetupClip(w, v);
 			BRect wr = ToWindow(v, r);
-			if (code == AS_FILL_ELLIPSE) w->canvas.FillEllipse(FRect{wr.left, wr.top, wr.right, wr.bottom}, DrawColor(v->st));
-			return;	// gap: stroked ellipse not drawn
+			FRect f{wr.left, wr.top, wr.right, wr.bottom};
+			if (code == AS_FILL_ELLIPSE) w->canvas.FillEllipse(f, DrawColor(v->st));
+			else w->canvas.StrokeEllipse(f, DrawColor(v->st), v->st.penSize * v->st.scale);
+			return;
+		}
+		case AS_FILL_ELLIPSE_GRADIENT:
+		{
+			BRect r; link.Read<BRect>(&r);
+			Paint p;
+			if (!ReadPaint(v, link, &p)) { gUnhandled++; return; }
+			SetupClip(w, v);
+			BRect wr = ToWindow(v, r);
+			w->canvas.FillEllipse(FRect{wr.left, wr.top, wr.right, wr.bottom}, p);
+			return;
+		}
+		case AS_VIEW_SET_TRANSFORM:
+		{
+			// Only the identity is honoured (BTab sets and resets one around every label; nothing else here sets a real one).
+			double t[6];
+			if (link.Read(t, sizeof(t)) != B_OK) return;
+			bool identity = t[0] == 1 && t[1] == 0 && t[2] == 0 && t[3] == 1 && t[4] == 0 && t[5] == 0;
+			if (!identity) gUnhandled++;
+			return;
 		}
 		case AS_STROKE_SHAPE: case AS_FILL_SHAPE:
 		{

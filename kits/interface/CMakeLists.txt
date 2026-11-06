@@ -19,7 +19,9 @@ set(IFACE_REAL
 	LayoutContext LayoutItem Layout LayoutUtils MenuBar MenuField MenuItem MenuItemPrivate Menu MenuPrivate
 	MenuWindow Picture PicturePlayer Polygon PopUpMenu PrivateScreen Region RegionSupport Screen ScrollBar
 	SeparatorItem Shape ScrollView ListItem ListView OutlineListView StringItem StringView TextView ToolTipManager ToolTip TwoDimensionalLayout ViewLayoutItem View
-	Window)
+	Window
+	CheckBox RadioButton Box TextControl AbstractSpinner Spinner DecimalSpinner OptionControl OptionPopUp StatusBar TabView Slider ColorControl Alert CardLayout SplitLayout SplitView
+	GroupView SpaceLayoutItem TextInput)
 set(SRC_IFACE)
 foreach(n ${IFACE_REAL})
 	list(APPEND SRC_IFACE ${I}/${n}.cpp)
@@ -29,7 +31,7 @@ file(GLOB SRC_TEXTVIEW ${I}/textview_support/*.cpp)
 set(SRC_APP ${K}/app/AppDefs.cpp ${K}/app/AppServerLink.cpp ${K}/app/Cursor.cpp ${K}/app/Invoker.cpp
 	${K}/app/LinkReceiver.cpp ${K}/app/LinkSender.cpp ${K}/app/MessageRunner.cpp ${K}/app/PortLink.cpp
 	${K}/app/ServerLink.cpp ${K}/app/ServerMemoryAllocator.cpp)
-set(SRC_SUPPORT ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
+set(SRC_SUPPORT ${K}/shared/HSL.cpp ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/registrar.cpp ${CMAKE_CURRENT_SOURCE_DIR}/clipboard.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
 
 add_library(haiku_iface_real STATIC ${SRC_IFACE} ${SRC_LAYOUTER} ${SRC_TEXTVIEW} ${SRC_APP} ${SRC_SUPPORT})
@@ -39,6 +41,8 @@ target_include_directories(haiku_iface_real SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE
 	${HAIKU_SRC}/headers/private/input ${HAIKU_SRC}/headers/os/add-ons/graphics ${HAIKU_SRC}/headers/os/input
 	${I} ${I}/layouter ${I}/textview_support)
 target_link_libraries(haiku_iface_real PUBLIC haiku_app_real PkgConfig::ICU)
+# glibc's strdup(NULL) crashes where Haiku's returns NULL (BSlider does it by default): see shim/strdup_null.h.
+target_compile_options(haiku_iface_real PRIVATE "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/strdup_null.h")
 # ServerMemoryAllocator: LIBBE_TEST drops the address-range reservation (_kern_reserve_address_range).
 set_source_files_properties(${K}/app/ServerMemoryAllocator.cpp PROPERTIES COMPILE_DEFINITIONS HAIKU_TARGET_PLATFORM_LIBBE_TEST)
 
@@ -76,6 +80,7 @@ iface_exe(test_font tests/test_font.cpp)
 target_link_libraries(test_font PkgConfig::FT2)
 iface_exe(test_iface_window tests/test_window.cpp)
 iface_exe(test_controls tests/test_controls.cpp)
+iface_exe(test_widgets tests/test_widgets.cpp)
 iface_exe(iface_hello demo/hello.cpp)
 iface_exe(iface_controls demo/controls.cpp)
 iface_exe(iface_keys demo/keys.cpp)
@@ -84,6 +89,7 @@ iface_exe(iface_list demo/list.cpp)
 iface_exe(iface_text demo/text.cpp)
 iface_exe(iface_menu demo/menu.cpp)
 iface_exe(iface_layout demo/layout.cpp)
+iface_exe(iface_kitchensink demo/kitchensink.cpp)
 # The file browser lives with its README and fixtures in demos/browser; it is built here because only this tree knows the kit.
 iface_exe(iface_browser ${CMAKE_CURRENT_SOURCE_DIR}/../../demos/browser/browser.cpp)
 
@@ -95,4 +101,7 @@ foreach(sc 1 1.45 2)
 	set_tests_properties(iface_window_scale_${sc} PROPERTIES ENVIRONMENT "AURORA_UI_SCALE=${sc}" TIMEOUT 30)
 endforeach()
 add_test(NAME iface_controls COMMAND test_controls)
-set_tests_properties(iface_font iface_controls PROPERTIES TIMEOUT 30)
+add_test(NAME iface_widgets COMMAND test_widgets)
+# The whole kitchen sink, every tab drawn (KS_REPORT walks them), no compositor: the server must have served every opcode.
+add_test(NAME iface_kitchensink COMMAND sh -c "AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 KS_REPORT=1 HELLO_QUIT_AFTER_MS=4000 $<TARGET_FILE:iface_kitchensink> | tee /dev/stderr | grep -q '^UNHANDLED 0 '")
+set_tests_properties(iface_font iface_controls iface_widgets iface_kitchensink PROPERTIES TIMEOUT 30)
