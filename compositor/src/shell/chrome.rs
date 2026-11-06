@@ -14,7 +14,8 @@ use smithay::{
 use super::{
     ChromeDraw, Press, Res, SettingsState, Shell,
     layout::Rect,
-    menu::{Action, Entry, KeyOut as MenuKey, Menu, Style},
+    apps::{Status, display_name, display_text},
+    menu::{Action, Entry, KeyOut as MenuKey, Menu, Style, Tone},
     motion::{Appear, PANEL_MS},
     resolve_terminal,
     settings::{self, Ctx, HotKind},
@@ -31,6 +32,21 @@ type Out = (i32, i32);
 
 fn d(v: f32, s: f64) -> i32 {
     (v as f64 * s).round() as i32
+}
+
+/// The effect class as shown to a person before they choose. The classes are
+/// the manifest's (`read`, `write`, `destructive`, `external`); destructive and
+/// external carry the same `!!` mark `aurora open` prints, because they are the
+/// ones the controller holds for approval. Anything unrecognised is shown as
+/// received (cleaned) and treated as dangerous: an unknown effect is not a safe one.
+fn effect_tag(effect: &str) -> (String, Tone) {
+    match effect {
+        "read" => ("read".into(), Tone::Plain),
+        "write" => ("write".into(), Tone::Caution),
+        "destructive" | "external" => (format!("!! {effect}"), Tone::Danger),
+        "" => ("effect unknown".into(), Tone::Caution),
+        other => (format!("!! {}", display_name(other)), Tone::Danger),
+    }
 }
 
 /// How much of the panel's title band must stay on screen, logical pixels.
@@ -124,6 +140,72 @@ impl Shell {
         tracing::info!("menu: open at {:.0},{:.0} ({} entries); ease-out cubic, {} ms", at.0, at.1, m.entries.len(), super::motion::MENU_MS);
         self.menu = Some(m);
         self.menu_tex = None;
+    }
+
+    /// A dock click: the verbs of the app in item `i`, as a menu beside the dock
+    /// item (above a bottom dock, and so on), with each verb's summary and its
+    /// effect class. An app is only ever asked for through one of its verbs, so
+    /// this is the whole of "launching" it. `out` is the output in device pixels.
+    pub fn open_verb_menu(&mut self, i: usize, out: Out) {
+        let Some(item) = self.items.get(i).filter(|it| it.clickable) else { return };
+        let (id, label) = (item.id.clone(), item.label.clone());
+        let l = self.layout(out.0, out.1);
+        let Some(r) = l.items.get(i).copied() else { return };
+        let s = self.scale as f32;
+        let (px, py) = (l.panel.x as f32 / s, l.panel.y as f32 / s);
+        let (pr, pb) = ((l.panel.x + l.panel.w) as f32 / s, (l.panel.y + l.panel.h) as f32 / s);
+        let at = match self.dock.edge {
+            DockEdge::Bottom => (r.x as f32 / s, py),
+            DockEdge::Top => (r.x as f32 / s, pb),
+            DockEdge::Left => (pr, r.y as f32 / s),
+            DockEdge::Right => (px, r.y as f32 / s),
+        };
+        let entries = self.verb_entries(&id, &label);
+        let mut m = Menu::new(entries);
+        let font = self.font.size;
+        m.layout(&mut self.text, font, self.scale, at, (out.0 as f32 / s, out.1 as f32 / s));
+        self.menu_seq += 1;
+        tracing::info!("menu: verbs of {id} ({} entries); ease-out cubic, {} ms", m.entries.len(), super::motion::MENU_MS);
+        self.menu = Some(m);
+        self.menu_tex = None;
+    }
+
+    /// The rows of an app's verb menu. A header with the app's name, then one
+    /// row per verb: name, summary, effect tag. When there is nothing to
+    /// choose, one disabled row says why, from the registry's `Status`.
+    fn verb_entries(&self, app: &str, name: &str) -> Vec<Entry> {
+        let reg = &self.registry;
+        let mut e = vec![Entry::Header(name.to_string())];
+        let names: &[String] = reg.apps.iter().find(|a| a.id == app).map_or(&[], |a| &a.verbs);
+        if names.is_empty() {
+            let why = match &reg.status {
+                Status::NoBus => "no registry (no --bus-socket)".to_string(),
+                Status::Pending => "asking the registry...".to_string(),
+                Status::Failed(_) => "registry unreachable".to_string(),
+                Status::Ok => "this app declares no verbs".to_string(),
+            };
+            e.push(Entry::item("No verbs", Action::CloseSettings).disabled(&why));
+            return e;
+        }
+        for v in names {
+            let detail = reg.verbs.as_ref().and_then(|all| all.iter().find(|d| d.app == app && d.name == *v));
+            let mut row = Entry::item(&display_name(v), Action::RunVerb { app: app.into(), verb: v.clone() });
+            row = match (reg.verbs.as_ref(), detail) {
+                (_, Some(d)) => {
+                    let (text, tone) = effect_tag(&d.effect);
+                    let row = row.tag(&text, tone);
+                    if d.summary.is_empty() { row } else { row.note(&display_text(&d.summary, 60)) }
+                }
+                // The registry answered the app list but not the verb details: say that, do not guess.
+                _ => row.tag("effect unknown", Tone::Caution),
+            };
+            e.push(row);
+        }
+        if let Status::Failed(_) = &reg.status {
+            e.push(Entry::Separator);
+            e.push(Entry::item("Registry unreachable", Action::CloseSettings).disabled("showing the last answer"));
+        }
+        e
     }
 
     pub fn open_settings(&mut self) {
@@ -441,5 +523,51 @@ impl Shell {
             v.push(grow(r, anchor, m.appear.frame(), tex));
         }
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::apps::{AppEntry, VerbEntry};
+
+    fn shell(status: Status, verbs: Vec<String>, details: Option<Vec<VerbEntry>>) -> Shell {
+        let mut s = Shell::new();
+        s.registry.apps = vec![AppEntry { id: "a.b".into(), name: "Ab".into(), verbs }];
+        s.registry.verbs = details;
+        s.registry.status = status;
+        s
+    }
+
+    fn rows(e: &[Entry]) -> Vec<(String, bool, Option<String>, Option<(String, Tone)>)> {
+        e.iter().filter_map(|e| match e {
+            Entry::Item { label, enabled, note, tag, .. } => Some((label.clone(), *enabled, note.clone(), tag.clone())),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn an_app_without_verbs_gets_one_disabled_row_with_the_reason_from_the_registry_status() {
+        for (st, why) in [(Status::Ok, "this app declares no verbs"), (Status::Pending, "asking the registry..."), (Status::NoBus, "no registry (no --bus-socket)"), (Status::Failed("x".into()), "registry unreachable")] {
+            let r = rows(&shell(st, vec![], None).verb_entries("a.b", "Ab"));
+            assert_eq!(r, vec![("No verbs".into(), false, Some(why.into()), None)]);
+        }
+    }
+
+    #[test]
+    fn each_effect_class_is_tagged_and_unknown_or_missing_ones_are_never_plain() {
+        assert_eq!(effect_tag("read"), ("read".into(), Tone::Plain));
+        assert_eq!(effect_tag("write"), ("write".into(), Tone::Caution));
+        assert_eq!(effect_tag("destructive"), ("!! destructive".into(), Tone::Danger));
+        assert_eq!(effect_tag("external"), ("!! external".into(), Tone::Danger));
+        assert_eq!(effect_tag("").1, Tone::Caution);
+        assert_eq!(effect_tag("nuke\u{1b}").1, Tone::Danger);
+        let d = |n: &str, e: &str| VerbEntry { app: "a.b".into(), name: n.into(), effect: e.into(), summary: "S".into() };
+        let r = rows(&shell(Status::Ok, vec!["x@v1".into(), "y@v1".into()], Some(vec![d("x@v1", "read")])).verb_entries("a.b", "Ab"));
+        assert_eq!(r[0].3, Some(("read".into(), Tone::Plain)));
+        assert_eq!(r[0].2.as_deref(), Some("S"));
+        assert_eq!(r[1].3, Some(("effect unknown".into(), Tone::Caution)), "a verb the registry did not describe is not safe");
+        let r = rows(&shell(Status::Ok, vec!["x@v1".into()], None).verb_entries("a.b", "Ab"));
+        assert_eq!(r[0].3.as_ref().map(|t| t.0.as_str()), Some("effect unknown"));
     }
 }

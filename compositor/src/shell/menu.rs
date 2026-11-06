@@ -24,18 +24,40 @@ pub enum Action {
     OpenSettings,
     WindowSwitcher,
     CloseSettings,
+    /// A dock click chose a verb: run `verb` of app `app` (names exactly as the manifest has them).
+    RunVerb { app: String, verb: String },
+}
+
+/// How loud a tag is. Effect classes map onto it: read is plain, write is
+/// caution, destructive and external are danger (and carry `!!` as well, so
+/// the class never rests on colour alone; it is also how `aurora open` marks them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Plain,
+    Caution,
+    Danger,
+}
+
+impl Tone {
+    fn rgb(self, text: [u8; 3]) -> [u8; 3] {
+        match self {
+            Tone::Plain => text,
+            Tone::Caution => [244, 196, 92],
+            Tone::Danger => [255, 128, 116],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
-    Item { label: String, action: Action, enabled: bool, checked: bool, note: Option<String> },
+    Item { label: String, action: Action, enabled: bool, checked: bool, note: Option<String>, tag: Option<(String, Tone)> },
     Header(String),
     Separator,
 }
 
 impl Entry {
     pub fn item(label: &str, action: Action) -> Entry {
-        Entry::Item { label: label.into(), action, enabled: true, checked: false, note: None }
+        Entry::Item { label: label.into(), action, enabled: true, checked: false, note: None, tag: None }
     }
     pub fn checked(mut self, on: bool) -> Entry {
         if let Entry::Item { checked, .. } = &mut self {
@@ -46,6 +68,13 @@ impl Entry {
     pub fn note(mut self, n: &str) -> Entry {
         if let Entry::Item { note, .. } = &mut self {
             *note = Some(n.into());
+        }
+        self
+    }
+    /// A short bold label at the row's right edge, after the note.
+    pub fn tag(mut self, text: &str, tone: Tone) -> Entry {
+        if let Entry::Item { tag, .. } = &mut self {
+            *tag = Some((text.into(), tone));
         }
         self
     }
@@ -126,9 +155,14 @@ impl Menu {
         let gutter = (font * 1.5).round();
         let mut label_w = 0.0f32;
         let mut note_w = 0.0f32;
+        let mut tag_w = 0.0f32;
+        let tag_spec = FontSpec::new(font * 0.85).bold();
         for e in &self.entries {
             match e {
-                Entry::Item { label, note, .. } => {
+                Entry::Item { label, note, tag, .. } => {
+                    if let Some((t, _)) = tag {
+                        tag_w = tag_w.max(text.string_width(t, &tag_spec, scale));
+                    }
                     label_w = label_w.max(text.string_width(label, &spec, scale));
                     if let Some(n) = note {
                         note_w = note_w.max(text.string_width(n, &note_spec, scale));
@@ -139,7 +173,8 @@ impl Menu {
             }
         }
         let gap = if note_w > 0.0 { 28.0 } else { 0.0 };
-        let w = (PAD * 2.0 + gutter + label_w + gap + note_w + 14.0).ceil().max(MIN_W);
+        let tag_col = if tag_w > 0.0 { tag_w + 20.0 } else { 0.0 };
+        let w = (PAD * 2.0 + gutter + label_w + gap + note_w + tag_col + 14.0).ceil().max(MIN_W);
         let mut y = PAD;
         self.rows.clear();
         for e in &self.entries {
@@ -225,6 +260,7 @@ impl Menu {
         }
         let spec = FontSpec::new(st.font);
         let small = FontSpec::new(st.font * 0.85);
+        let tag_spec = FontSpec::new(st.font * 0.85).bold();
         let (m, sm) = (text.metrics(&spec), text.metrics(&small));
         let gutter = (st.font * 1.5).round();
         let t = st.text;
@@ -238,7 +274,7 @@ impl Menu {
                     let y = r.y + (r.h - (sm.ascent + sm.descent)) / 2.0;
                     text.draw(&mut c, r.x + 8.0, y, h, &small, [t[0], t[1], t[2], 140], s);
                 }
-                Entry::Item { label, enabled, checked, note, .. } => {
+                Entry::Item { label, enabled, checked, note, tag, .. } => {
                     if self.hover == Some(i) && *enabled {
                         let hv = st.hover;
                         c.round_rect(d(r.x), d(r.y), d(r.w), d(r.h), 6.0 * s as f32, [hv[0], hv[1], hv[2], (st.hover_strength * 255.0) as u8]);
@@ -251,10 +287,18 @@ impl Menu {
                     let (lx, ly) = (r.x + gutter + 4.0, r.y + (r.h - (m.ascent + m.descent)) / 2.0);
                     text.draw(&mut c, lx, ly, label, &spec, [t[0], t[1], t[2], a], s);
                     placed.push((label.clone(), d(lx), d(ly), (text.string_width(label, &spec, s) as f64 * s).round() as i32));
+                    let ny = r.y + (r.h - (sm.ascent + sm.descent)) / 2.0;
+                    let mut right = r.x + r.w - 8.0;
+                    if let Some((tg, tone)) = tag {
+                        let tw = text.string_width(tg, &tag_spec, s);
+                        let col = tone.rgb(t);
+                        text.draw(&mut c, right - tw, ny, tg, &tag_spec, [col[0], col[1], col[2], if *enabled { 255 } else { 110 }], s);
+                        placed.push((tg.clone(), d(right - tw), d(ny), (tw as f64 * s).round() as i32));
+                        right -= tw + 20.0;
+                    }
                     if let Some(n) = note {
                         let nw = text.string_width(n, &small, s);
-                        let ny = r.y + (r.h - (sm.ascent + sm.descent)) / 2.0;
-                        text.draw(&mut c, r.x + r.w - nw - 8.0, ny, n, &small, [t[0], t[1], t[2], if *enabled { 150 } else { 95 }], s);
+                        text.draw(&mut c, right - nw, ny, n, &small, [t[0], t[1], t[2], if *enabled { 150 } else { 95 }], s);
                     }
                 }
             }
