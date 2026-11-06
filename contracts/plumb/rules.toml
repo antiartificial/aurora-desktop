@@ -1,0 +1,103 @@
+# Aurora plumb rules, v1: what a selection looks like and where it goes.
+#
+# Read by contracts/plumb (embedded as the default, or a file named by
+# controllerd --plumb-rules). A file that does not parse or validate is
+# rejected whole; there is no partial load.
+#
+# A rule is a pure predicate over one selection, nothing more:
+#
+#   kind    the selection kind the rule looks at: "path", "mime" or "text".
+#           A rule never sees a selection of another kind.
+#   match   an RE2 regular expression. It must match the WHOLE value (it is
+#           wrapped as \A(?:...)\z, so a near-miss never matches by accident);
+#           write no anchors. Named groups carry what the rule extracts.
+#           Whitespace is not trimmed: " /tmp/a" is not "/tmp/a".
+#   resolve how the match turns into candidate verbs:
+#             "path"  group `object` is an absolute path; its MIME type comes
+#                     from the file itself (content, then extension) for the
+#                     user's own session, from the name alone for a domain.
+#             "mime"  a MIME type: fixed (`mime = "..."`) or taken from
+#                     group `object`.
+#             "verb"  one named verb, `verb = "<app id>:<verb name>"`. It is
+#                     offered only if the registry has it. For rules that
+#                     mean one thing and no other.
+#   groups  `line` and `col`, when present, are reported as numbers. They are
+#           information for whatever opens the file; they do not change the
+#           verbs.
+#
+# ORDER: for a selection, rules are tried in file order and the FIRST match
+# wins. Later rules are never consulted. Put the narrower rule first.
+#
+# Nothing here grants anything. A rule only says which verbs to LIST. Running
+# one still goes through registry.invoke@v1: the effect class, approval and
+# grants apply unchanged (decision 0012: effect is the authority signal; a
+# rule is intent and carries no authority).
+
+[plumb]
+version = 1
+
+# ---- a selection that is a path -------------------------------------------
+[[rule]]
+name    = "path"
+kind    = "path"
+match   = '(?P<object>/[^\x00]+)'
+resolve = "path"
+
+# ---- a selection that is a MIME type --------------------------------------
+[[rule]]
+name    = "mime"
+kind    = "mime"
+match   = '(?i)(?P<object>[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126})'
+resolve = "mime"
+
+# ---- text that looks like something ---------------------------------------
+# path:line:col and path:line, before the bare path so the suffix is read as
+# a position. (A real file named "x:12" is read as line 12 of "x"; select it
+# as a path, not as text.)
+[[rule]]
+name    = "path-line-col"
+kind    = "text"
+match   = '(?P<object>/[^\s:]+):(?P<line>[0-9]{1,9}):(?P<col>[0-9]{1,9})'
+resolve = "path"
+
+[[rule]]
+name    = "path-line"
+kind    = "text"
+match   = '(?P<object>/[^\s:]+):(?P<line>[0-9]{1,9})'
+resolve = "path"
+
+# An absolute path. No spaces and no colons: a path with either is selected
+# as a path, not guessed out of prose (a stray ":x" or trailing ":" would
+# otherwise be swallowed into the name). No "~" and no relative forms: they mean different
+# things in different processes.
+[[rule]]
+name    = "abs-path"
+kind    = "text"
+match   = '(?P<object>/[^\s:]+)'
+resolve = "path"
+
+# URLs. http and https only, with a host. file:, javascript:, data: and the
+# rest are not matched on purpose.
+[[rule]]
+name    = "url-https"
+kind    = "text"
+match   = '(?i)https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?([/?#][^\s]*)?'
+resolve = "mime"
+mime    = "x-scheme-handler/https"
+
+[[rule]]
+name    = "url-http"
+kind    = "text"
+match   = '(?i)http://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?([/?#][^\s]*)?'
+resolve = "mime"
+mime    = "x-scheme-handler/http"
+
+# A bare hostname. The TLD is a short allow-list on purpose: "main.go",
+# "notes.md", "build.sh" and "a.py" are all valid DNS names and all files.
+# Under-matching here is the safe side.
+[[rule]]
+name    = "hostname"
+kind    = "text"
+match   = '(?i)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+(com|org|net|io|dev|app|edu|gov|info|ai|co|uk|de|eu|me)(:[0-9]{1,5})?'
+resolve = "mime"
+mime    = "x-scheme-handler/https"
