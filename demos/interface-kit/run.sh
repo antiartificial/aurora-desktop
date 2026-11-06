@@ -25,7 +25,7 @@ bad()  { FAIL=$((FAIL+1)); printf '   FAIL: %s\n' "$*" >&2; }
 need() { "$@" >/dev/null 2>&1 || { echo "FATAL: $*"; exit 2; }; }
 
 step "build the kit, the BeOS apps and the tests (CMake + Ninja in kits/)"
-(cd "$KITS" && cmake -S . -B build -G Ninja >"$W/cmake.log" 2>&1 && ninja -C build test_font test_iface_window test_controls iface_hello iface_controls iface_keys iface_scroll iface_list iface_text iface_menu iface_layout iface_browser >"$W/ninja.log" 2>&1) \
+(cd "$KITS" && cmake -S . -B build -G Ninja >"$W/cmake.log" 2>&1 && ninja -C build test_font test_iface_window test_controls iface_hello iface_controls iface_keys iface_scroll iface_list iface_text iface_menu iface_layout iface_browser test_theme >"$W/ninja.log" 2>&1) \
   || { tail -20 "$W/cmake.log" "$W/ninja.log"; echo "FATAL: build failed"; exit 2; }
 ok "built into $BUILD"
 [ -x "$COMP" ] || (cd "$ROOT/compositor" && cargo build --release >"$W/comp-build.log" 2>&1) || { tail "$W/comp-build.log"; echo "FATAL: compositor build"; exit 2; }
@@ -168,7 +168,13 @@ step "LIST: BListView of 40 BStringItems in a BScrollView; selection by mouse cl
 mkdir -p "$W/ref-list-3"; env -u WAYLAND_DISPLAY AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 AURORA_APPSERVER_CLICK=60,85 AURORA_APPSERVER_DUMP="$W/ref-list-3" HELLO_QUIT_AFTER_MS=1500 "$BUILD/iface_list" >/dev/null 2>&1
 run_app list 1 "$BUILD/iface_list"; LIST_PID=$APP_PID
 sleep 1.5
-list_band() { XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/$1.png" >/dev/null 2>&1; python3 -I "$HERE/imgcheck.py" --band "$W/$1.png" 0 0; }
+# The list's background is B_LIST_BACKGROUND_COLOR, which the theme maps to its document token: ask the toolkit what
+# ui_color() answers (never a constant), and below also check the capture really shows that colour behind the rows.
+LISTBG=$("$BUILD/test_theme" --dump | sed -n 's/^ui theme.colors.document //p' | head -1)
+list_band() { XDG_RUNTIME_DIR="$RUN" "$CAP" --display "$SOCK" -o "$W/$1.png" >/dev/null 2>&1; python3 -I "$HERE/imgcheck.py" --band "$W/$1.png" 0 0 $LISTBG; }
+b=$(list_band l0)
+lbg=$(python3 -I "$ROOT/demos/kitchen-sink/pix.py" px "$W/l0.png" 100 $((12 + 150)))
+[ "$lbg" = "$LISTBG" ] && ok "the list background in the capture is $lbg: B_LIST_BACKGROUND_COLOR, the theme's document token (not white)" || bad "list background is $lbg, the toolkit says ui_color(B_LIST_BACKGROUND_COLOR) is $LISTBG"
 b=$(list_band l0); [ -z "$b" ] && ok "initially nothing is selected (no highlight in the list column)" || bad "unexpected highlight before any input: $b"
 python3 -I "$HERE/ti.py" "$RUN/ti" "pointer 60 43" "click" >/dev/null 2>&1; sleep 0.5
 b=$(list_band l1); read -r t1 e1 _ <<<"$b"; h=$((e1 - t1 + 1))

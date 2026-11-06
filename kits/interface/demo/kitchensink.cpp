@@ -163,6 +163,10 @@ public:
 				f.OffsetBy(-Frame().left, -Frame().top);
 				printf("CTL %s %.0f,%.0f,%.0f,%.0f\n", fNames[i].name.c_str(), f.left, f.top, f.right, f.bottom);
 			}
+			if (pg == 1 && fSlider != NULL) {		// where the slider's thumb is, as the kit lays it out: an AIM for the drag, never an assertion
+				BRect f = fSlider->ConvertToScreen(fSlider->ThumbFrame()); f.OffsetBy(-Frame().left, -Frame().top);
+				printf("CTL thumb %.0f,%.0f,%.0f,%.0f\n", f.left, f.top, f.right, f.bottom);
+			}
 			if (pg < 0) {
 				for (int i = 0; i < fMenuBar->CountItems(); i++) {		// the menu bar's titles, in window coordinates (the bar sits at 0,0)
 					BRect f = fMenuBar->ItemAt(i)->Frame();

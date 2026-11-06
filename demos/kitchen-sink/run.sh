@@ -167,16 +167,22 @@ box slider; SL=$L; ST=$T; SR=$R
 box statusbar; BARL=$L; BART=$T; BARR=$R; BARB=$B
 bar_fill() { $PIX xspan "$W/$1.png" $((BARL+2)) $((BART+16)) $((BARR-2)) $((BARB-2)) $fill 40; }
 fill=$($PIX px "$W/c7.png" $((BARL+40)) $((BART+30)))
-thumb() { $PIX xspan "$W/$1.png" $((SL+4)) $((ST+23)) $((SR-4)) $((ST+25)) 250 250 250 2; }     # xmin xmax of the thumb face (the track is darker, the panel 226)
-read -r tx0 tx1 < <(thumb c7); TCX=$(( (tx0 + tx1) / 2 )); TCY=$((ST+30))
-echo "   thumb face at x=$tx0..$tx1 (value 25 of 0..100); status bar fill colour $fill, fill spans $(bar_fill c7)"
+# Where the thumb is: the kit reports its ThumbFrame() (an AIM for the press, never an assertion). Whether it MOVED is
+# decided from pixels alone and by no colour: the columns of the thumb's row that differ between the captures before and
+# after the drag are two runs (the old thumb, now track; the new thumb, was track), whatever the thumb and track look like.
+box thumb; TL=$L; TR=$R; TCX=$CX; TCY=$CY
+echo "   thumb frame reported at x=$TL..$TR (value 25 of 0..100); status bar fill colour $fill, fill spans $(bar_fill c7)"
 read -r f0 f1 < <(bar_fill c7)
 ti "pointer $TCX $TCY" press "sleep 0.25" "pointer $((TCX+30)) $TCY" "sleep 0.15" "pointer $((TCX+60)) $TCY" "sleep 0.15" "pointer $((TCX+80)) $TCY" "sleep 0.25" release
 sleep 0.6; shot c8
-read -r ux0 ux1 < <(thumb c8)
-echo "   thumb face now at x=$ux0..$ux1"
-d=$((ux0 - tx0))
-check "the thumb followed the pointer: its face moved from x=$tx0 by $d px for an 80 px drag" bash -c "[ $d -ge 74 ] && [ $d -le 84 ]"
+runs=$($PIX colruns "$W/c7.png" "$W/c8.png" $((SL+4)) $((TCY-2)) $((SR-4)) $((TCY+2)))
+set -- $runs; nr=$#; firstrun=$1; lastrun=${!#}
+first=${firstrun%-*}; firstend=${firstrun#*-}; lastx=${lastrun%-*}; lastend=${lastrun#*-}
+echo "   columns that changed on the thumb's row: $runs"
+d=$((lastx - first)); w1=$((firstend - first)); w2=$((lastend - lastx))
+check "the pixels agree with the kit: the old thumb occupied x=$first..$firstend ($TL..$TR reported), the new one x=$lastx..$lastend" \
+  bash -c "[ $nr -eq 2 ] && [ $((first - TL)) -ge -2 ] && [ $((first - TL)) -le 2 ] && [ $((w2 - w1)) -ge -1 ] && [ $((w2 - w1)) -le 1 ]"
+check "the thumb followed the pointer: it moved from x=$first by $d px for an 80 px drag" bash -c "[ $d -ge 74 ] && [ $d -le 84 ]"
 last=$(grep '^EV slider ' "$W/app.out" | tail -1 | cut -d' ' -f3)
 n_ev=$(grep -c '^EV slider ' "$W/app.out")
 check "the slider reported $n_ev values while dragging, the last one $last (about 25 + 80/4.05 = 45)" bash -c "[ $n_ev -ge 3 ] && [ $last -ge 42 ] && [ $last -le 48 ]"
