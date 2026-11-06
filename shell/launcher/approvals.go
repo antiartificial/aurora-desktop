@@ -57,11 +57,24 @@ type Approver interface {
 // prompt it is being judged by.
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || invisibleFormat(r) {
 			return '?'
 		}
 		return r
 	}, s)
+}
+
+// invisibleFormat reports characters that print as nothing or reorder the
+// text around them (bidi overrides, zero-width, line/paragraph separators), so
+// an app cannot make a path or app id read differently from what it is.
+func invisibleFormat(r rune) bool {
+	switch {
+	case r >= 0x200b && r <= 0x200f, r >= 0x2028 && r <= 0x202e, r >= 0x2060 && r <= 0x206f:
+		return true
+	case r == 0xfeff, r == 0x061c, r >= 0xfff9 && r <= 0xfffb:
+		return true
+	}
+	return false
 }
 
 // domainTrust describes in a few words where Domain came from, so the person

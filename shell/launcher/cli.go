@@ -43,6 +43,11 @@ Usage:
                                 answers approval requests on /dev/tty
   aurora approvals [--yes]      only answer approval requests on /dev/tty
                                 (a destructive or external verb blocks until you do)
+  aurora activity [--log DIR] [--since D]
+                                timeline of everything the bus log recorded: each invoke
+                                with its grants, approval (route, decider, domain trust),
+                                handle ids and output provenance; unmatched entries and
+                                hidden state (timeouts, claims, unlogged revokes) are listed
   --yes (open, chain, watch, approvals) allows every request WITHOUT asking.
                                 A test affordance that defeats the point.
 
@@ -112,6 +117,8 @@ func Run(env *Env, args []string) int {
 		return cmdApprovals(env, rest)
 	case "watch":
 		return cmdWatch(env, rest)
+	case "activity":
+		return cmdActivity(env, rest)
 	}
 	fmt.Fprintf(env.Err, "aurora: unknown command %q\n\n%s", cmd, usage)
 	return 2
