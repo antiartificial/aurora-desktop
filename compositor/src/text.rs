@@ -103,6 +103,14 @@ impl TextSystem {
         TextSystem { fs, sc: SwashCache::new(), buf: Buffer::new_empty(Metrics::new(14.0, 18.0)), default_family, bitmap, description }
     }
 
+    /// Installed family names that are in the preferred or common UI lists, in a stable order.
+    /// The settings panel offers these; typing a family into the theme file still works for any.
+    pub fn ui_families(&self) -> Vec<String> {
+        const COMMON: [&str; 8] = ["Noto Serif", "Fira Sans", "Cantarell", "Ubuntu", "Open Sans", "Source Sans 3", "Lato", "IBM Plex Sans"];
+        let has = |name: &str| self.fs.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)));
+        PREFERRED.iter().chain(COMMON.iter()).filter(|n| has(n)).map(|n| n.to_string()).collect()
+    }
+
     pub fn is_bitmap(&self) -> bool {
         self.bitmap
     }

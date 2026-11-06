@@ -2,7 +2,7 @@
 //!
 //! `--test-input PATH` opens a Unix socket (0600, same euid only) taking one
 //! command per line: `key <name>` (press then release), `down <name>`,
-//! `up <name>`. Events enter through `Aurora::keyboard_input`, the same function
+//! `up <name>`, `pointer X Y` (logical), `click`, `rclick` (right button), `move N X Y`. Events enter through `Aurora::keyboard_input`, the same function
 //! real keyboards use, so an injected key meets the same overlay routing.
 //!
 //! Why it is not a way to approve a prompt on a real machine: it exists only
@@ -128,6 +128,13 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         if state.overlay_up() { return "err overlay up".into(); }
         state.pointer_button(0x110, smithay::backend::input::ButtonState::Pressed, t);
         state.pointer_button(0x110, smithay::backend::input::ButtonState::Released, t);
+        return "ok".into();
+    }
+    if cmd == "rclick" {
+        // Right button (BTN_RIGHT) press and release: the desktop menu's trigger.
+        if state.overlay_up() { return "err overlay up".into(); }
+        state.pointer_button(0x111, smithay::backend::input::ButtonState::Pressed, t);
+        state.pointer_button(0x111, smithay::backend::input::ButtonState::Released, t);
         return "ok".into();
     }
     let (verb, name) = (it.next().unwrap_or(""), it.next().unwrap_or(""));

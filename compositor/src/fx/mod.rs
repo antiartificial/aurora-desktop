@@ -9,6 +9,7 @@
 //! and draws the trusted overlay after that, so ordering is unchanged.
 
 pub mod blur;
+pub mod edit;
 pub mod switcher;
 pub mod theme;
 
@@ -28,7 +29,7 @@ use smithay::{
     utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 
-use theme::{BUILTIN_SHADERS, BUILTIN_THEME, Files, SHADERS, Theme, oklab_to_srgb};
+use theme::{BUILTIN_SHADERS, BUILTIN_THEME, Files, SHADERS, THEME_FILE, Theme, oklab_to_srgb};
 
 pub type Res<T> = Result<T, Box<dyn Error>>;
 const POLL: Duration = Duration::from_millis(250);
@@ -52,6 +53,8 @@ pub struct Fx {
     cards: Vec<GlesTexture>,
     /// Count of successful theme (file or shader) loads; tests and logs read it.
     pub loads: u32,
+    /// The theme text when there is no theme directory: edits live here, for the session only.
+    mem_text: Option<String>,
 }
 
 fn uniform_names(i: usize) -> Vec<UniformName<'static>> {
@@ -69,7 +72,7 @@ impl Fx {
     pub fn new(dir: Option<PathBuf>) -> Fx {
         Fx {
             theme: Theme::default(), files: dir.map(Files::new), initialised: false, next_poll: Instant::now(),
-            progs: Default::default(), switcher: Default::default(), scratch: None, cards: vec![], loads: 0,
+            progs: Default::default(), switcher: Default::default(), scratch: None, cards: vec![], loads: 0, mem_text: None,
         }
     }
 
@@ -126,6 +129,39 @@ impl Fx {
                         tracing::warn!("theme: shader {} falls back to the built-in copy", SHADERS[i]);
                     }
                 }
+            }
+        }
+    }
+
+    /// Write settings back to the theme file; hot reload then applies them like
+    /// any hand edit. Nothing is written that `Theme::parse` or xkb would
+    /// reject. With no theme directory the change applies to this session only.
+    /// Returns the sentence to show the user.
+    pub fn apply_edits(&mut self, edits: &[edit::Edit]) -> Result<String, String> {
+        let path = self.files.as_ref().map(|f| f.dir.join(THEME_FILE));
+        let current = match &path {
+            Some(p) if p.exists() => std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?,
+            _ => self.mem_text.clone().unwrap_or_else(|| BUILTIN_THEME.to_string()),
+        };
+        let text = edit::apply(&current, edits)?;
+        let t = Theme::parse(&text)?;
+        let (a, b) = (&self.theme.input, &t.input);
+        if (&a.rules, &a.model, &a.layout, &a.variant, &a.options) != (&b.rules, &b.model, &b.layout, &b.variant, &b.options) && !xkb_accepts(b) {
+            return Err(format!("xkb has no keymap for layout {:?} variant {:?}; nothing was written", b.layout, b.variant));
+        }
+        match path {
+            Some(p) => {
+                let real = std::fs::canonicalize(&p).unwrap_or(p.clone());
+                let tmp = real.with_extension("toml.tmp");
+                std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &real)).map_err(|e| format!("cannot write {}: {e}", real.display()))?;
+                self.next_poll = Instant::now();
+                tracing::info!("settings: wrote {} edit(s) to {}", edits.len(), real.display());
+                Ok(format!("Saved to {}", real.display()))
+            }
+            None => {
+                self.mem_text = Some(text);
+                self.theme = t;
+                Ok("No theme directory: applied for this session only".into())
             }
         }
     }
@@ -190,6 +226,23 @@ impl Fx {
             crate::shell::draw_tex(&mut f, tex, panel)?;
             let sy = f.finish()?; wait(r, sy)?;
         }
+        // Menu and settings panel: ordinary chrome, in the scene, so captures see them.
+        // Glass fades in with the animation by scaling its tint and edge strength.
+        for p in shell.chrome_draws(size) {
+            let geo = Rectangle::<i32, Physical>::new((p.dst.x, p.dst.y).into(), (p.dst.w, p.dst.h).into());
+            if glass.enabled { blur::run(r, s, down, up, &glass, size)?; }
+            let mut t = r.bind(&mut s.scene)?;
+            let mut f = r.render(&mut t, size, Transform::Normal)?;
+            if glass.enabled {
+                let mut g = glass.clone();
+                g.corner_radius = shell.dock_radius();
+                g.tint.strength *= p.alpha;
+                g.edge.strength *= p.alpha;
+                draw_glass(&mut f, glass_p, &s.up[0], geo, &g)?;
+            }
+            crate::shell::draw_tex_alpha(&mut f, p.tex, p.dst, p.alpha)?;
+            let sy = f.finish()?; wait(r, sy)?;
+        }
         if self.switcher.open {
             switcher::draw(self, r, size, scale, space)?;
         }
@@ -243,4 +296,48 @@ fn draw_glass(f: &mut GlesFrame<'_, '_>, prog: &GlesTexProgram, blurred: &GlesTe
     let local = Rectangle::<i32, Physical>::from_size(dst.size);
     f.render_texture_from_to(blurred, src, dst, &[local], &[], Transform::Normal, 1.0, Some(prog), &u)?;
     Ok(())
+}
+
+/// Whether xkb can compile a keymap for this input config.
+fn xkb_accepts(i: &theme::Input) -> bool {
+    use smithay::input::keyboard::xkb;
+    let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_names(&ctx, &i.rules, &i.model, &i.layout, &i.variant, (!i.options.is_empty()).then(|| i.options.clone()), xkb::KEYMAP_COMPILE_NO_FLAGS).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xkb_check_accepts_real_layouts_and_refuses_invented_ones() {
+        let mut i = theme::Input::default();
+        i.layout = "us".into();
+        assert!(xkb_accepts(&i));
+        i.layout = "no-such-layout-zz".into();
+        assert!(!xkb_accepts(&i));
+    }
+
+    #[test]
+    fn settings_edits_reach_the_file_and_a_bad_keymap_is_never_written() {
+        let dir = std::env::temp_dir().join(format!("aurora-fx-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(THEME_FILE), "# kept\n[dock]\nedge = \"bottom\" # where\n").unwrap();
+        let mut fx = Fx::new(Some(dir.clone()));
+        fx.apply_edits(&[edit::Edit::s("dock", "edge", "left")]).unwrap();
+        let text = std::fs::read_to_string(dir.join(THEME_FILE)).unwrap();
+        assert!(text.contains("# kept") && text.contains("edge = \"left\" # where"), "{text}");
+        let err = fx.apply_edits(&[edit::Edit::s("input", "layout", "no-such-layout-zz")]).unwrap_err();
+        assert!(err.contains("nothing was written"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.join(THEME_FILE)).unwrap(), text, "the file is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_a_theme_directory_edits_apply_to_the_session_only() {
+        let mut fx = Fx::new(None);
+        let msg = fx.apply_edits(&[edit::Edit::n("output", "scale", 2.0)]).unwrap();
+        assert!(msg.contains("session"), "{msg}");
+        assert_eq!(fx.theme.output.scale, 2.0);
+    }
 }

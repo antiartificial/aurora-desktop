@@ -10,7 +10,11 @@
 //! which are what windows, the pointer and captures use.
 
 pub mod apps;
+mod chrome;
 pub mod layout;
+pub mod menu;
+pub mod motion;
+pub mod settings;
 
 use std::time::{Instant, SystemTime};
 
@@ -31,6 +35,8 @@ use crate::{
     trusted::draw::Canvas,
 };
 use layout::{Layout, Params, Rect};
+use menu::{Action, Menu};
+use settings::{Built, Page};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -38,6 +44,38 @@ pub struct Item {
     pub id: String,
     pub label: String,
     pub clickable: bool,
+}
+
+/// The settings panel's live state. What it shows is rebuilt from the theme.
+pub struct SettingsState {
+    pub page: usize,
+    pub sel: Option<usize>,
+    pub hover: Option<usize>,
+    pub status: String,
+    /// Keyboard goes to the panel while it is focused (opened, or last clicked).
+    pub focused: bool,
+    pub appear: motion::Appear,
+    logged: bool,
+    pages: Vec<Page>,
+    built: Built,
+    min_h: f32,
+    tkey: String,
+    key: String,
+}
+
+/// What a click on chrome means to the caller.
+pub enum Press {
+    Pass,
+    Swallow,
+    Act(Action),
+}
+
+/// One panel for the effects pipeline to draw: glass behind, texture over.
+pub struct ChromeDraw<'a> {
+    pub tex: &'a GlesTexture,
+    /// Where it is drawn this frame (animated), device pixels.
+    pub dst: Rect,
+    pub alpha: f32,
 }
 
 pub struct Shell {
@@ -61,7 +99,17 @@ pub struct Shell {
     seen: (u64, u64),
     rev: u64,
     pub hover: Option<usize>,
+    /// What the host (or `--scale`) says the scale is; the theme's `[output] scale` may override it.
+    pub host_scale: f64,
+    /// The theme as last synced, kept only while the settings panel is open.
+    snap: Theme,
+    pub menu: Option<Menu>,
+    menu_seq: u64,
+    pub settings: Option<SettingsState>,
+    families: Vec<String>,
     // GPU side
+    menu_tex: Option<(String, GlesTexture)>,
+    settings_tex: Option<(String, GlesTexture)>,
     dummy: Option<GlesTexture>,
     bg_tex: Option<(String, GlesTexture)>,
     clock_tex: Option<(String, GlesTexture, Rect)>,
@@ -92,6 +140,14 @@ impl Shell {
             seen: (u64::MAX, 0),
             rev: 0,
             hover: None,
+            host_scale: 1.0,
+            snap: Theme::default(),
+            menu: None,
+            menu_seq: 0,
+            settings: None,
+            families: vec![],
+            menu_tex: None,
+            settings_tex: None,
             dummy: None,
             bg_tex: None,
             clock_tex: None,
@@ -106,7 +162,7 @@ impl Shell {
 
     /// Whether the shell draws anything of its own (background, dock).
     pub fn wants_pipeline(&self) -> bool {
-        self.dock.enabled || !(self.legacy_scene)
+        self.dock.enabled || !(self.legacy_scene) || self.menu.is_some() || self.settings.is_some()
     }
 
     /// Take over the theme (cheap when nothing changed) and recompute text-dependent state.
@@ -133,6 +189,9 @@ impl Shell {
         if self.seen != (self.registry.generation, self.scale.to_bits()) {
             self.seen = (self.registry.generation, self.scale.to_bits());
             changed = true;
+        }
+        if self.settings.is_some() {
+            self.snap = theme.clone();
         }
         if changed || self.rev == 0 {
             self.rebuild_items();
@@ -224,6 +283,23 @@ impl Shell {
         }
     }
 
+    /// Open a terminal (the dock's configured one) with no command.
+    pub fn open_terminal(&mut self) {
+        let Some(term) = resolve_terminal(&self.dock.terminal) else {
+            tracing::error!("menu: no terminal to open");
+            return;
+        };
+        match std::process::Command::new(&term).stdin(std::process::Stdio::null()).spawn() {
+            Ok(mut child) => {
+                tracing::info!("menu: opened terminal {term:?}");
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => tracing::error!("menu: cannot open terminal {term:?}: {e}"),
+        }
+    }
+
     // ---- GPU resources ---------------------------------------------------
 
     /// Build or refresh every texture the frame will draw. Needs the renderer,
@@ -234,7 +310,8 @@ impl Shell {
         }
         self.prepare_background(r, size)?;
         self.prepare_clock(r, size)?;
-        self.prepare_dock(r, size)
+        self.prepare_dock(r, size)?;
+        self.prepare_chrome(r, size)
     }
 
     fn bg_mode(&self) -> (BgMode, Option<[u8; 3]>) {
@@ -442,6 +519,17 @@ impl Shell {
         let c = crate::render::CLEAR;
         Color32F::new(c[0], c[1], c[2], 1.0)
     }
+}
+
+/// A texture over `dst` (device pixels) at `alpha`, whatever the texture's own size.
+pub fn draw_tex_alpha(f: &mut GlesFrame<'_, '_>, tex: &GlesTexture, dst: Rect, alpha: f32) -> Res<()> {
+    use smithay::backend::renderer::Texture;
+    let ts = tex.size();
+    let d = Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into());
+    let src = Rectangle::<f64, BufferCoords>::from_size((ts.w as f64, ts.h as f64).into());
+    let local = Rectangle::<i32, Physical>::from_size(d.size);
+    f.render_texture_from_to(tex, src, d, &[local], &[], Transform::Normal, alpha, None, &[])?;
+    Ok(())
 }
 
 pub fn draw_tex(f: &mut GlesFrame<'_, '_>, tex: &GlesTexture, r: Rect) -> Res<()> {

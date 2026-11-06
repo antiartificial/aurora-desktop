@@ -12,7 +12,32 @@ use smithay::{
 
 use crate::state::Aurora;
 
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
+use crate::shell::{Press, menu::Action};
+
 impl Aurora {
+    /// Do what a menu item or settings control says.
+    pub fn run_action(&mut self, a: Action) {
+        match a {
+            Action::Edit(edits) => {
+                let msg = match self.fx.apply_edits(&edits) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::error!("settings: not applied: {e}");
+                        format!("Not saved: {e}")
+                    }
+                };
+                self.shell.set_status(msg);
+            }
+            Action::OpenTerminal => self.shell.open_terminal(),
+            Action::OpenSettings => self.shell.open_settings(),
+            Action::WindowSwitcher => self.switch(crate::fx::switcher::Act::Open),
+            Action::CloseSettings => self.shell.settings = None,
+        }
+    }
+
     /// The dock's layout, in device pixels (the unit `shell::layout` works in).
     fn dock_layout(&self) -> crate::shell::layout::Layout {
         let p = self.output_physical();
@@ -35,8 +60,11 @@ impl Aurora {
     pub fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: InputTime) {
         let l = self.dock_layout();
         let dp = self.to_physical_point(pos);
-        let on_dock = l.panel.contains(dp.x, dp.y);
-        let hover = if on_dock { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
+        let out = self.output_physical();
+        let on_chrome = self.shell.chrome_contains((dp.x, dp.y), (out.w, out.h));
+        self.shell.chrome_motion((dp.x, dp.y), (out.w, out.h));
+        let on_dock = l.panel.contains(dp.x, dp.y) || on_chrome;
+        let hover = if on_dock && !on_chrome { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
         self.shell.hover = hover;
         let under = if on_dock { None } else { self.surface_under(pos) };
         let pointer = self.seat.get_pointer().unwrap();
@@ -51,6 +79,45 @@ impl Aurora {
         let loc = pointer.current_location();
         let l = self.dock_layout();
         let dp = self.to_physical_point(loc);
+        // The menu and the settings panel are compositor chrome: a click they take goes to nobody else,
+        // and neither does its release.
+        if button_state == ButtonState::Released && self.chrome_buttons.remove(&button) {
+            return;
+        }
+        if button_state == ButtonState::Pressed {
+            let out = self.output_physical();
+            let at = (dp.x, dp.y);
+            let o = (out.w, out.h);
+            if button == BTN_LEFT {
+                match self.shell.chrome_press(at, o) {
+                    Press::Pass => {}
+                    Press::Swallow => {
+                        self.chrome_buttons.insert(button);
+                        return;
+                    }
+                    Press::Act(a) => {
+                        self.chrome_buttons.insert(button);
+                        self.run_action(a);
+                        return;
+                    }
+                }
+            } else if button == BTN_RIGHT && !self.shell.chrome_contains(at, o) {
+                // Right-click on the bare desktop (no window, not the dock) opens the menu; elsewhere it closes it.
+                let bare = self.space.element_under(loc).is_none() && !l.panel.contains(dp.x, dp.y);
+                self.shell.menu = None;
+                self.chrome_buttons.insert(button);
+                if bare {
+                    let n = self.space.elements().count();
+                    self.shell.open_menu((loc.x, loc.y), o, n);
+                    self.shell.chrome_motion(at, o);
+                    return;
+                }
+                self.chrome_buttons.remove(&button);
+            } else if self.shell.chrome_contains(at, o) {
+                self.chrome_buttons.insert(button);
+                return;
+            }
+        }
         if l.panel.contains(dp.x, dp.y) {
             // The dock swallows the click: no window is raised or focused, no client sees it.
             if button_state == ButtonState::Pressed {

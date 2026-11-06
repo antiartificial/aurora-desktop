@@ -1,0 +1,360 @@
+//! The shell's popups: the desktop menu and the settings panel. Both are
+//! ordinary compositor chrome like the dock: textures drawn into the scene
+//! (so they are in captures), with glass behind them. They are NOT the trusted
+//! overlay, which is drawn after captures are served.
+
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{ImportMem, gles::{GlesRenderer, GlesTexture}},
+    },
+    utils::{Buffer as BufferCoords, Physical, Size},
+};
+
+use super::{
+    ChromeDraw, Press, Res, SettingsState, Shell,
+    layout::Rect,
+    menu::{Action, Entry, KeyOut as MenuKey, Menu, Style},
+    motion::{Appear, PANEL_MS},
+    resolve_terminal,
+    settings::{self, Ctx, HotKind},
+};
+use crate::{
+    fx::{
+        edit::{Edit, Val},
+        theme::{BgMode, DockEdge, oklab_to_u8},
+    },
+    trusted::draw::Canvas,
+};
+
+type Out = (i32, i32);
+
+fn d(v: f32, s: f64) -> i32 {
+    (v as f64 * s).round() as i32
+}
+
+impl Shell {
+    fn style(&self) -> Style {
+        Style {
+            font: self.font.size,
+            scale: self.scale,
+            text: oklab_to_u8(self.dock.text_oklab),
+            hover: oklab_to_u8(self.dock.hover_oklab),
+            hover_strength: self.dock.hover_strength,
+            glass_on: self.glass_on,
+            radius: self.glass_radius,
+        }
+    }
+
+    pub fn menu_rect(&self) -> Option<Rect> {
+        let m = self.menu.as_ref()?;
+        let s = self.scale;
+        Some(Rect { x: d(m.origin.0, s), y: d(m.origin.1, s), w: (m.size.0 as f64 * s).ceil() as i32, h: (m.size.1 as f64 * s).ceil() as i32 })
+    }
+
+    pub fn settings_rect(&self, out: Out) -> Option<Rect> {
+        let st = self.settings.as_ref()?;
+        let s = self.scale;
+        let (w, h) = ((st.built.size.0.max(settings::WIDTH) as f64 * s).ceil() as i32, (st.built.size.1 as f64 * s).ceil() as i32);
+        Some(Rect { x: (out.0 - w) / 2, y: ((out.1 - h) / 2).max(0), w, h })
+    }
+
+    // ---- opening ---------------------------------------------------------------
+
+    /// Open the desktop menu with its corner at `at` (logical coordinates).
+    pub fn open_menu(&mut self, at: (f64, f64), out: Out, windows: usize) {
+        let term = resolve_terminal(&self.dock.terminal);
+        let mut e = vec![];
+        e.push(match &term {
+            Some(t) => Entry::item("New Terminal", Action::OpenTerminal).note(t),
+            None => Entry::item("New Terminal", Action::OpenTerminal).disabled("no terminal found"),
+        });
+        e.push(Entry::item("Settings\u{2026}", Action::OpenSettings));
+        e.push(if windows > 0 { Entry::item("Window Switcher", Action::WindowSwitcher).note("Alt+Tab") } else { Entry::item("Window Switcher", Action::WindowSwitcher).disabled("no windows") });
+        e.push(Entry::Separator);
+        e.push(Entry::Header("Background".into()));
+        for (m, key, label) in [(BgMode::Shader, "shader", "Shader"), (BgMode::Image, "image", "Image"), (BgMode::Gradient, "gradient", "Gradient"), (BgMode::Solid, "solid", "Solid colour")] {
+            let it = Entry::item(label, Action::Edit(vec![Edit::s("background", "mode", key)])).checked(self.bg.mode == m);
+            e.push(if m == BgMode::Image && self.bg.image.is_empty() { it.disabled("no image set") } else { it });
+        }
+        e.push(Entry::Separator);
+        let (next, name) = match self.dock.edge {
+            DockEdge::Bottom => ("left", "Left"),
+            DockEdge::Left => ("top", "Top"),
+            DockEdge::Top => ("right", "Right"),
+            DockEdge::Right => ("bottom", "Bottom"),
+        };
+        e.push(Entry::item(&format!("Move Dock to {name}"), Action::Edit(vec![Edit::s("dock", "edge", next)])));
+        let on = self.dock.enabled;
+        e.push(Entry::item(if on { "Hide Dock" } else { "Show Dock" }, Action::Edit(vec![Edit::new("dock", "enabled", Val::Bool(!on))])));
+        let mut m = Menu::new(e);
+        let s = self.scale as f32;
+        let font = self.font.size;
+        m.layout(&mut self.text, font, self.scale, (at.0 as f32, at.1 as f32), (out.0 as f32 / s, out.1 as f32 / s));
+        self.menu_seq += 1;
+        tracing::info!("menu: open at {:.0},{:.0} ({} entries); ease-out cubic, {} ms", at.0, at.1, m.entries.len(), super::motion::MENU_MS);
+        self.menu = Some(m);
+        self.menu_tex = None;
+    }
+
+    pub fn open_settings(&mut self) {
+        self.menu = None;
+        self.families = self.text.ui_families();
+        tracing::info!("settings: open; ease-out cubic, {PANEL_MS} ms");
+        self.settings = Some(SettingsState {
+            page: 0,
+            sel: None,
+            hover: None,
+            status: "Changes are saved to the theme file and apply at once.".into(),
+            focused: true,
+            appear: Appear::new(PANEL_MS),
+            logged: false,
+            pages: vec![],
+            built: Default::default(),
+            min_h: 0.0,
+            tkey: String::new(),
+            key: String::new(),
+        });
+        self.settings_tex = None;
+    }
+
+    pub fn set_status(&mut self, s: String) {
+        if let Some(st) = &mut self.settings {
+            st.status = s;
+        }
+    }
+
+    // ---- pointer ---------------------------------------------------------------
+
+    fn local(r: Rect, dp: (f64, f64), s: f64) -> (f32, f32) {
+        (((dp.0 - r.x as f64) / s) as f32, ((dp.1 - r.y as f64) / s) as f32)
+    }
+
+    pub fn chrome_contains(&self, dp: (f64, f64), out: Out) -> bool {
+        self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1)) || self.settings_rect(out).is_some_and(|r| r.contains(dp.0, dp.1))
+    }
+
+    pub fn menu_contains(&self, dp: (f64, f64)) -> bool {
+        self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1))
+    }
+
+    /// The pointer moved to `dp` (device pixels): update hover highlights.
+    pub fn chrome_motion(&mut self, dp: (f64, f64), out: Out) {
+        let s = self.scale;
+        if let (Some(r), Some(m)) = (self.menu_rect(), self.menu.as_mut()) {
+            m.hover = if r.contains(dp.0, dp.1) {
+                let (x, y) = Self::local(r, dp, s);
+                m.hit(x, y)
+            } else {
+                None
+            };
+        }
+        if let Some(r) = self.settings_rect(out) {
+            if let Some(st) = &mut self.settings {
+                st.hover = if r.contains(dp.0, dp.1) {
+                    let (x, y) = Self::local(r, dp, s);
+                    st.built.hots.iter().position(|h| h.r.contains(x, y))
+                } else {
+                    None
+                };
+            }
+        }
+    }
+
+    /// A left-button press at `dp`.
+    pub fn chrome_press(&mut self, dp: (f64, f64), out: Out) -> Press {
+        let s = self.scale;
+        if let Some(r) = self.menu_rect() {
+            let m = self.menu.as_ref().unwrap();
+            if r.contains(dp.0, dp.1) {
+                let (x, y) = Self::local(r, dp, s);
+                return match m.hit(x, y).and_then(|i| m.action_at(i)) {
+                    Some(a) => {
+                        self.menu = None;
+                        Press::Act(a)
+                    }
+                    None => Press::Swallow,
+                };
+            }
+            // A click anywhere else dismisses the menu and goes no further.
+            self.menu = None;
+            return Press::Swallow;
+        }
+        if let Some(r) = self.settings_rect(out) {
+            let st = self.settings.as_mut().unwrap();
+            if r.contains(dp.0, dp.1) {
+                st.focused = true;
+                let (x, y) = Self::local(r, dp, s);
+                let kind = st.built.hots.iter().find(|h| h.r.contains(x, y)).map(|h| (h.kind.clone(), h.row));
+                return match kind {
+                    Some((HotKind::Do(e), row)) => {
+                        st.sel = row;
+                        Press::Act(Action::Edit(e))
+                    }
+                    Some((HotKind::Tab(i), _)) => {
+                        st.page = i;
+                        st.sel = None;
+                        Press::Swallow
+                    }
+                    Some((HotKind::Close, _)) => Press::Act(Action::CloseSettings),
+                    None => Press::Swallow,
+                };
+            }
+            st.focused = false;
+        }
+        Press::Pass
+    }
+
+    // ---- keyboard --------------------------------------------------------------
+
+    pub fn captures_keys(&self) -> bool {
+        self.menu.is_some() || self.settings.as_ref().is_some_and(|s| s.focused)
+    }
+
+    /// One key press (a keysym) while chrome has the keyboard.
+    pub fn chrome_key(&mut self, sym: u32) -> Option<Action> {
+        use smithay::input::keyboard::keysyms as k;
+        if let Some(m) = &mut self.menu {
+            return match m.key(sym) {
+                MenuKey::Handled => None,
+                MenuKey::Close => {
+                    self.menu = None;
+                    None
+                }
+                MenuKey::Act(a) => {
+                    self.menu = None;
+                    Some(a)
+                }
+            };
+        }
+        let st = self.settings.as_mut()?;
+        let n = st.pages.len().max(1);
+        let rows = st.pages.get(st.page).map_or(0, |p| p.rows.len());
+        match sym {
+            k::KEY_Escape => return Some(Action::CloseSettings),
+            k::KEY_Tab => {
+                st.page = (st.page + 1) % n;
+                st.sel = None;
+            }
+            k::KEY_ISO_Left_Tab => {
+                st.page = (st.page + n - 1) % n;
+                st.sel = None;
+            }
+            k::KEY_Down if rows > 0 => st.sel = Some(st.sel.map_or(0, |i| (i + 1) % rows)),
+            k::KEY_Up if rows > 0 => st.sel = Some(st.sel.map_or(rows - 1, |i| (i + rows - 1) % rows)),
+            k::KEY_Left | k::KEY_Right => {
+                let row = st.sel.and_then(|i| st.pages.get(st.page)?.rows.get(i));
+                let e = row.and_then(|r| if sym == k::KEY_Left { r.left.clone() } else { r.right.clone() });
+                return e.map(Action::Edit);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    // ---- GPU -------------------------------------------------------------------
+
+    pub(super) fn prepare_chrome(&mut self, r: &mut GlesRenderer, size: Size<i32, Physical>) -> Res<()> {
+        self.prepare_menu(r)?;
+        self.prepare_settings(r, size)
+    }
+
+    fn import(r: &mut GlesRenderer, c: &Canvas) -> Res<GlesTexture> {
+        Ok(r.import_memory(&c.rgba, Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((c.w as i32, c.h as i32)), false)?)
+    }
+
+    fn prepare_menu(&mut self, r: &mut GlesRenderer) -> Res<()> {
+        let Some(mut m) = self.menu.take() else {
+            self.menu_tex = None;
+            return Ok(());
+        };
+        if !m.logged {
+            m.logged = true;
+            tracing::info!("menu: {}", m.appear.describe());
+        }
+        let key = format!("{}|{:?}|{}|{}|{}|{}", self.menu_seq, m.hover, self.scale, self.rev, self.glass_on, self.font.size);
+        if self.menu_tex.as_ref().is_none_or(|(k, _)| *k != key) {
+            let st = self.style();
+            let (c, placed) = m.draw(&mut self.text, &st);
+            let s = self.scale;
+            let (px, py) = (d(m.origin.0, s), d(m.origin.1, s));
+            tracing::info!(
+                "menu: layout scale={} panel={},{},{},{} rows=[{}] hover={:?} text={}",
+                s, px, py, c.w, c.h,
+                m.rows.iter().map(|r| format!("{},{},{},{}", px + d(r.x, s), py + d(r.y, s), d(r.w, s), d(r.h, s))).collect::<Vec<_>>().join(";"),
+                m.hover,
+                placed.iter().map(|(t, x, y, w)| format!("{}@{},{},{}", t.replace(' ', "_"), px + x, py + y, w)).collect::<Vec<_>>().join("\u{1f}")
+            );
+            let tex = Self::import(r, &c)?;
+            self.menu_tex = Some((key, tex));
+        }
+        self.menu = Some(m);
+        Ok(())
+    }
+
+    fn prepare_settings(&mut self, r: &mut GlesRenderer, size: Size<i32, Physical>) -> Res<()> {
+        let Some(mut st) = self.settings.take() else {
+            self.settings_tex = None;
+            return Ok(());
+        };
+        if !st.logged {
+            st.logged = true;
+            tracing::info!("settings: {}", st.appear.describe());
+        }
+        let (scale, font) = (self.scale, self.font.size);
+        let t = &self.snap;
+        let tkey = format!("{:?}|{:?}|{:?}|{:?}|{:?}|{scale}|{}|{}x{}", t.dock, t.background, t.font, t.input, t.output, self.host_scale, size.w, size.h);
+        if st.tkey != tkey {
+            let ctx = Ctx { theme: &self.snap, host_scale: self.host_scale, scale, out_phys: (size.w, size.h), families: &self.families };
+            st.pages = settings::pages(&ctx);
+            st.min_h = (0..st.pages.len()).map(|p| settings::build(&st.pages, p, "", font, scale, 0.0, &mut self.text).size.1).fold(0.0, f32::max);
+            st.tkey = tkey.clone();
+        }
+        let key = format!("{tkey}|{}|{:?}|{:?}|{}", st.page, st.sel, st.hover, st.status);
+        if st.key != key || self.settings_tex.is_none() {
+            st.built = settings::build(&st.pages, st.page, &st.status, font, scale, st.min_h, &mut self.text);
+            let style = self.style();
+            let accent = oklab_to_u8(self.bg.accent);
+            let (c, placed) = settings::draw(&st.built, st.hover, st.sel, &style, accent, &mut self.text);
+            let rect = {
+                let (w, h) = (c.w as i32, c.h as i32);
+                Rect { x: (size.w - w) / 2, y: ((size.h - h) / 2).max(0), w, h }
+            };
+            let sd = |v: f32| d(v, scale);
+            tracing::info!(
+                "settings: layout scale={scale} panel={},{},{},{} page={} hots=[{}] text={}",
+                rect.x, rect.y, rect.w, rect.h, st.page,
+                st.built.hots.iter().map(|h| format!("{},{},{},{}", rect.x + sd(h.r.x), rect.y + sd(h.r.y), sd(h.r.w), sd(h.r.h))).collect::<Vec<_>>().join(";"),
+                placed.iter().map(|(t, x, y, w)| format!("{}@{},{},{}", t.replace(' ', "_"), rect.x + x, rect.y + y, w)).collect::<Vec<_>>().join("\u{1f}")
+            );
+            self.settings_tex = Some((key.clone(), Self::import(r, &c)?));
+            st.key = key;
+        }
+        self.settings = Some(st);
+        Ok(())
+    }
+
+    /// The panels to draw over the dock, bottom to top: settings, then the menu.
+    pub fn chrome_draws(&self, size: Size<i32, Physical>) -> Vec<ChromeDraw<'_>> {
+        let mut v = vec![];
+        let grow = |r: Rect, anchor: (f64, f64), (k, alpha): (f32, f32), tex| {
+            let k = k as f64;
+            let dst = Rect {
+                x: (anchor.0 + (r.x as f64 - anchor.0) * k).round() as i32,
+                y: (anchor.1 + (r.y as f64 - anchor.1) * k).round() as i32,
+                w: (r.w as f64 * k).round() as i32,
+                h: (r.h as f64 * k).round() as i32,
+            };
+            ChromeDraw { tex, dst, alpha }
+        };
+        if let (Some((_, tex)), Some(r), Some(st)) = (&self.settings_tex, self.settings_rect((size.w, size.h)), &self.settings) {
+            let centre = (r.x as f64 + r.w as f64 / 2.0, r.y as f64 + r.h as f64 / 2.0);
+            v.push(grow(r, centre, st.appear.frame(), tex));
+        }
+        if let (Some((_, tex)), Some(r), Some(m)) = (&self.menu_tex, self.menu_rect(), &self.menu) {
+            let anchor = (m.anchor.0 as f64 * self.scale, m.anchor.1 as f64 * self.scale);
+            v.push(grow(r, anchor, m.appear.frame(), tex));
+        }
+        v
+    }
+}

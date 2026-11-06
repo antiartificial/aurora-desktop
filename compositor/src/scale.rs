@@ -68,6 +68,18 @@ impl Aurora {
         p.to_physical(self.output_scale())
     }
 
+    /// The scale the output should have: the theme's `[output] scale` when set, else the host's.
+    pub fn sync_scale(&mut self, output: &Output) {
+        let want = if self.fx.theme.output.scale > 0.0 { self.fx.theme.output.scale } else { self.shell.host_scale };
+        self.set_output_scale(output, want);
+    }
+
+    /// The host (or `--scale`) reports a scale. It applies unless the theme overrides it.
+    pub fn set_host_scale(&mut self, output: &Output, scale: f64) {
+        self.shell.host_scale = quantise(scale);
+        self.sync_scale(output);
+    }
+
     /// Change the output scale, and tell every client.
     pub fn set_output_scale(&mut self, output: &Output, scale: f64) {
         let scale = quantise(scale);

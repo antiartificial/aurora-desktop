@@ -132,7 +132,7 @@ pub fn init_winit(
     // rendered and captured in the window's physical pixels (src/scale.rs).
     output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    state.set_output_scale(&output, backend.scale_factor());
+    state.set_host_scale(&output, backend.scale_factor());
     state.space.map_output(&output, (0, 0));
 
     backend.window().request_redraw();
@@ -143,7 +143,7 @@ pub fn init_winit(
             WinitEvent::Resized { size, scale_factor } => {
                 tracing::debug!("winit: resized to {}x{} physical (host scale {scale_factor})", size.w, size.h);
                 output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
-                state.set_output_scale(&output, scale_factor);
+                state.set_host_scale(&output, scale_factor);
                 state.update_capture_constraints(&output);
             }
             WinitEvent::Input(event) => state.process_input_event(event),

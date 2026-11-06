@@ -16,6 +16,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 png = "0.17"
 libc = "0.2.191"
 toml = "0.9"
+toml_edit = "0.25"
 cosmic-text = "0.19.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 

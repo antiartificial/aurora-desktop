@@ -29,6 +29,7 @@ pub fn render_and_capture(
     size: Size<i32, Physical>,
 ) {
     state.fx.poll(renderer);
+    state.sync_scale(output);
     state.shell.sync(&state.fx.theme);
     state.apply_input_config();
     if state.overlay_up() {

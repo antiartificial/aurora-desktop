@@ -73,7 +73,7 @@ impl Aurora {
         if let Some(a) = self.fx.switcher.pending.take() { self.switch(a); }
     }
 
-    fn switch(&mut self, a: Act) {
+    pub(crate) fn switch(&mut self, a: Act) {
         let n = self.space.elements().len();
         let sw = &mut self.fx.switcher;
         match a {

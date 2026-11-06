@@ -48,7 +48,7 @@ pub fn init_headless(
     let _global = output.create_global::<Aurora>(&state.display_handle);
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    state.set_output_scale(&output, scale);
+    state.set_host_scale(&output, scale);
     state.space.map_output(&output, (0, 0));
     let mut tracker = OutputDamageTracker::from_output(&output);
 

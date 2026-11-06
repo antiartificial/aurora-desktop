@@ -179,6 +179,22 @@ impl Aurora {
                 return;
             }
             let _ = serial;
+            // Menu and settings panel take the keyboard while they are up; a release goes with its press.
+            if state == KeyState::Released && self.chrome_keys.remove(&code.raw()) {
+                kb.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Intercept(()));
+                return;
+            }
+            if state == KeyState::Pressed && self.shell.captures_keys() {
+                let sym = kb.input::<Option<u32>, _>(self, code, state, serial, time, |_, _, h| FilterResult::Intercept(Some(h.modified_sym().raw())));
+                if let Some(Some(sym)) = sym {
+                    self.chrome_keys.insert(code.raw());
+                    self.last_keysym = Some(smithay::input::keyboard::xkb::keysym_get_name(smithay::input::keyboard::Keysym::new(sym)));
+                    if let Some(a) = self.shell.chrome_key(sym) {
+                        self.run_action(a);
+                    }
+                }
+                return;
+            }
             self.switcher_key(code, state, time);
             return;
         }

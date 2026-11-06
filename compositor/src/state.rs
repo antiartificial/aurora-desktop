@@ -61,6 +61,10 @@ pub struct Aurora {
     pub applied_input: Option<crate::fx::theme::Input>,
     /// Name of the keysym the last key press produced under the live keymap (test evidence).
     pub last_keysym: Option<String>,
+    /// Buttons whose press the shell's chrome took; their release is taken too.
+    pub chrome_buttons: std::collections::HashSet<u32>,
+    /// Keys whose press the shell's chrome took (menu, settings); their release is taken too.
+    pub chrome_keys: std::collections::HashSet<u32>,
 }
 
 impl Aurora {
@@ -143,6 +147,8 @@ impl Aurora {
             shell: crate::shell::Shell::new(),
             applied_input: None,
             last_keysym: None,
+            chrome_buttons: Default::default(),
+            chrome_keys: Default::default(),
         }
     }
 

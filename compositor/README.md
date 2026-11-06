@@ -74,6 +74,16 @@ Code: `src/text.rs`, `src/shell/`, `src/fx/background.frag`. Drawn by the compos
 - Test flags: `--legacy-scene` (flat 25,25,25, no clock; the old tests use it), `--freeze-time`, `--scale F`, and `--test-input` now also takes `pointer X Y`, `click`, `keysym NAME`.
 - Winit's direct fallback (no second EGL context) draws none of this.
 
+## Desktop menu and settings panel
+
+Right-click on the bare desktop (no window, not the dock) opens a glass menu; its **Settings...** item opens a settings panel. Both are compositor chrome like the dock, for the same reason: system UI a client must not be able to impersonate. They are drawn into the scene, so they ARE in captures; only the trusted approval overlay is not (it is drawn after captures are served, and nothing here goes through that path).
+
+- `src/shell/menu.rs` is the primitive: entries (item, header, separator; items can be disabled, checked, annotated), logical-unit layout measured with `text.rs`, pointer hit-test, keyboard (Up/Down skip non-items, Return, Escape). A choice yields an `Action`; `Aurora::run_action` runs it.
+- `src/shell/settings.rs` builds the panel from the live theme (rows carry the theme edits a click makes), so it never holds a second copy of a setting. Pages: Display (output scale; resolution, refresh rate and monitors shown as unavailable with the reason: host-owned while nested, real on DRM/KMS), Desktop (background mode, Oklab top/bottom/accent), Dock & Text (edge, enabled, size, font family, size), Keyboard (xkb layout/variant, repeat rate/delay).
+- Persistence: `Fx::apply_edits` edits the theme file with `toml_edit` (comments and order kept), refuses anything `Theme::parse` or xkb would reject (a layout/variant xkb cannot compile is never written), writes atomically and forces the next hot-reload poll. With no theme directory the edit applies to the session only and the panel says so. The output scale is a new `[output] scale` key (0 = follow the host); `Aurora::sync_scale` applies it over the host's value.
+- Motion: cubic ease-out, `1 - (1 - t)^3`, 140 ms for the menu and 180 ms for the panel. Content fades in and the panel grows from 94% to 100% of its size, anchored at the corner nearest the pointer (menu) or the centre (panel); the glass behind it fades by scaling its tint and edge strength. No exit animation.
+- Test affordances: `--test-input` gains `rclick`. Layout is logged (`menu: layout`, `settings: layout`) in device pixels so tests can compare decoded captures with where `text.rs` put the text; `tests/chrome.rs` does, at scale 1 and 1.45.
+
 ## HiDPI
 
 Code: `src/scale.rs` (the boundary), `src/fx/` (window and card drawing), `src/trusted/draw.rs` (overlay), `tests/hidpi.rs`.

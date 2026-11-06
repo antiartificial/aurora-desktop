@@ -111,6 +111,15 @@ pub struct Input {
     pub repeat_delay: i32,
     pub repeat_rate: i32,
 }
+/// The output. `scale` overrides the host's scale factor (nested) or the
+/// backend's default; 0 means "follow the host". Written by the settings panel.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct OutputCfg {
+    pub scale: f64,
+}
+impl Default for OutputCfg { fn default() -> Self { OutputCfg { scale: 0.0 } } }
+
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Theme {
@@ -121,6 +130,7 @@ pub struct Theme {
     pub dock: Dock,
     pub font: FontCfg,
     pub input: Input,
+    pub output: OutputCfg,
 }
 
 impl Default for Background {
@@ -167,6 +177,8 @@ impl Theme {
         {
             if !v.is_finite() { return Err("non-finite number in theme".into()); }
         }
+        if !t.output.scale.is_finite() { return Err("non-finite output scale".into()); }
+        t.output.scale = if t.output.scale <= 0.0 { 0.0 } else { t.output.scale.clamp(0.5, 8.0) };
         b.speed = b.speed.clamp(0.0, 20.0);
         d.item_height = d.item_height.clamp(16.0, 128.0);
         d.gap = d.gap.clamp(0.0, 64.0);

@@ -98,3 +98,11 @@ options = ""
 # Milliseconds before a held key repeats, and repeats per second.
 repeat_delay = 200
 repeat_rate = 25
+
+[output]
+# Device pixels per logical pixel. 0 = follow the host (the winit window's
+# factor, or --scale when headless). The settings panel writes this key when a
+# scale is chosen. Fractional values are honoured: the compositor advertises
+# wp_fractional_scale to clients that bind it and the integer ceiling on
+# wl_output for those that do not.
+scale = 0.0
