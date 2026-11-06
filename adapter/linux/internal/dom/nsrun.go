@@ -88,7 +88,7 @@ func (s Store) NSID(name string) ([]string, error) {
 	}
 	now, err := readNSIDs(r.PID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("domain %s has no live run (init pid %d is exiting: %v)", name, r.PID, err)
 	}
 	var out []string
 	for _, t := range NSTypes {
@@ -106,6 +106,12 @@ func (s Store) NSID(name string) ([]string, error) {
 // returned func unregisters. Failures are warnings: without registration a
 // daemon that attests namespaces simply refuses the domain's connections.
 func (s Store) recordRun(name string, info io.Reader, warn io.Writer) func() {
+	if f, ok := info.(*os.File); ok {
+		// A plain blocking read, not the netpoller: with the poller, a payload that
+		// connects and exits within ~2ms made TestRunPlacesProcessInDomainCgroup
+		// flaky (the test's accept ran late; 0/90 failures became ~7/30).
+		f.Fd()
+	}
 	pid, err := childPID(info)
 	if err != nil {
 		fmt.Fprintf(warn, "domain: warning: no namespace identity recorded: %v\n", err)

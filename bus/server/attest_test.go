@@ -26,17 +26,28 @@ func TestMain(m *testing.M) {
 }
 
 func helper(sock string) int {
-	c, err := net.Dial("unix", sock)
-	if err != nil {
-		fmt.Println("dial:", err)
+	var c net.Conn
+	dial := func() bool {
+		var err error
+		if c, err = net.Dial("unix", sock); err != nil {
+			fmt.Println("dial:", err)
+			return false
+		}
+		return true
+	}
+	// AURORA_ATTEST_LAZY: connect on the "dial" command instead of at start.
+	if os.Getenv("AURORA_ATTEST_LAZY") == "" && !dial() {
 		return 1
 	}
-	defer c.Close()
 	in := bufio.NewScanner(os.Stdin)
 	fmt.Println("ready")
 	for in.Scan() {
 		f := strings.Fields(in.Text())
 		switch f[0] {
+		case "dial":
+			if !dial() {
+				return 1
+			}
 		case "send":
 			fmt.Fprintf(c, `{"kind":"event","topic":%q}`+"\n", f[1])
 		case "move":
@@ -142,6 +153,10 @@ func (l *logs) has(sub string) bool {
 func (l *logs) String() string { l.mu.Lock(); defer l.mu.Unlock(); return strings.Join(l.b, "\n") }
 
 func attestDaemon(t *testing.T, mode server.AttestMode, cgroup string) (*server.Server, *logs, string, string) {
+	return attestDaemonWith(t, mode, cgroup, false)
+}
+
+func attestDaemonWith(t *testing.T, mode server.AttestMode, cgroup string, ns bool) (*server.Server, *logs, string, string) {
 	t.Helper()
 	dir, _ := os.MkdirTemp("", "ba")
 	lg := &logs{}
@@ -152,7 +167,11 @@ func attestDaemon(t *testing.T, mode server.AttestMode, cgroup string) (*server.
 	go srv.Serve()
 	t.Cleanup(func() { srv.Close(); os.RemoveAll(dir) })
 	dsock := filepath.Join(dir, "d")
-	if err := srv.AddDomainCgroup(idA, dsock, cgroup); err != nil {
+	add := srv.AddDomainCgroup
+	if ns {
+		add = srv.AddDomainNS
+	}
+	if err := add(idA, dsock, cgroup); err != nil {
 		t.Fatal(err)
 	}
 	return srv, lg, filepath.Join(dir, "s"), dsock

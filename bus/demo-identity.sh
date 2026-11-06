@@ -2,8 +2,11 @@
 # Aurora bus identity demo: two REAL domains (bwrap, via adapter/linux), each
 # with its own bus socket AND cgroup; distinct sender identities; a minted
 # handle, a transfer, a forgery; then impersonation by a host process, refused
-# by kernel-attested identity, permitted with --attest-domains=off, and the
-# residual hole (a same-uid process can join the cgroup). Leaves nothing behind.
+# by kernel-attested identity, permitted with --attest-domains=off; then the
+# join-the-cgroup attack: accepted when only the cgroup is attested (the old
+# hole), REFUSED now that namespaces are attested too, accepted with attestation
+# off; and finally the residual (a process that also enters the domain's
+# namespaces still gets in). Leaves nothing behind.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,8 +41,8 @@ CGA=$("$DOMAIN" cgroup $A); CGB=$("$DOMAIN" cgroup $B)
 printf "alpha: %s\n       socket %s\n       cgroup %s\n" "$IDA" "$SA" "$CGA"
 printf "beta:  %s\n       socket %s\n       cgroup %s\n" "$IDB" "$SB" "$CGB"
 
-step "busd --attest-domains=require: session socket plus one socket and one cgroup per domain"
-"$TMP/busd" --data-dir "$TMP/log" --attest-domains=require \
+step "busd --attest-domains=require: per domain a socket, a cgroup and namespace attestation (each domain run registers its namespaces first)"
+"$TMP/busd" --data-dir "$TMP/log" --attest-domains=require --domain-ns "$IDA" --domain-ns "$IDB" \
   --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" --domain "$IDB=$SB" --domain-cgroup "$IDB=$CGB" 2>"$TMP/busd.err" &
 PIDS+=($!); BUSD=$!
 waitfor "$TMP/busd.err" "listening on"
@@ -99,7 +102,7 @@ except Exception as e:
     print("daemon replied nothing:", e)
 PY
 }
-restart() {  # restart busd with the given extra flags; domains stay as they are
+restart() {  # restart busd with the given extra flags (--domain-ns "$IDA" to attest namespaces)
   kill "$BUSD" 2>/dev/null; wait "$BUSD" 2>/dev/null || true
   rm -rf "$TMP/log"; : >"$TMP/busd.err"
   "$TMP/busd" --data-dir "$TMP/log" "$@" --domain "$IDA=$SA" --domain-cgroup "$IDA=$CGA" 2>"$TMP/busd.err" &
@@ -115,24 +118,83 @@ echo "log entries with topic demo.spoof: $("$BUS" log --topic demo.spoof 2>/dev/
 echo "and a real process in alpha's domain still gets in: $(inA send vault who@v1 2>&1 | head -c 200)" || true
 
 step "8b. the SAME attempt, --attest-domains=off (the old behaviour): the socket is the identity"
-restart --attest-domains=off
+restart --attest-domains=off --domain-ns "$IDA"
 spoof "$SA"
 logspoof
 echo "(claimed from=$IDB; recorded as alpha, because with attestation off the socket is the identity)"
 
-step "8c. attestation back ON; residual hole: a same-uid process that moves itself into alpha's cgroup is alpha"
-restart --attest-domains=require
-python3 - "$SA" "$IDB" "/sys/fs/cgroup$CGA" <<'PY'
+# The attack: a same-uid host process writes its own pid into alpha's cgroup.procs
+# (the directory is owned by this uid), then connects and claims to be beta.
+joincg() { python3 - "$SA" "$IDB" "/sys/fs/cgroup$CGA" <<'PY'
 import socket, sys
 try:
-    open(sys.argv[3] + "/cgroup.procs", "w").write("0")   # the attacker joins the cgroup (same uid owns it)
+    open(sys.argv[3] + "/cgroup.procs", "w").write("0")
 except OSError as e:
     print("could not join the cgroup:", e); sys.exit(0)
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])
+s.settimeout(1)
 s.sendall(b'{"kind":"event","topic":"demo.spoof","from":"' + sys.argv[2].encode() + b'"}\n')
+try:
+    print("daemon replied: " + s.recv(4096).decode().strip())
+except Exception as e:
+    print("daemon replied nothing:", e)
+PY
+}
+
+live_run() {  # a long-lived run of alpha, registered with the daemon; sets TGT to its payload pid
+  local n; n=$(grep -c "registered run" "$TMP/busd.err" || true)
+  "$DOMAIN" run $A -- /usr/bin/sleep 20 >/dev/null 2>&1 &
+  PIDS+=($!)
+  for _ in $(seq 100); do [ "$(grep -c "registered run" "$TMP/busd.err" || true)" -gt "$n" ] && break; sleep 0.05; done
+  for _ in $(seq 100); do TGT=$(pgrep -n -x sleep || true); [ -n "$TGT" ] && break; sleep 0.05; done
+}
+
+step "8c. THE FIX: --attest-domains=require, cgroup AND namespaces attested. The attacker joins alpha's cgroup, then connects"
+restart --attest-domains=require --domain-ns "$IDA"
+live_run   # alpha is running; its namespaces are registered
+echo "a real alpha process is still admitted: $(inA send bus bus.ping@v1 2>&1 | head -c 60)"
+joincg
+kill "$TGT" 2>/dev/null || true
+grep -E "REFUSED|attested" "$TMP/busd.err" | sed 's/^[0-9:]* /busd log: /'
+echo "log entries with topic demo.spoof: $("$BUS" log --topic demo.spoof 2>/dev/null | grep -c demo.spoof || true)   (refused; nothing recorded)"
+
+step "8d. BEFORE the fix, for contrast: the same attack when the domain is registered with a cgroup only (no --domain-ns)"
+restart --attest-domains=require
+joincg
+logspoof
+echo "(cgroup membership alone: the join-the-cgroup attacker WAS alpha)"
+
+step "8e. the same attack with --attest-domains=off: permissive, as documented"
+restart --attest-domains=off --domain-ns "$IDA"
+joincg
+logspoof
+
+step "8f. RESIDUAL, not closed: an attacker that also ENTERS the domain's namespaces (setns, same uid) is indistinguishable"
+restart --attest-domains=require --domain-ns "$IDA"
+live_run
+python3 - "$TGT" "$IDB" "/sys/fs/cgroup$CGA" <<'PY'
+import os, sys, fcntl, socket
+tgt, claim, cg = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    o = lambda t: os.open("/proc/%s/ns/%s" % (tgt, t), os.O_RDONLY)
+    ipc, uts, mnt, pid = o("ipc"), o("uts"), o("mnt"), o("pid")
+    owner = fcntl.ioctl(ipc, 0xb701)          # NS_GET_USERNS: the user namespace that owns the sandbox
+    open(cg + "/cgroup.procs", "w").write("0")  # join the cgroup (host path, before leaving the host mount ns)
+    os.setns(owner, os.CLONE_NEWUSER)          # same uid: full capabilities in a namespace this uid created
+    for fd, f in ((ipc, os.CLONE_NEWIPC), (uts, os.CLONE_NEWUTS), (mnt, os.CLONE_NEWNS), (pid, os.CLONE_NEWPID)):
+        os.setns(fd, f)
+except (OSError, AttributeError) as e:
+    print("attacker could not enter the namespaces:", e); sys.exit(0)
+if os.fork() == 0:                              # setns(pid) applies to children: fork into the domain's pid namespace
+    s = socket.socket(socket.AF_UNIX); s.connect("/run/aurora/bus.sock")
+    s.sendall(b'{"kind":"event","topic":"demo.spoof","from":"' + claim.encode() + b'"}\n')
+    import time; time.sleep(0.3); os._exit(0)
+os.wait()
 PY
 logspoof
-echo "(the kernel attests cgroup membership, not intent: cgroup.procs is writable by the owning uid)"
+grep -E "REFUSED|attested" "$TMP/busd.err" | tail -2 | sed 's/^[0-9:]* /busd log: /'
+kill "$TGT" 2>/dev/null || true
+echo "(a same-uid process can setns into a sandbox it can read under /proc; closing that needs a different uid or a ptrace/userns policy)"
 
 step "stop"
 for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done

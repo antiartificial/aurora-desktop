@@ -21,7 +21,7 @@ data dir is `$AURORA_DOMAINS_DIR` or `${XDG_DATA_HOME:-~/.local/share}/aurora/do
 | Grant device | (none) | would be a `--dev-bind` of one node | not built |
 | Snapshot / roll back | `snapshot [--tag]`, `rollback` | `btrfs subvolume snapshot` of all three subvolumes; rollback deletes the live subvolume and re-snapshots the snapshot (so it can be reused) | implemented on btrfs, clear error elsewhere |
 | Resource budget | `limit --memory --pids --cpu` | cgroup2 files in a per-domain cgroup under the user's delegated `user@UID.service`; `run` starts the domain inside it (`CLONE_INTO_CGROUP`) | partial: see below |
-| Identity | `exec-id`, `sockpath`, `cgroup` | see below | implemented (MVP) |
+| Identity | `exec-id`, `sockpath`, `cgroup`, `nsid` | see below | implemented (MVP) |
 | Suspend / resume | (none) | cgroup freezer (`cgroup.freeze`) is in the same delegated tree and would work; not built | not built |
 | Shared memory | (none) | memfd + seals; belongs to the bus work | not built |
 | Show / list | `list`, `show` | reads metadata | implemented |
@@ -75,14 +75,39 @@ The cgroup is named after the domain only, so two stores on one host with a
 domain of the same name share it. The path is as seen from the host cgroup
 namespace; a bus daemon in another cgroup namespace would see different paths.
 
+### Namespace identity (`domain nsid`)
+
+A process in the cgroup is not necessarily the domain: the cgroup directory is
+owned by the host uid, so a same-uid process can write its pid into
+`cgroup.procs`. A process started by `domain run` is additionally in bwrap's
+own pid, mount, ipc and uts namespaces, which the kernel names by the inode of
+`/proc/<pid>/ns/<type>`. `domain run` starts bwrap with `--info-fd` (to learn
+the sandbox init pid) and `--block-fd` (to hold the payload), reads
+`/proc/<init>/ns/{pid,mnt,ipc,uts}`, records `{pid, start time, ids}` in
+`domain.json` (`ns`), and, if `AURORA_BUS_SOCK` is set, sends
+`bus.domain.ns@v1` to that daemon BEFORE releasing the payload, then removes
+the registration when the run ends. `domain nsid <name>` prints the live run's
+`type:inode` pairs and fails if the recorded init pid is gone (the identity is
+PER RUN: every run makes new namespaces, and pinning them would need
+CAP_SYS_ADMIN, so there is no per-domain namespace). The user namespace is not
+recorded: bwrap swaps it after `--block-fd` releases (when it sets up `/dev`),
+so its inode is not the payload's at that point. A registration failure is a
+warning; a bus that attests namespaces then refuses the domain. Tested:
+`TestNSIDMatchesTheRunningPayload`, `TestRunRegistersWithBus` (registration
+precedes the payload, removal follows).
+
 Weaknesses, stated plainly:
 
-- Membership is attested, intent is not. The domain cgroup directory is owned
-  by the host user, so any same-uid host process can write its pid to
-  `cgroup.procs` and BE the domain to the bus (`bus/demo-identity.sh` 8c does
-  exactly this). Inside the domain nothing can: `/sys/fs/cgroup` is not
-  mounted and caps are dropped. A per-domain uid (root/subuid) or a root-owned
-  cgroup manager would close it.
+- Membership is attested, intent is not. A same-uid host process can no longer
+  become the domain by writing to `cgroup.procs` alone (the bus also compares
+  namespaces; `bus/demo-identity.sh` 8c refuses it). It CAN still become the
+  domain by entering the sandbox's namespaces: it can open `/proc/<init>/ns/*`
+  (same uid), `setns` into the owning user namespace (full capabilities in a
+  namespace its uid created), then the pid/mnt/ipc/uts namespaces, join the
+  cgroup and fork (`demo-identity.sh` 8f runs it and it works on this host).
+  A different uid for the sandbox (subuid/root) or a policy that denies that
+  access would close it; neither is available unprivileged.
+- A passed file descriptor still lets the receiver speak as the domain.
 - Any process the domain starts is in the cgroup and is that domain; the bus
   cannot tell the app from a shell it spawned.
 - A domain given another domain's socket directory still cannot use it: its

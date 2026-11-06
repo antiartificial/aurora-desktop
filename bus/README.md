@@ -127,19 +127,67 @@ busd listens on its session socket and, optionally, on one socket per domain.
   child that inherited it). (4) The connection is attested by its connector;
   a domain process can pass the connected fd on (SCM_RIGHTS) and the
   receiver speaks as the domain.
-- **What this does NOT guarantee.** Membership, not intent. The domain's
-  cgroup directory is owned by the same host uid, so a same-uid host process
-  that WRITES ITS PID INTO `cgroup.procs` is then in the cgroup and is that
-  domain (`demo-identity.sh` 8c shows it). Attestation stops impersonation by
-  any process that does not do that: a process that merely finds or is handed
-  the socket, another domain, a confused or sloppy host program. Any process
-  the domain itself started is the domain too. Per-domain uids (root/subuid)
-  or a cgroup tree not writable by the user would close the gap. The session
-  socket is unchanged (uid:comm). The daemon must see the domain's pids in
-  `/proc` (same pid namespace) and use the same cgroup namespace as the one
-  the registered path was computed in. Verified here on cgroup v2 with a
-  systemd-delegated `user@1000.service` subtree; the "no cgroup v2" degrade
-  branch is code only: neither run nor tested here.
+- **Namespace attestation (closes the join-the-cgroup attack).** Cgroup
+  membership alone is forgeable: the cgroup directory is owned by the host uid,
+  so a same-uid process can write its pid into `cgroup.procs` (this was
+  `demo-identity.sh` 8c; it is now 8d, shown succeeding on a cgroup-only
+  domain). A process started by `domain run` is also in bwrap's own pid, mount,
+  ipc and uts namespaces, which the kernel names by the inode of
+  `/proc/<pid>/ns/<type>`; a process that only joined the cgroup is still in
+  the host's. A domain registered with namespace attestation (`--domain-ns ID`,
+  `AddDomainNS`, or `"ns":true` in `bus.domain.add@v1`) therefore needs BOTH:
+  cgroup membership AND all four namespace ids equal to those of a live
+  registered run. Each connection's log line names both signals:
+  `signals cgroup=ok namespaces=FAILED: peer namespaces (...) match none of the
+  1 live runs`. A domain registered without it stays cgroup-only and logs
+  `namespaces=NOT CHECKED` with a WARNING per connection.
+  *Why these types.* `user` is NOT used: bwrap replaces the sandbox's user
+  namespace after the point where the adapter can hold it (when it sets up
+  `/dev`; observed: init's user ns inode changes after `--block-fd` is
+  released), so it is unknown before the payload can connect. pid, mnt, ipc
+  and uts are fixed by then. pid and mnt are the ones that matter; ipc/uts are
+  free extras. *Per run, not per domain.* Every `domain run` makes fresh
+  namespaces and they cannot be pinned without CAP_SYS_ADMIN in the host mount
+  namespace (a bind mount of `/proc/<pid>/ns/*`), so identity is per run: the
+  domain has a set of live runs. `domain run` registers its run
+  (`bus.domain.ns@v1 {identity, pid, ns}`, pid = sandbox init) when
+  `AURORA_BUS_SOCK` is set, BEFORE releasing the payload (bwrap `--block-fd`),
+  and unregisters when it ends. The daemon reads the ids from `/proc` itself;
+  ids a registrar sends are cross-checked, not trusted. A run lives exactly as
+  long as its init pid (same start time, not a zombie): when it ends it is
+  pruned, so a recycled namespace inode can never match, and a destroyed and
+  recreated domain (new identity, new registration) knows no runs.
+  Edge cases, tested: a peer whose `/proc/<pid>/ns/*` cannot be read (gone, or
+  in a pid namespace the daemon cannot see) is refused in prefer and require;
+  a registered pid in the daemon's own pid or mount namespace is rejected (it
+  is not a sandbox, every host process would match), and so is one sharing
+  pid/mnt with another domain's live run; a `require` or `prefer` daemon with
+  a namespace domain and no live run refuses ("namespace ids unknown"); `off`
+  still accepts everything. Namespaces are also re-read with the cgroup
+  recheck (at most once a second) and a connector that changes them is
+  disconnected (implemented; not covered by a test).
+- **What this does NOT guarantee.** Membership, not intent. (1) Namespace
+  attestation does NOT stop a same-uid host process that enters the domain's
+  namespaces. On this host (Linux 7.2, bwrap 0.11) such a process can open
+  `/proc/<init>/ns/*` of a sandbox (same uid, dumpable), take the owning user
+  namespace with `ioctl(NS_GET_USERNS)`, `setns` into it (it holds all
+  capabilities in a namespace its uid created), then setns ipc, uts, mnt and
+  pid, join the cgroup and fork (setns of a pid ns applies to children): the
+  child is in every attested namespace and the daemon accepts it (`demo-identity.sh`
+  8f runs this and it succeeds). So the cheap attack (write one file) is
+  closed; a determined same-uid attacker is not. Closing it needs a different
+  uid for the sandbox (subuid/root) or a policy that denies the `/proc/<pid>/ns`
+  access and `setns`; neither is available unprivileged here. (2) The session
+  socket (uid:comm) is trusted at the same-uid level: a same-uid client can
+  call `bus.domain.ns@v1` and register a sandbox of its own making, or
+  remove/re-add a domain. (3) Any process the domain itself starts is the
+  domain. (4) A connected fd passed on (SCM_RIGHTS) lets the receiver speak as
+  the domain. (5) A run registered through the adapter exists only while
+  `AURORA_BUS_SOCK` was set when `domain run` started. (6) The daemon must see
+  the domain's pids in `/proc` (same pid namespace) and use the same cgroup
+  namespace as the one the registered path was computed in. The session
+  socket is unchanged. Verified here on cgroup v2 with a systemd-delegated
+  `user@1000.service` subtree; the "no cgroup v2" degrade branch is code only.
 
 ## Capabilities
 
@@ -351,15 +399,22 @@ The end-to-end demo, which leaves no process behind, is `./demo.sh`.
 `./demo-identity.sh` runs two real bwrap domains (needs `bwrap`, builds
 `adapter/linux`'s `domain`): distinct identities, mint, transfer, forgery
 rejected, then a host process impersonating a domain: refused with attestation
-(8a), accepted with `--attest-domains=off` (8b), and the residual
-join-the-cgroup hole (8c).
+(8a), accepted with `--attest-domains=off` (8b); the join-the-cgroup attack
+refused with namespaces attested (8c), accepted on a cgroup-only domain (8d, the
+old hole) and with attestation off (8e); and the residual, an attacker that also
+enters the domain's namespaces, which still succeeds (8f).
 
 ## Tests
 
 `go test ./...`. Covered: attestation (`server/attest_test.go`: a process started
 inside a real cgroup is accepted, a host process is refused with a detailed log,
 `off` restores the old behaviour, `require` refuses without a cgroup, leaving the
-cgroup drops the connection; tests skip without a delegated cgroup subtree);
+cgroup drops the connection; tests skip without a delegated cgroup subtree;
+`server/ns_test.go`, `ns_internal_test.go`: a real bwrap process is accepted, a
+host process that joins the cgroup is refused (and is accepted by a cgroup-only
+domain, the control), ordinary host refused, `off` permissive, `require`/`prefer`
+refuse when namespace ids are unknown, a recreated domain inherits no runs, dead
+runs are pruned, registration rules);
 SO_PEERCRED identity beats a spoofed `from` (also in
 the log); domain-socket identity beats a spoofed `from`, two domains differ and
 one domain is stable, registration rules; invented, held, not-held,

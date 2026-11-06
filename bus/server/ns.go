@@ -76,9 +76,20 @@ type nsRun struct {
 	ids   nsIDs
 }
 
+// live: the init pid still has the registered start time and is not a zombie
+// (a dead pid-namespace init takes the whole namespace with it).
 func (r *nsRun) live() bool {
 	st, err := procStart(r.pid)
-	return err == nil && st == r.start
+	if err != nil || st != r.start {
+		return false
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(int(r.pid)) + "/stat")
+	if err != nil {
+		return false
+	}
+	t := string(b)
+	i := strings.LastIndexByte(t, ')')
+	return i >= 0 && len(t) > i+2 && t[i+2] != 'Z' && t[i+2] != 'X'
 }
 
 // liveRuns prunes dead runs and returns the rest.
