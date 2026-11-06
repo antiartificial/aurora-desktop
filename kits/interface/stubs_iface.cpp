@@ -96,3 +96,8 @@ BCatalog::BCatalog() : fCatalogData(nullptr) {}
 BCatalog::~BCatalog() {}
 const char* BCatalog::GetString(const char* string, const char*, const char*) { return string; }
 namespace BPrivate { BCatalog gSystemCatalog; }
+
+// BAlert asks for a stock icon by name. The real BIconUtils reads HVIF from Storage Kit resources and renders it through
+// libicon/agg; none of that exists here, so an icon-less alert is what you get.
+#include <IconUtils.h>
+status_t BIconUtils::GetSystemIcon(const char*, BBitmap*) { return B_ERROR; }

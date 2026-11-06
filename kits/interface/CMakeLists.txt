@@ -19,7 +19,9 @@ set(IFACE_REAL
 	LayoutContext LayoutItem Layout LayoutUtils MenuBar MenuField MenuItem MenuItemPrivate Menu MenuPrivate
 	MenuWindow Picture PicturePlayer Polygon PopUpMenu PrivateScreen Region RegionSupport Screen ScrollBar
 	SeparatorItem Shape ScrollView ListItem ListView OutlineListView StringItem StringView TextView ToolTipManager ToolTip TwoDimensionalLayout ViewLayoutItem View
-	Window)
+	Window
+	CheckBox RadioButton Box TextControl AbstractSpinner Spinner DecimalSpinner OptionControl OptionPopUp StatusBar TabView Slider ColorControl Alert CardLayout SplitLayout SplitView
+	GroupView SpaceLayoutItem TextInput)
 set(SRC_IFACE)
 foreach(n ${IFACE_REAL})
 	list(APPEND SRC_IFACE ${I}/${n}.cpp)
@@ -29,7 +31,7 @@ file(GLOB SRC_TEXTVIEW ${I}/textview_support/*.cpp)
 set(SRC_APP ${K}/app/AppDefs.cpp ${K}/app/AppServerLink.cpp ${K}/app/Cursor.cpp ${K}/app/Invoker.cpp
 	${K}/app/LinkReceiver.cpp ${K}/app/LinkSender.cpp ${K}/app/MessageRunner.cpp ${K}/app/PortLink.cpp
 	${K}/app/ServerLink.cpp ${K}/app/ServerMemoryAllocator.cpp)
-set(SRC_SUPPORT ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
+set(SRC_SUPPORT ${K}/shared/HSL.cpp ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/registrar.cpp ${CMAKE_CURRENT_SOURCE_DIR}/clipboard.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
 
 add_library(haiku_iface_real STATIC ${SRC_IFACE} ${SRC_LAYOUTER} ${SRC_TEXTVIEW} ${SRC_APP} ${SRC_SUPPORT})
