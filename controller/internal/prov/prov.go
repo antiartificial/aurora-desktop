@@ -21,6 +21,11 @@ const (
 	// SourceGesture: not covered by the manifest; justified only by the
 	// caller's request for this one invocation (the powerbox model).
 	SourceGesture = "gesture"
+	// SourcePowerbox: not covered by the manifest, but backed by a valid
+	// single-use grant ticket minted by the picker for exactly this path,
+	// mode, app and verb. See controller/ticket for what that does and does
+	// not prove.
+	SourcePowerbox = "powerbox"
 )
 
 // Grant is one filesystem grant given to the app's domain for one invoke.

@@ -4,7 +4,7 @@
 
     cd controller && go build ./... && go test ./... && ./demo.sh
 
-    controllerd --apps apps[,more/dirs] [--socket S] [--domain-bin P] [--exec id=path ...] [--require-isolation] [--no-gesture-grants] [--timeout 1m]
+    controllerd --apps apps[,more/dirs] [--socket S] [--domain-bin P] [--exec id=path ...] [--require-isolation] [--no-gesture-grants] [--require-powerbox] [--powerbox-key F] [--timeout 1m]
 
 Manifests are read from `<dir>/<app>/manifest.toml` and validated with `contracts/manifest`. An invalid or duplicate manifest is logged as `SKIPPED <path>: <reason>` and skipped.
 
@@ -29,7 +29,8 @@ Requests go to service `registry` with the verb in the envelope's `verb` field. 
 
 `registry.invoke@v1`, request:
 
-    {"app":"org.aurora.lumen","verb":"resize@v1","input":"/abs/path/in.png","args":{"width":800},"output":"/abs/path/out.png"}
+    {"app":"org.aurora.lumen","verb":"resize@v1","input":"/abs/path/in.png","args":{"width":800},"output":"/abs/path/out.png",
+     "ticket":"<optional powerbox ticket for the input>","output_ticket":"<optional, for the output>"}
 
 Success (response envelope):
 
@@ -43,7 +44,7 @@ Failure: an **error-kind envelope** whose payload carries both the bus's `code`/
 
     {"ok":false,"error":"...","detail":"...","code":"no_such_app","message":"..."}
 
-(`error` and `message` are the same text.) Codes: `no_such_app`, `no_such_verb`, `bad_request`, `bad_input`, `bad_output`, `unsupported_type`, `bad_args`, `not_implemented`, `app_failed`, `no_output`, `domain_error`, `isolation_unavailable`, `exec_error`, `gesture_grant_refused`. The same shape is used for failures of the other three verbs. `bus` clients see it as a `RemoteError`; the payload is still readable.
+(`error` and `message` are the same text.) Codes: `no_such_app`, `no_such_verb`, `bad_request`, `bad_input`, `bad_output`, `unsupported_type`, `bad_args`, `not_implemented`, `app_failed`, `no_output`, `domain_error`, `isolation_unavailable`, `exec_error`, `gesture_grant_refused`, `powerbox_required`, `ticket_unavailable`, `ticket_malformed`, `ticket_bad_signature`, `ticket_expired`, `ticket_reused`, `ticket_wrong_app`, `ticket_wrong_verb`, `ticket_wrong_mode`, `ticket_wrong_path`. The same shape is used for failures of the other three verbs. `bus` clients see it as a `RemoteError`; the payload is still readable.
 
 Validation before anything runs: `input` and `output` absolute, input an existing regular file, output directory exists, output differs from input, the input's type (sniffed bytes, then extension) matches the verb's `accepts`, and `args` match the verb's `input` schema (no unknown keys, required keys present, `string`/`path`/`int`/`float`/`bool` types checked).
 
@@ -73,12 +74,18 @@ For every verb that writes a file, after the file exists, controllerd publishes 
 
 and writes the same JSON to the output file's `user.aurora.provenance` xattr (a failure logs a warning; the event is still sent). `ts` is a hybrid logical clock from the bus's `hlc` package, local to controllerd. A failed invoke publishes nothing. `controller provenance <file>` reads the xattr back. Paths are canonical (symlinks resolved).
 
-## Ambient and gesture grants
+## Ambient, gesture and powerbox grants
 
 Every filesystem grant (the input file `ro`, the output file `rw`) is classified before the domain is touched, and the class is recorded in the reply, the bus event and the xattr.
 
 - **ambient**: covered by a `capabilities.paths` entry in the app's manifest. The user consented to it at install time (decision 0002). The grant must be the declared path or below it, and access is honoured: a `read` declaration covers only `ro` grants, `write` covers both.
 - **gesture**: not covered. Legitimate only because the caller asked for it for this one invocation, which is the plan's powerbox model: picking a file grants that file and nothing more. The user's action is the authority, not the manifest.
+
+- **powerbox**: not covered by the manifest, but the request carries a valid grant ticket minted by the powerbox picker (`shell/cmd/powerbox`) for exactly this path, mode, app and verb. A valid ticket outranks a manifest declaration for the grant it names.
+
+Tickets (`controller/ticket`): HMAC-SHA256 over `{path, mode, app, verb, nonce, exp}`, single use, 60s by default. `ticket` authorises the input grant (`ro`), `output_ticket` the output grant (`rw`). A bad ticket is refused with its own code and never downgraded to a gesture; a request refused for any other reason does not spend its tickets. The key is a 0600 file, `$XDG_RUNTIME_DIR/aurora/powerbox.key` (`--powerbox-key`, `$AURORA_POWERBOX_KEY`), shared with the picker and created by whichever starts first; controllerd refuses a key file that is not 0600 and owned by it, and without a usable key refuses every ticket (`ticket_unavailable`).
+
+**What this is not.** The ticket proves a process holding the key signed it, not that a human chose the file. Any same-user process that can read the key file can mint tickets, and the picker is an ordinary terminal process, not a compositor-drawn trusted path. `--require-powerbox` therefore raises the cost of a same-user bus client asking for an arbitrary path; it does not stop one that reads the key or drives the picker. The spent-nonce ledger is in memory and a restart forgets it. Full statement: decision 0007.
 
 Enforced today:
 
@@ -86,22 +93,24 @@ Enforced today:
 - A verb's `capabilities = ["path:..."]` must name a declared capability. This is checked by the manifest validator at load; the app is skipped with the reason (`SKIPPED <path>: ... "path:~/X" is not among the app's requested capabilities`).
 - `external` and `destructive` verbs that run on a gesture grant get `"needs_approval":true` in the reply and a `NEEDS APPROVAL` warning in the log. There is no approval UI; the invoke still proceeds.
 - `controllerd --no-gesture-grants` refuses any invoke needing a gesture grant with `gesture_grant_refused`, before any domain call. Default off.
+- `controllerd --require-powerbox` refuses any grant that is neither ambient nor powerbox with `powerbox_required`, before any domain call and before tickets are spent. Default off. `--no-gesture-grants` still refuses only gesture grants, so it lets powerbox grants through too; `--require-powerbox` is the stricter-in-intent setting.
+- `needs_approval` is set for gesture grants only, not for powerbox grants.
 
 The coverage rule lives in `internal/invoke/grants.go` (`classify`); `contracts/manifest` does not export one. `~/` expands from `$HOME`, symlinks are resolved on both sides. Decision record: `contracts/decisions/0007-ambient-and-gesture-grants.md`.
 
-Limitation: the launcher passes whatever paths the user typed or picked, so today almost every grant is a gesture and the manifest does not narrow anything by default. `--no-gesture-grants` shows the distinction is real, but it would break the launcher. Real enforcement waits for the Phase 6 powerbox.
+Limitation: plain `aurora open <file>` passes whatever path was typed, so it is a gesture; with `--require-powerbox` on, use `aurora open --pick`. Without it (the default) the manifest still narrows nothing by itself. The trusted path needs the compositor.
 
 ## CLI
 
     controller [--socket S] apps
     controller verbs [--accepts MIME]
     controller describe <app> <verb>
-    controller invoke <app> <verb> --input F [--output F] [--arg k=v ...]   # v is parsed as JSON, else a string
+    controller invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]   # v is parsed as JSON, else a string
     controller provenance <file>
 
 ## Not implemented
 
-- The manifest's `capabilities.paths` are consulted only to classify grants (ambient or gesture). By default a gesture grant is given on request, so a verb declaring `~/Pictures` can still be asked to write anywhere the caller names; only `--no-gesture-grants` refuses that. There is no powerbox to make a gesture a real user action, and no approval UI behind `needs_approval`. The `net`/`device` capabilities are never granted.
+- The manifest's `capabilities.paths` are consulted only to classify grants (ambient or gesture). By default a gesture grant is given on request, so a verb declaring `~/Pictures` can still be asked to write anywhere the caller names; only `--no-gesture-grants` refuses that. The powerbox v0 tickets make a gesture distinguishable from a bare request but are not a trusted path (see above), and there is no approval UI behind `needs_approval`. The `net`/`device` capabilities are never granted.
 - No consent, no installation step, no signature or `image_hash` check, no hot reload of manifests: apps are read once at start.
 - The domain has no Landlock/seccomp, no enforced memory/CPU limits and no btrfs snapshot per invoke (all adapter limits, see `adapter/linux/README.md`).
 - Grants are persisted by the domain CLI: if controllerd is killed mid-invoke the grants stay until the next invoke of that app re-grants and revokes them. Nothing sweeps stale grants. Domains are never destroyed.

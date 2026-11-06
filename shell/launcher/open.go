@@ -125,6 +125,10 @@ type runOpts struct {
 	pick        func([]ArgSpec) (map[string]string, error) // which --arg values apply to this verb
 	interactive bool
 	output      string // explicit output path, else derived
+	inTicket    string // powerbox ticket for the input, if it was picked
+	// pickOutput, when set, has the user choose the output in the powerbox;
+	// the argument is the proposed path.
+	pickOutput func(proposed string) (PickResult, error)
 }
 
 // runVerb describes, collects arguments, invokes and prints one step. It
@@ -150,6 +154,14 @@ func runVerb(ctx context.Context, env *Env, be Backend, input string, v Verb, o 
 	if req.Output == "" && v.Effect != EffectRead {
 		req.Output = deriveOutput(input, v.Name, args)
 	}
+	req.Ticket = o.inTicket
+	if o.pickOutput != nil && v.Effect != EffectRead {
+		pr, err := o.pickOutput(req.Output)
+		if err != nil {
+			return "", err
+		}
+		req.Output, req.OutputTicket = pr.Path, pr.Ticket
+	}
 	fmt.Fprintf(env.Out, "Running %s (%s) on %s ...\n", v.Name, v.App, input)
 	res, err := be.Invoke(ctx, req)
 	if err != nil {
@@ -170,6 +182,9 @@ func runVerb(ctx context.Context, env *Env, be Backend, input string, v Verb, o 
 	if res.Isolated != nil {
 		fmt.Fprintf(env.Out, "    isolated: %v\n", *res.Isolated)
 	}
+	if len(res.Grants) > 0 && string(res.Grants) != "null" {
+		fmt.Fprintf(env.Out, "    grants: %s\n", res.Grants)
+	}
 	if len(res.Provenance) > 0 && string(res.Provenance) != "null" {
 		fmt.Fprintf(env.Out, "    provenance: %s\n", res.Provenance)
 	}
@@ -178,15 +193,30 @@ func runVerb(ctx context.Context, env *Env, be Backend, input string, v Verb, o 
 
 func cmdOpen(env *Env, args []string) int {
 	var c common
-	fs := newFlags(env, "open", "open <file> [--verb NAME] [--app ID] [--arg k=v]... [--output PATH]", &c)
+	fs := newFlags(env, "open", "open <file>|--pick [--verb NAME] [--app ID] [--arg k=v]... [--output PATH]", &c)
 	verb := fs.String("verb", "", "run this verb without the picker")
 	app := fs.String("app", "", "disambiguate --verb when several apps offer it")
 	output := fs.String("output", "", "output path (default: next to the input)")
+	pick := fs.Bool("pick", false, "choose the input (and the output) in the powerbox instead of the command line")
 	var kv listFlag
 	fs.Var(&kv, "arg", "verb argument key=value (repeatable); skips prompting")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return parseFailed(err)
+	}
+	if *pick {
+		if len(pos) != 0 {
+			fmt.Fprintln(env.Err, "aurora open: --pick takes no file; the powerbox chooses it")
+			return 2
+		}
+		supplied, err := parseKV(kv)
+		if err != nil {
+			fmt.Fprintf(env.Err, "aurora open: %v\n", err)
+			return 2
+		}
+		be := env.Backend(c.socket, c.timeout)
+		defer be.Close()
+		return pickOpen(context.Background(), env, be, *verb, *app, *output, supplied)
 	}
 	if len(pos) != 1 {
 		fmt.Fprintln(env.Err, "aurora open: need exactly one file")

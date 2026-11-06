@@ -20,6 +20,7 @@ import (
 	"github.com/antiartificial/aurora/controller/internal/domain"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/service"
+	"github.com/antiartificial/aurora/controller/ticket"
 )
 
 func main() {
@@ -29,6 +30,8 @@ func main() {
 	dbin := fs.String("domain-bin", "", "path to the `domain` binary (env AURORA_DOMAIN_BIN; else PATH; else adapter/linux/out/domain)")
 	require := fs.Bool("require-isolation", false, "refuse to run verbs when domain tooling is unavailable instead of falling back")
 	noGesture := fs.Bool("no-gesture-grants", false, "refuse any grant not covered by the app manifest's capabilities.paths (default: gesture grants allowed)")
+	reqPB := fs.Bool("require-powerbox", false, "refuse any grant that is neither ambient nor backed by a valid powerbox ticket (bare gesture grants are rejected)")
+	keyPath := fs.String("powerbox-key", ticket.KeyPath(), "shared key file for powerbox tickets (env AURORA_POWERBOX_KEY), created 0600 if missing")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
 	fs.Func("exec", "app executable override, id=path (repeatable); for apps whose binary is built outside the app dir", func(v string) error {
@@ -57,6 +60,17 @@ func main() {
 		log.Printf("gesture grants allowed: paths outside a manifest's declared capabilities are granted on request and recorded as source=gesture")
 	}
 
+	var tickets *invoke.Tickets
+	if key, err := ticket.LoadKey(*keyPath, true); err != nil {
+		log.Printf("WARNING: powerbox key unusable (%v): every ticket will be refused", err)
+	} else {
+		tickets = &invoke.Tickets{Key: key}
+		log.Printf("powerbox tickets verified with key %s (anything that can read it can forge tickets)", *keyPath)
+	}
+	if *reqPB {
+		log.Printf("--require-powerbox: grants must be ambient or backed by a powerbox ticket; bare gesture grants are refused")
+	}
+
 	runner := domain.CLI{Bin: domain.Locate(*dbin, "")}
 	if err := runner.Available(); err != nil {
 		log.Printf("WARNING: domain tooling unavailable: %v", err)
@@ -74,7 +88,7 @@ func main() {
 	}
 	defer c.Close()
 	inv := &invoke.Invoker{
-		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, Execs: execs, Timeout: *timeout,
+		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, RequirePowerbox: *reqPB, Tickets: tickets, Execs: execs, Timeout: *timeout,
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)
 		},

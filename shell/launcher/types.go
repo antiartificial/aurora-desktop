@@ -60,6 +60,10 @@ type InvokeRequest struct {
 	Input  string         `json:"input"`
 	Args   map[string]any `json:"args,omitempty"`
 	Output string         `json:"output,omitempty"`
+	// Tickets are powerbox grant tickets for the input and output, carried
+	// opaquely from the picker to the controller.
+	Ticket       string `json:"ticket,omitempty"`
+	OutputTicket string `json:"output_ticket,omitempty"`
 }
 
 // InvokeResult is the reply of registry.invoke@v1.
@@ -69,6 +73,7 @@ type InvokeResult struct {
 	Result     json.RawMessage `json:"result,omitempty"` // read verbs: data instead of a file
 	Isolated   *bool           `json:"isolated,omitempty"`
 	Provenance json.RawMessage `json:"provenance,omitempty"`
+	Grants     json.RawMessage `json:"grants,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	Detail     string          `json:"detail,omitempty"`
 }

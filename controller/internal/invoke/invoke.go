@@ -29,6 +29,10 @@ type Request struct {
 	Input  string                     `json:"input"`
 	Args   map[string]json.RawMessage `json:"args,omitempty"`
 	Output string                     `json:"output,omitempty"`
+	// Ticket authorises the input grant, OutputTicket the output grant: grant
+	// tickets minted by the powerbox picker (see controller/ticket).
+	Ticket       string `json:"ticket,omitempty"`
+	OutputTicket string `json:"output_ticket,omitempty"`
 }
 
 // Result is the success reply. Provenance is nil for verbs that write no file.
@@ -67,6 +71,11 @@ type Invoker struct {
 	RequireIsolation bool
 	// NoGestureGrants refuses any grant not covered by the manifest.
 	NoGestureGrants bool
+	// RequirePowerbox refuses any grant that is neither ambient nor backed by
+	// a valid powerbox ticket: bare gesture grants are rejected.
+	RequirePowerbox bool
+	// Tickets verifies grant tickets; nil means every ticket is refused.
+	Tickets *Tickets
 	// Home expands "~/" in manifest paths (default: the user's home).
 	Home    string
 	Timeout time.Duration
@@ -160,6 +169,10 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	}{input, output, args})
 
 	grants := iv.planGrants(app.Manifest, input, output)
+	redeem, e := iv.checkTickets(req, app.ID(), grants)
+	if e != nil {
+		return nil, e
+	}
 	needsApproval := false
 	if g, ok := firstGesture(grants); ok {
 		if iv.NoGestureGrants {
@@ -169,6 +182,17 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 			needsApproval = true
 			iv.logf("WARNING: NEEDS APPROVAL: %s verb %s of %s runs on gesture grant %s (%s), not covered by its manifest; no approval UI exists yet, proceeding", verb.Effect, req.Verb, app.ID(), g.Path, g.Mode)
 		}
+	}
+
+	if iv.RequirePowerbox {
+		for _, g := range grants {
+			if g.Source == prov.SourceGesture {
+				return nil, fail("powerbox_required", "%s needs a grant that was neither declared by its manifest nor picked in the powerbox", fmt.Sprintf("%s (%s) is a bare gesture grant; --require-powerbox is set", g.Path, g.Mode), req.Verb)
+			}
+		}
+	}
+	if e := redeem(); e != nil {
+		return nil, e
 	}
 
 	l := iv.domainLock(DomainName(app.ID()))

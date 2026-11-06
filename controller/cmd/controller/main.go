@@ -21,7 +21,7 @@ const usage = `usage: controller [--socket S] <command>
   apps                                       list loaded apps
   verbs [--accepts MIME]                     list verbs, optionally those accepting MIME
   describe <app> <verb>                      a verb's input/output schema and effect
-  invoke <app> <verb> --input F [--output F] [--arg k=v ...]
+  invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]
                                              run a verb (values: JSON if valid, else string)
   provenance <file>                          read back the file's provenance xattr
 `
@@ -82,11 +82,12 @@ func main() {
 		call(sock, "registry.describe@v1", map[string]any{"app": pos[0], "verb": pos[1]})
 	case "invoke":
 		in, out := fs.String("input", "", "input file (absolute)"), fs.String("output", "", "output file (absolute)")
+		tk, otk := fs.String("ticket", "", "powerbox ticket for the input"), fs.String("output-ticket", "", "powerbox ticket for the output")
 		var kv multi
 		fs.Var(&kv, "arg", "k=v (repeatable)")
 		pos := split(fs, rest)
 		if len(pos) != 2 {
-			die("usage: controller invoke <app> <verb> --input F [--output F] [--arg k=v ...]")
+			die("usage: controller invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]")
 		}
 		a := map[string]any{}
 		for _, s := range kv {
@@ -106,6 +107,12 @@ func main() {
 		}
 		if *out != "" {
 			p["output"] = *out
+		}
+		if *tk != "" {
+			p["ticket"] = *tk
+		}
+		if *otk != "" {
+			p["output_ticket"] = *otk
 		}
 		call(sock, "registry.invoke@v1", p)
 	case "provenance":

@@ -15,6 +15,7 @@ cd shell
 GOWORK=off go build -o ./out/aurora ./cmd/aurora   # GOWORK=off: shell is not in go.work yet
 GOWORK=off go test ./...
 ./demo.sh
+./demo-powerbox.sh   # busd + controllerd --require-powerbox + tickets
 ```
 
 ## The flow (`aurora open`)
@@ -36,6 +37,21 @@ GOWORK=off go test ./...
    get one next to the input (`photo.png` + `resize@v1` -> `photo.resize.png`; a
    string `format` argument changes the extension).
 
+## Powerbox v0 (`aurora open --pick`, `cmd/powerbox`)
+
+`aurora open --pick [--verb NAME] [--app ID] [--arg k=v]...` takes no file. It resolves the verb (picker or `--verb`), then runs the **powerbox**: a terminal picker the user drives (list, `number` to open or choose, `0` for up, `y` to confirm). Confirming mints a **grant ticket** for that exact resolved path, `ro`, for that app and verb. For a verb that writes, the powerbox runs a second time in save mode (`w [NAME]` saves in the current folder, suggested name `photo.resize.png`) and mints an `rw` ticket for the output. The launcher passes both tickets to `registry.invoke@v1` as `ticket` and `output_ticket` without reading them; the controller then records the grants as `source:"powerbox"` (printed as `grants:` after the run).
+
+```sh
+go build -o out/powerbox ./cmd/powerbox      # put it next to aurora, on PATH, or set AURORA_POWERBOX
+aurora open --pick --verb resize --arg width=800
+```
+
+The picker draws on `/dev/tty` and prints one JSON line `{path, mode, ticket}` on stdout, so piping into it does not answer for the user. Flags: `--app --verb --mode ro|rw --kind file|dir|save --start --suggest --ttl 60s --key`. The key is the 0600 file `$XDG_RUNTIME_DIR/aurora/powerbox.key` (`$AURORA_POWERBOX_KEY`) shared with `controllerd`, created if missing.
+
+**`powerbox --path FILE` is a test affordance that bypasses the user gesture.** It mints a ticket for any path with no one choosing it. It prints a warning and needs `AURORA_POWERBOX_ALLOW_PATH=1`, which is a speed bump, not a security boundary. `demo-powerbox.sh` uses it, because a script cannot drive `/dev/tty`. Do not use it outside tests.
+
+**Not a trusted path.** This is a mechanism, not the final property. The powerbox is an ordinary same-user process; any same-user process that can read the key file can forge tickets, and one can run the picker under its own pty and answer for the user. The plan puts the picker in the compositor on a trusted UI path; there is no compositor yet. With `controllerd --require-powerbox`, a bare path request is refused, but this raises the cost of that attack and does not close it. See `contracts/decisions/0007-ambient-and-gesture-grants.md`. A folder can be picked (`--kind dir`) but the controller grants only single regular files, so no folder ticket is consumed yet. `--pick` does not apply to `chain`.
+
 ## Commands
 
 ```sh
@@ -43,6 +59,7 @@ aurora apps
 aurora verbs --accepts image/png
 
 aurora open photo.png                                  # picker + prompts
+aurora open --pick --verb resize --arg width=800       # choose the file in the powerbox
 aurora open photo.png --verb resize --arg width=800    # no prompts at all
 aurora open photo.png --verb export --app org.aurora.lumen \
         --arg format=jpeg --output ~/Pictures/photo.jpg
@@ -78,10 +95,10 @@ manifest notation) or an object `{type, default, description, optional}`. For
 
 ## Tests
 
-`launcher/launcher_test.go` uses a fake `Backend`, no live bus: MIME detection
+`picker/picker_test.go` drives the picker with scripted input (navigate, confirm, decline, quit, folder vs file, save, symlink resolution). `launcher/launcher_test.go` uses a fake `Backend`, no live bus: MIME detection
 (png, jpeg, text, lying extension), verb filtering, non-interactive `--verb`/`--arg`
 (stdin is empty, so any prompt would fail), interactive pick and arg prompting,
-chain wiring, chain stopping on step-1 failure, registry absent / bus down messages,
+`--pick` (tickets carried opaquely, read verbs ask for no output ticket, cancel invokes nothing, wrong type refused, plain `open` sends no ticket; `launcher/pick_test.go`), chain wiring, chain stopping on step-1 failure, registry absent / bus down messages,
 destructive/external marking, watch formatting, `-h`.
 
 ## Not implemented
@@ -90,6 +107,7 @@ destructive/external marking, watch formatting, `-h`.
   selection" from the compositor.
 - No graphical launcher: no layer-shell window, fuzzy search or keyboard-driven UI.
   It is a terminal prompt.
+- No trusted-path picker (see Powerbox v0); `chain` has no `--pick`.
 - No approval UI. Destructive and external verbs are marked and the user is told
   approval will be needed, but nothing blocks or asks; running the verb is the consent.
 - No recipes or saved chains; chains are exactly two verbs, no general pipeline.

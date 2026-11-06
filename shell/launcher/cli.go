@@ -19,12 +19,16 @@ type Env struct {
 	In      *bufio.Reader
 	Out     io.Writer
 	Err     io.Writer
+	// Pick asks the powerbox for a grant (default ExecPicker); tests inject one.
+	Pick func(PickRequest) (PickResult, error)
 }
 
 const usage = `aurora - the Aurora launcher
 
 Usage:
   aurora open <file>            pick a verb for a file and run it
+  aurora open --pick            choose the input in the powerbox instead (the
+                                controller can then tell your pick from a typed path)
   aurora chain <file> --verb A --verb B
                                 run A, then feed its output to B
   aurora verbs [--accepts MIME] list verbs the registry knows
