@@ -14,8 +14,13 @@ import (
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// control handles requests addressed to the daemon itself. They are not
-// logged. Callers hold s.mu.
+// control handles requests addressed to the daemon itself. The requests and
+// replies are deliberately not logged: a replay would re-execute them (a
+// logged bus.mint@v1 would mint again, bus.domain.add@v1 would open sockets),
+// the mint reply carries the live token, and pings and subscribes are noise.
+// What control does that matters for the record (capability mint, transfer,
+// revoke) is published as bus.cap.* events instead (see emitCap), which replay
+// treats as inert data. Callers hold s.mu.
 func (s *Server) control(c *conn, e proto.Envelope, clientID string) {
 	var out any
 	var err error

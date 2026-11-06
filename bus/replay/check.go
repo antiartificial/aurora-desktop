@@ -32,6 +32,7 @@ func Check(orig, replayed, delivered []proto.Envelope) Report {
 		finalState(orig, replayed, delivered),
 		capGrants(orig, replayed),
 		segmentDescriptors(orig, replayed, delivered),
+		capLifecycle(orig),
 	}}
 	r.OK = true
 	for _, c := range r.Checks {

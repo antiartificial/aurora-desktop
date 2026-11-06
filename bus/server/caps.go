@@ -74,6 +74,29 @@ func (s *Server) checkCaps(c *conn, e proto.Envelope) error {
 	return nil
 }
 
+// Topics the daemon publishes (and logs) for the capability lifecycle. The
+// payload names handles by their stable id, never the token. "by" is the
+// domain whose connection made the request, from the connection's identity;
+// the envelope's own From is "bus", so the log shows the daemon said it.
+const (
+	TopicCapMinted      = "bus.cap.minted"
+	TopicCapTransferred = "bus.cap.transferred"
+	TopicCapRevoked     = "bus.cap.revoked"
+)
+
+// emitCap records and delivers one lifecycle event. Callers hold s.mu.
+func (s *Server) emitCap(topic string, by string, h *handle, extra map[string]any) {
+	m := map[string]any{"id": h.id, "resource": h.resource, "by": by, "minter": h.minter}
+	for k, v := range extra {
+		m[k] = v
+	}
+	payload, _ := json.Marshal(m)
+	s.publish(proto.Envelope{
+		ID: s.newID(), TS: s.clock.Now().String(), From: proto.BusTarget, Kind: proto.KindEvent,
+		Topic: topic, QoS: proto.QoSInteractive, Payload: payload,
+	})
+}
+
 func (s *Server) ctlMint(c *conn, raw json.RawMessage) (any, error) {
 	var p struct {
 		Resource string `json:"resource"`
@@ -88,6 +111,11 @@ func (s *Server) ctlMint(c *conn, raw json.RawMessage) (any, error) {
 		h.expires = time.Now().Add(time.Duration(p.TTLMS) * time.Millisecond)
 	}
 	s.caps[h.token] = h
+	ex := map[string]any{"holder": h.holder}
+	if !h.expires.IsZero() {
+		ex["expires"] = h.expires
+	}
+	s.emitCap(TopicCapMinted, c.domain, h, ex)
 	out := map[string]any{"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder}
 	if !h.expires.IsZero() {
 		out["expires"] = h.expires
@@ -116,7 +144,9 @@ func (s *Server) ctlTransfer(c *conn, raw json.RawMessage) (any, error) {
 	if len(targets) == 0 {
 		return nil, cerr("no_such_domain", "no connected client has identity %q to receive the handle", p.To)
 	}
+	from := h.holder
 	h.holder = p.To
+	s.emitCap(TopicCapTransferred, c.domain, h, map[string]any{"from": from, "to": p.To})
 	note, _ := json.Marshal(map[string]string{"id": h.id, "resource": h.resource, "from": c.domain})
 	for _, t := range targets {
 		s.enqueue(t, proto.Envelope{
@@ -146,7 +176,10 @@ func (s *Server) ctlRevoke(c *conn, raw json.RawMessage) (any, error) {
 	if h.minter != c.domain {
 		return nil, cerr("cap_not_minter", "only the minting domain may revoke %s", h.id)
 	}
-	h.revoked = true
+	if !h.revoked { // revoking twice changes nothing and says nothing
+		h.revoked = true
+		s.emitCap(TopicCapRevoked, c.domain, h, map[string]any{"holder": h.holder})
+	}
 	return map[string]string{"revoked": h.id}, nil
 }
 

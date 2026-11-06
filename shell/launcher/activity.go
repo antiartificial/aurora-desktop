@@ -13,10 +13,17 @@ package launcher
 //   - a provenance.created event is tied to an invoke by the output file and the
 //     record's own ts, which the reply's embedded record repeats.
 //
+//   - a capability handle's lifecycle is the set of bus.cap.minted / transferred /
+//     revoked events that name the same handle id. Only an event whose sender is
+//     "bus" counts: busd publishes those itself and refuses clients the bus.*
+//     topics, so the "by" inside is the identity of the connection that asked.
+//     A handle is tied to an invoke when the id in an invoke's grants[].cap is
+//     the id in a mint event.
+//
 // Nothing else is joined by guesswork. Whatever does not match is printed in
-// its own sections, never dropped. The bus log has no record of capability mint,
-// transfer or revoke (the daemon's control verbs are not logged), so handle
-// state is reported as unknowable, not as "fine".
+// its own sections, never dropped. A handle minted and not revoked in the log
+// is reported as such; a log with no lifecycle events at all (older than the
+// events) is reported as unable to say, not as "fine".
 
 import (
 	"context"
@@ -226,7 +233,53 @@ type invoke struct {
 	provHow  string
 }
 
+// capPayload is a bus.cap.* event payload. All of it was written by busd from
+// its own table and the requesting connection, except Resource, which is the
+// name the minter chose.
+type capPayload struct {
+	ID       string `json:"id"`
+	Resource string `json:"resource"`
+	By       string `json:"by"`
+	Minter   string `json:"minter"`
+	Holder   string `json:"holder"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Expires  string `json:"expires"`
+}
+
+type lifeEv struct {
+	ent
+	topic string
+	p     capPayload
+}
+
+// handleLife is everything the log says about one handle id.
+type handleLife struct {
+	id       string
+	evs      []lifeEv
+	mint     *lifeEv
+	revoke   *lifeEv
+	uses     []ent // other messages presenting the id in cap_ids
+	invokes  []*invoke
+	problems []string
+}
+
+const (
+	topicCapMinted      = "bus.cap.minted"
+	topicCapTransferred = "bus.cap.transferred"
+	topicCapRevoked     = "bus.cap.revoked"
+)
+
+func isCapTopic(s string) bool {
+	return s == topicCapMinted || s == topicCapTransferred || s == topicCapRevoked
+}
+
 type timeline struct {
+	handles    map[string]*handleLife
+	horder     []string
+	lifeEvents int // trusted lifecycle events in the log
+	forgedLife []int
+
 	entries     []proto.Envelope
 	consumed    []bool
 	controllers map[string]bool
@@ -258,7 +311,7 @@ func (t *timeline) appr(id string) *approvalState {
 func (t *timeline) take(i int) { t.consumed[i] = true }
 
 func correlate(entries []proto.Envelope) *timeline {
-	t := &timeline{entries: entries, consumed: make([]bool, len(entries)), controllers: map[string]bool{}, approvals: map[string]*approvalState{}}
+	t := &timeline{entries: entries, consumed: make([]bool, len(entries)), controllers: map[string]bool{}, approvals: map[string]*approvalState{}, handles: map[string]*handleLife{}}
 	byID := map[string]*invoke{}
 	for i, e := range entries {
 		if (e.Kind == proto.KindResponse || e.Kind == proto.KindError) && e.Verb == verbInvoke {
@@ -395,12 +448,232 @@ func correlate(entries []proto.Envelope) *timeline {
 			t.take(i)
 		}
 	}
+	t.correlateHandles()
 	for _, iv := range t.invokes { // fall back to the reply's embedded record
 		if iv.prov == nil && iv.rp.Provenance != nil {
 			iv.pv = *iv.rp.Provenance
 		}
 	}
 	return t
+}
+
+// correlateHandles joins bus.cap.* events by handle id, then ties handles to
+// invokes by the id in grants[].cap. It also checks, from the log alone, that
+// each handle's story is possible; the replay checker does the same strictly.
+func (t *timeline) correlateHandles() {
+	hl := func(id string) *handleLife {
+		h := t.handles[id]
+		if h == nil {
+			h = &handleLife{id: id}
+			t.handles[id] = h
+			t.horder = append(t.horder, id)
+		}
+		return h
+	}
+	for i, e := range t.entries {
+		if e.Kind != proto.KindEvent || !isCapTopic(e.Topic) {
+			continue
+		}
+		var p capPayload
+		if !decode(e, &p) || p.ID == "" {
+			continue // stays unclaimed and prints under "Not tied to any invoke"
+		}
+		if e.From != proto.BusTarget {
+			t.forgedLife = append(t.forgedLife, i) // not claimed: shown, tagged UNTRUSTED
+			continue
+		}
+		t.lifeEvents++
+		h := hl(p.ID)
+		ev := lifeEv{ent{i, e}, e.Topic, p}
+		h.evs = append(h.evs, ev)
+		switch e.Topic {
+		case topicCapMinted:
+			if h.mint != nil {
+				h.problems = append(h.problems, "minted twice")
+			} else {
+				m := ev
+				h.mint = &m
+			}
+		case topicCapRevoked:
+			if h.mint == nil {
+				h.problems = append(h.problems, "revoked but no mint event for it in this log")
+			}
+			if h.revoke != nil {
+				h.problems = append(h.problems, "revoked twice")
+			} else {
+				r := ev
+				h.revoke = &r
+			}
+			if h.mint != nil && p.By != h.mint.p.By {
+				h.problems = append(h.problems, fmt.Sprintf("revoked by %s but minted by %s", short(p.By), short(h.mint.p.By)))
+			}
+		case topicCapTransferred:
+			if h.mint == nil {
+				h.problems = append(h.problems, "transferred but no mint event for it in this log")
+			}
+			if h.revoke != nil {
+				h.problems = append(h.problems, "transferred after it was revoked")
+			}
+		}
+		t.take(i)
+	}
+	if t.lifeEvents == 0 {
+		return
+	}
+	// presentations: any other message carrying the id
+	for i, e := range t.entries {
+		if e.Kind == proto.KindEvent && isCapTopic(e.Topic) {
+			continue
+		}
+		for _, id := range e.CapIDs {
+			h := t.handles[id]
+			if h == nil {
+				h = hl(id)
+				h.problems = append(h.problems, "presented but never minted in this log")
+			}
+			h.uses = append(h.uses, ent{i, e})
+			if h.revoke != nil && i > h.revoke.i {
+				h.problems = append(h.problems, fmt.Sprintf("presented by %s at %s, after it was revoked", short(e.From), clk(e)))
+			}
+		}
+	}
+	for _, iv := range t.invokes {
+		gs := iv.rp.Grants
+		if len(gs) == 0 && iv.rp.Provenance != nil {
+			gs = iv.rp.Provenance.Grants
+		}
+		for _, g := range gs {
+			if h := t.handles[g.Cap]; h != nil && g.Cap != "" {
+				h.invokes = append(h.invokes, iv)
+			}
+		}
+	}
+}
+
+func (t *timeline) logEnd() int64 {
+	if len(t.entries) == 0 {
+		return 0
+	}
+	if ts, err := hlc.Parse(t.entries[len(t.entries)-1].TS); err == nil {
+		return ts.Wall
+	}
+	return 0
+}
+
+// expiredBy reports the TTL expiry the mint event named, if the log's last
+// entry is past it. Expiry is derived from the mint's own expires field; the
+// daemon logs no event when a handle times out.
+func (h *handleLife) expiredBy(end int64) (time.Time, bool) {
+	if h.mint == nil || h.mint.p.Expires == "" || end == 0 {
+		return time.Time{}, false
+	}
+	x, err := time.Parse(time.RFC3339Nano, h.mint.p.Expires)
+	return x, err == nil && x.UnixNano() <= end
+}
+
+func (h *handleLife) stateWord(end int64) string {
+	switch {
+	case h.revoke != nil:
+		return "REVOKED at " + clk(h.revoke.e)
+	case h.mint == nil:
+		return "no mint event in this log"
+	}
+	if x, ok := h.expiredBy(end); ok {
+		return "EXPIRED by its TTL (" + x.UTC().Format("15:04:05.000") + "), never explicitly revoked"
+	}
+	return "NEVER REVOKED in this log"
+}
+
+// renderHandles prints one block per handle id the lifecycle events (or a
+// presentation) named, and returns nothing: findings go to the summary.
+func (t *timeline) renderHandles(b *strings.Builder, sm *summary) {
+	if t.lifeEvents == 0 && len(t.forgedLife) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n== Capability handles (bus.cap.* events: sender 'bus', so busd wrote them; 'by' is the identity of the connection busd saw)\n")
+	end := t.logEnd()
+	var unrevoked []string
+	for _, id := range t.horder {
+		h := t.handles[id]
+		res := ""
+		if h.mint != nil {
+			res = "  resource " + dash(h.mint.p.Resource) + " (named by the minter)"
+		}
+		ivs := ""
+		var ns []string
+		for _, iv := range h.invokes {
+			ns = append(ns, fmt.Sprintf("#%d", iv.n))
+		}
+		if len(ns) > 0 {
+			ivs = "  invoke " + strings.Join(ns, ", ")
+		}
+		fmt.Fprintf(b, "  %s%s%s\n", short(id), res, ivs)
+		type line struct {
+			i int
+			e proto.Envelope
+			s string
+		}
+		var ls []line
+		for _, ev := range h.evs {
+			switch ev.topic {
+			case topicCapMinted:
+				x := ""
+				if ev.p.Expires != "" {
+					x = ", expires " + short(ev.p.Expires)
+					if tm, err := time.Parse(time.RFC3339Nano, ev.p.Expires); err == nil {
+						x = ", expires " + tm.UTC().Format("15:04:05.000") + " UTC"
+					}
+				}
+				ls = append(ls, line{ev.i, ev.e, fmt.Sprintf("minted by %s (stamped by busd), held by %s%s", dash(ev.p.By), dash(ev.p.Holder), x)})
+			case topicCapTransferred:
+				ls = append(ls, line{ev.i, ev.e, fmt.Sprintf("transferred %s -> %s, asked by %s (stamped by busd)", dash(ev.p.From), dash(ev.p.To), dash(ev.p.By))})
+			case topicCapRevoked:
+				ls = append(ls, line{ev.i, ev.e, fmt.Sprintf("revoked by %s (stamped by busd)", dash(ev.p.By))})
+			}
+		}
+		const maxUses = 6
+		for k, u := range h.uses {
+			if k == maxUses {
+				ls = append(ls, line{u.i, u.e, fmt.Sprintf("... and %d more presentations", len(h.uses)-maxUses)})
+				break
+			}
+			what := dash(u.e.Verb)
+			if u.e.Kind == proto.KindEvent {
+				what = dash(u.e.Topic)
+			}
+			ls = append(ls, line{u.i, u.e, fmt.Sprintf("presented by %s (stamped by busd) on %s %s", dash(u.e.From), u.e.Kind, what)})
+		}
+		sort.SliceStable(ls, func(a, c int) bool { return ls[a].i < ls[c].i })
+		for _, l := range ls {
+			fmt.Fprintf(b, "    %s  %s\n", clk(l.e), l.s)
+		}
+		if len(h.invokes) > 0 {
+			fmt.Fprintf(b, "    joined to invoke by: the id in the invoke reply's grants[].cap is this id\n")
+		}
+		fmt.Fprintf(b, "    state: %s\n", h.stateWord(end))
+		for _, pr := range h.problems {
+			fmt.Fprintf(b, "    !! %s\n", pr)
+			sm.add("handle %s: %s", short(id), pr)
+		}
+		if h.mint != nil && h.revoke == nil {
+			if _, exp := h.expiredBy(end); !exp {
+				who := "not tied to an invoke"
+				if len(ns) > 0 {
+					who = "invoke " + strings.Join(ns, ", ")
+				}
+				unrevoked = append(unrevoked, fmt.Sprintf("%s (%s, %s)", short(id), dash(h.mint.p.Resource), who))
+			}
+		}
+	}
+	if len(unrevoked) > 0 {
+		show := unrevoked
+		more := ""
+		if len(show) > 8 {
+			more = fmt.Sprintf(" and %d more", len(show)-8)
+			show = show[:8]
+		}
+		sm.add("%d handle(s) minted and NEVER REVOKED in this log (still live, or the holder or controller died before revoking): %s%s", len(unrevoked), strings.Join(show, "; "), more)
+	}
 }
 
 // ---- rendering ----
@@ -775,6 +1048,11 @@ func (t *timeline) renderInvoke(b *strings.Builder, iv *invoke, sm *summary) {
 		note("approval: none needed, every grant was manifest-declared (ambient)")
 	}
 	for _, g := range gs {
+		if h := t.handles[g.Cap]; h != nil && g.Cap != "" {
+			note("handle %s: %s (details under Capability handles)", short(g.Cap), h.stateWord(t.logEnd()))
+		}
+	}
+	for _, g := range gs {
 		if g.Source != "ambient" && g.Source != "" {
 			iv.gestures++
 		}
@@ -863,6 +1141,10 @@ func (t *timeline) renderRest(b *strings.Builder, sm *summary) {
 				tag = "UNTRUSTED (only the controller publishes this topic): "
 				sm.add("%s published %s, a controller-only topic, and it was not joined to anything", dash(e.From), dash(e.Topic))
 			}
+			if isCapTopic(e.Topic) && e.From != proto.BusTarget {
+				tag = "UNTRUSTED (only the daemon, sender 'bus', publishes bus.cap.*; a client forged this): "
+				sm.add("%s published %s, a daemon-only topic: not counted as a mint, transfer or revoke", dash(e.From), dash(e.Topic))
+			}
 			fmt.Fprintf(b, "  %s  %s%s event %s %s%s\n", clk(e), tag, dash(e.From), dash(e.Topic), short(string(e.Payload)), segText(e))
 		default:
 			fmt.Fprintf(b, "  %s  %s from %s verb %s corr %s %s\n", clk(e), e.Kind, dash(e.From), dash(e.Verb), dash(e.Corr), short(string(e.Payload)))
@@ -909,6 +1191,7 @@ func FormatActivity(entries []proto.Envelope) string {
 	for _, iv := range t.invokes {
 		t.renderInvoke(&b, iv, &sm)
 	}
+	t.renderHandles(&b, &sm)
 	var orphans []*approvalState
 	for _, id := range t.order {
 		if a := t.approvals[id]; a.invoke == nil {
@@ -997,8 +1280,15 @@ func FormatActivity(entries []proto.Envelope) string {
 		fmt.Fprintf(&b, "  !! %s\n", s)
 	}
 	fmt.Fprintf(&b, "\n== What this log cannot tell you\n")
-	fmt.Fprintf(&b, "  Capability handles: mint, transfer and revoke are bus control verbs and are NOT logged. Only handle ids\n")
-	fmt.Fprintf(&b, "  (in grants, and in the cap_ids of the provenance event) appear; whether any is still live is unknowable here.\n")
+	if t.lifeEvents == 0 {
+		fmt.Fprintf(&b, "  Capability handles: this log holds no bus.cap.* lifecycle event, so it cannot say whether any handle was minted, moved or revoked\n")
+		fmt.Fprintf(&b, "  (it predates those events, or no handle was ever minted). Handle ids in grants are NOT evidence of revocation.\n")
+	} else {
+		fmt.Fprintf(&b, "  Capability handles: mint, transfer and revoke are in this log (above). Still not in it: the token values (only ids are logged);\n")
+		fmt.Fprintf(&b, "  a TTL expiry (derived from the mint's expires field; busd logs no event for it); a mint, transfer or revoke busd refused;\n")
+		fmt.Fprintf(&b, "  and anything from before this log began or from a busd run whose log is not here (a handle from then shows as 'never minted').\n")
+		fmt.Fprintf(&b, "  'Never revoked' means no revoke event, not that the handle is live now: ask bus.inspect@v1 for the daemon's table.\n")
+	}
 	fmt.Fprintf(&b, "  Run domains: 'registered with busd' is the controller's record; nothing in this log shows a run happened inside the domain.\n")
 	if len(t.invokes) > 0 {
 		fmt.Fprintf(&b, "  Filesystem grants: %d across successful invokes. Their revocation is done by controllerd after the run;\n", grants)

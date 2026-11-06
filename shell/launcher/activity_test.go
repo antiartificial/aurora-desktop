@@ -230,7 +230,8 @@ func TestActivitySurfacesHiddenState(t *testing.T) {
 		"!! [#2] AUTO-APPROVED",
 		"!! [#2] RAN UNISOLATED",
 		"/home/me/tax.pdf", // the forged event is shown, flagged, not dropped
-		"mint, transfer and revoke are bus control verbs and are NOT logged",
+		"this log holds no bus.cap.* lifecycle event",
+		"Handle ids in grants are NOT evidence of revocation",
 	)
 	mustNotContain(t, got[idx(t, got, "[#1]"):idx(t, got, "[#2]")], "/home/me/tax.pdf")
 }
@@ -360,5 +361,90 @@ func TestActivityCommandErrors(t *testing.T) {
 	}
 	if code := Run(env, []string{"activity", "--bogus"}); code != 2 {
 		t.Fatalf("bad flag: code %d", code)
+	}
+}
+
+// bus.cap.* events as busd writes them: sender "bus", identity in payload.by.
+func (b *logBuilder) capEvent(from, topic, payload string) {
+	b.add(proto.Envelope{From: from, Kind: proto.KindEvent, Topic: topic}, payload)
+}
+
+const owner = "uid1000:controllerd"
+
+func TestActivityShowsHandleLifecycleAndUnrevokedHandle(t *testing.T) {
+	var b logBuilder
+	id := b.invoke("uid1000:aurora", "org.aurora.demo", "copy@v1", "/out/a.png")
+	b.capEvent("bus", "bus.cap.minted", `{"id":"cap:aa","resource":"file:/in.png:ro","by":"`+owner+`","minter":"`+owner+`","holder":"`+owner+`"}`)
+	b.capEvent("bus", "bus.cap.minted", `{"id":"cap:bb","resource":"file:/out/a.png:rw","by":"`+owner+`","minter":"`+owner+`","holder":"`+owner+`"}`)
+	b.reply(id, okReply("/out/a.png", ""))
+	b.capEvent("bus", "bus.cap.revoked", `{"id":"cap:aa","resource":"file:/in.png:ro","by":"`+owner+`","minter":"`+owner+`","holder":"`+owner+`"}`)
+	got := FormatActivity(b.out)
+	mustContain(t, got,
+		"== Capability handles",
+		"cap:aa  resource file:/in.png:ro (named by the minter)  invoke #1",
+		"minted by "+owner+" (stamped by busd)",
+		"revoked by "+owner+" (stamped by busd)",
+		"joined to invoke by: the id in the invoke reply's grants[].cap is this id",
+		"state: REVOKED at",
+		"state: NEVER REVOKED in this log",
+		"!! 1 handle(s) minted and NEVER REVOKED in this log",
+		"cap:bb (file:/out/a.png:rw, invoke #1)",
+	)
+	// the gap section no longer claims lifecycle is unlogged, nor that it is unknowable
+	mustContain(t, got, "mint, transfer and revoke are in this log")
+	mustNotContain(t, got, "are NOT logged", "unknowable", "no bus.cap.* lifecycle event")
+	// cap:aa is revoked, so it must not be in the attention list
+	if strings.Contains(got[idx(t, got, "== Needs attention"):], "cap:aa (") {
+		t.Fatalf("a revoked handle was listed as unrevoked:\n%s", got)
+	}
+}
+
+func TestActivityHandleOddities(t *testing.T) {
+	const m = `"resource":"r","by":"` + owner + `","minter":"` + owner + `"`
+	cases := map[string]struct {
+		build func(b *logBuilder)
+		want  []string
+	}{
+		"revoke without mint": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.revoked", `{"id":"cap:zz",`+m+`}`)
+		}, []string{"revoked but no mint event for it in this log"}},
+		"transfer after revoke": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.minted", `{"id":"cap:zz",`+m+`}`)
+			b.capEvent("bus", "bus.cap.revoked", `{"id":"cap:zz",`+m+`}`)
+			b.capEvent("bus", "bus.cap.transferred", `{"id":"cap:zz",`+m+`,"from":"a","to":"b"}`)
+		}, []string{"transferred after it was revoked"}},
+		"presented after revoke": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.minted", `{"id":"cap:zz",`+m+`}`)
+			b.capEvent("bus", "bus.cap.revoked", `{"id":"cap:zz",`+m+`}`)
+			b.add(proto.Envelope{From: owner, To: "svc", Kind: proto.KindRequest, Verb: "use@v1", CapIDs: []string{"cap:zz"}}, `{}`)
+		}, []string{"after it was revoked", "presented by " + owner + " (stamped by busd) on request use@v1"}},
+		"presented never minted": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.minted", `{"id":"cap:ok",`+m+`}`)
+			b.add(proto.Envelope{From: owner, To: "svc", Kind: proto.KindRequest, Verb: "use@v1", CapIDs: []string{"cap:ghost"}}, `{}`)
+		}, []string{"presented but never minted in this log"}},
+		"revoked by a stranger": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.minted", `{"id":"cap:zz",`+m+`}`)
+			b.capEvent("bus", "bus.cap.revoked", `{"id":"cap:zz","resource":"r","by":"domain:evil:1"}`)
+		}, []string{"revoked by domain:evil:1 but minted by " + owner}},
+		"forged by a client is not a lifecycle": {func(b *logBuilder) {
+			b.capEvent("domain:evil:1", "bus.cap.revoked", `{"id":"cap:zz",`+m+`}`)
+		}, []string{"UNTRUSTED (only the daemon", "not counted as a mint, transfer or revoke", "no bus.cap.* lifecycle event"}},
+		"TTL expiry is named, not flagged": {func(b *logBuilder) {
+			b.capEvent("bus", "bus.cap.minted", `{"id":"cap:zz",`+m+`,"expires":"2023-11-14T22:13:20.001Z"}`)
+			b.event("uid1000:p", "later", `{}`)
+		}, []string{"EXPIRED by its TTL"}},
+	}
+	for name, c := range cases {
+		var b logBuilder
+		c.build(&b)
+		got := FormatActivity(b.out)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: missing %q in:\n%s", name, w, got)
+			}
+		}
+		if name == "TTL expiry is named, not flagged" && strings.Contains(got, "NEVER REVOKED") {
+			t.Errorf("%s: an expired handle was flagged unrevoked:\n%s", name, got)
+		}
 	}
 }

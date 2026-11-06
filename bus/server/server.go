@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -394,13 +395,27 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 		e.Corr = p.clientID
 		s.enqueue(p.requester, e)
 	case proto.KindEvent:
-		s.record(e)
-		for _, sub := range s.conns {
-			for _, pat := range sub.subs {
-				if proto.Match(pat, e.Topic) {
-					s.enqueue(sub, e)
-					break
-				}
+		// bus.* topics are the daemon's own voice (bus.cap.minted, ...). A client
+		// may not publish them, or a forged "revoked" would sit in the log
+		// beside the real ones. A replaying client may: it re-delivers what the
+		// daemon once said, and the replay log is a check artifact.
+		if !replay && strings.HasPrefix(e.Topic, "bus.") {
+			s.sendError(c, clientID, "reserved_topic", "topics under bus. are published by the daemon only")
+			return
+		}
+		s.publish(e)
+	}
+}
+
+// publish records an event and delivers it to every matching subscriber.
+// Callers hold s.mu.
+func (s *Server) publish(e proto.Envelope) {
+	s.record(e)
+	for _, sub := range s.conns {
+		for _, pat := range sub.subs {
+			if proto.Match(pat, e.Topic) {
+				s.enqueue(sub, e)
+				break
 			}
 		}
 	}
