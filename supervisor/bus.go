@@ -26,8 +26,13 @@ const (
 	TopicRestarted = "supervisor.service.restarted"
 	TopicExited    = "supervisor.service.exited"
 	TopicGaveUp    = "supervisor.service.gave_up"
-	TopicStopped   = "supervisor.service.stopped"
-	TopicHealth    = "supervisor.service.health"
+	// TopicCrashed is the crash report: published when a service dies by a signal or
+	// a non-zero exit, or is killed for hanging. Fields: service, pid, signal (name,
+	// absent for an exit), exit_code (-1 when signaled), uptime_ms, restart (the
+	// number of the restart this causes: 1 for the first), will_restart, reason.
+	TopicCrashed = "supervisor.service.crashed"
+	TopicStopped = "supervisor.service.stopped"
+	TopicHealth  = "supervisor.service.health"
 )
 
 type queued struct {

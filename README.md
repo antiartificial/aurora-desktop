@@ -20,7 +20,7 @@ It runs **nested inside another compositor**. It does not boot. See
 ## Quickstart
 
 ```sh
-./aurora-up                            # one terminal: bus, controller, index, supervisor
+./aurora-up                            # one terminal: bus, controller, index, compositor, supervisor
 source /tmp/aurora-up-1000/env         # another terminal
 aurora apps                            # what's installed
 genimage /tmp/photo.png
@@ -55,7 +55,7 @@ streams new files as they're made.
 
 Each `demos/*/run.sh` starts a real stack, asserts decoded output, and exits
 non-zero on failure. They're the actual regression suite: 112 compositor tests,
-86 Interface Kit checks, 85 live-query, 60 supervisor, 57 gateway.
+86 Interface Kit checks, 85 live-query, 60 supervisor, 64 crash-survival, 57 gateway.
 
 ## Limits
 
@@ -73,7 +73,16 @@ Stated here for the same reason they're stated in the code.
   can write the directory can rewrite history and its anchor together.
 - **Dock labels are invisible on a light background** (1.13:1 contrast, WCAG
   wants 4.5:1). Fix specified in DR 0010, in progress.
-- No XWayland, no IME, no crash survival, no app store.
+- **The compositor survives a crash; its clients do not.** The compositor is a
+  supervised service: `kill -9` it and the supervisor restarts it with back-off, publishes a
+  `supervisor.service.crashed` report (signal, uptime, restart number) and comes
+  back with its scale, background, dock and font. Window layout comes back only
+  as a *placement memory*: the `wl_display` socket dies with the compositor, so
+  every client loses its connection and exits, and a window reappears where it
+  was only when that app is started again. There is no display proxy to hold
+  client connections (the other half of the plan's crash survival, not built).
+  `demos/crash-survival/run.sh`.
+- No XWayland, no IME, no app store.
 
 ## Layout
 

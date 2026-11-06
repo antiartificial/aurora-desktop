@@ -146,6 +146,7 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     state.space.refresh();
     state.trusted_tick();
     state.shell.tick();
+    state.persist_tick();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();
 }

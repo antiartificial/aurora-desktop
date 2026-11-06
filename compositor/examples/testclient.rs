@@ -178,6 +178,7 @@ fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
     let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
     let (mut maximize, mut hidpi, mut integer_only) = (false, false, false);
+    let (mut title, mut app_id) = ("aurora-testclient".to_string(), None::<String>);
     let mut a = std::env::args().skip(1);
     while let Some(f) = a.next() {
         match f.as_str() {
@@ -185,6 +186,8 @@ fn main() {
             "--rgb" => { let v: Vec<u8> = a.next().unwrap().split(',').map(|n| n.parse().unwrap()).collect(); rgb = [v[0], v[1], v[2]]; }
             "--pattern" => pattern = a.next().unwrap(),
             "--alpha" => alpha = a.next().unwrap().parse().unwrap(),
+            "--title" => title = a.next().unwrap(),
+            "--app-id" => app_id = a.next(),
             "--maximize" => maximize = true,
             "--hidpi" => hidpi = true,
             "--integer-scale" => integer_only = true,
@@ -212,7 +215,8 @@ fn main() {
     q.roundtrip(&mut app).expect("roundtrip");
     let xs = wm.get_xdg_surface(&surface, &qh, ());
     let top = xs.get_toplevel(&qh, ());
-    top.set_title("aurora-testclient".into());
+    top.set_title(title);
+    if let Some(id) = app_id { top.set_app_id(id); }
     if maximize { top.set_maximized(); }
     surface.commit();
     loop { q.blocking_dispatch(&mut app).expect("dispatch"); }
