@@ -112,7 +112,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 - A cooperating client learns a prompt exists: it receives `wl_keyboard.leave` when the overlay rises and `enter` when it falls. Not hiding that is the price of not leaving stuck keys.
 - Look-alikes are not prevented. A client can draw its own window that looks like this prompt. The real one differs only in that it is above everything, swallows keys and the client's focus is lost; the user has no secret or secure-attention key to tell them apart, and nothing in the compositor stops a client mimicking the layout.
 - Keys are matched by keysym of the active layout (`a`, `d`, Escape). Nothing shows that a human pressed it: key events come from the backend. Clients have no virtual-keyboard or input-method protocol here (not advertised), but on a real session host-level injection (uinput, the host compositor under winit) is outside what this compositor sees.
-- The winit backend draws the overlay through the same function with the output's transform (`Flipped180`), but that was **not run**: only `--headless` was verified. Under winit the host compositor can screenshot the window, overlay included.
+- On winit the frame (overlay included) is composed offscreen by the same function as headless; the capture-exclusion check was run on winit (see Known limits). The host compositor can still screenshot the window, overlay included.
 - No dmabuf, cursor capture or toplevel capture exist, so there is nothing else to read the overlay today; that is a fact about the current feature set, not a guarantee.
 
 **Test and demo affordances (loud on purpose).**
@@ -127,12 +127,45 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 ## Known limits of the backends
 
-- **winit blocks when the host does not present its window.** With the host
-  screen locked, the second `eglSwapBuffers` never returned, KWin marked the
-  window "Not Responding", and every client stalled. That is why `--headless`
-  exists. The winit path was therefore **not verified to deliver a capture**.
-  Its row order (the winit surface is rendered with `Flipped180`) is the
-  untested part.
+- **winit (fixed 2026-11-06).** It was blamed on a locked host screen. That
+  diagnosis was wrong: with the screen unlocked it failed the same way.
+  What failed: `eglSwapBuffersWithDamage` returned BAD_SURFACE ("not current
+  draw surface"), Smithay then recreated the window surface (BAD_ALLOC), and
+  `backend.submit().unwrap()` panicked. Cause, in our render path:
+  `GlesRenderer::wait` (the effects pipeline), `map_texture` (capture
+  read-back) and binding offscreen textures all call `eglMakeCurrent` with no
+  surface, so the window surface is no longer current at swap. Re-binding it
+  does not help: on this NVIDIA driver a re-bind hands out a fresh back
+  buffer, so a capture read back solid black. Smallvil and anvil do not hit
+  this because they never leave the window surface.
+  Fix (`src/winit.rs`): winit now renders and captures into an offscreen
+  texture exactly like headless (output transform `Normal`), and the window
+  surface is used only for a final blit plus swap. `bind`/`submit`/surface
+  errors stop the loop with a log line instead of panicking; a lost context
+  cannot be recreated here, so it exits cleanly.
+  Verified on KWin/NVIDIA 580 (unlocked): ran 3 minutes with no error beyond
+  the sync warning below; ghostty and `examples/testclient` rendered; captures
+  are not uniform and match headless (ghostty: 481 vs 493 distinct colours at
+  1856x1160, identical top-third mean); a trusted overlay was drawn
+  (`--dump-overlay` frame shows it) and a client capture taken while it was up
+  was byte-identical to the one before. Re-checked independently with the two
+  views side by side: the compositor's own frame has the overlay card
+  (24,24,32) over a scrim that dims the scene to ~45% (bars 230,30,30 ->
+  104,14,14; clear 25,25,25 -> 11,11,11), while the client's capture at the
+  same moment shows undimmed bars and no card. The client cannot even infer
+  that a prompt is up by noticing the dimming.
+  Still untested on winit: the orientation of the window as the host shows it
+  (the blit uses `Flipped180`, copied from Smithay's convention; capture reads
+  the offscreen texture and is upright, but I could not read the window back:
+  `glReadPixels` on the window surface returned zeros even after a plain
+  clear, and a host screenshot would have captured the user's desktop);
+  window resize; scale factors other than 1; keyboard/pointer input through
+  the host window; host-side screenshots showing the overlay.
+- The startup log line `eglCreateSyncKHR ... EGL_SYNC_NATIVE_FENCE_FD_ANDROID
+  specified valid fd but EGL_SYNC_STATUS is also being set` comes from Smithay
+  probing native-fence support on the NVIDIA driver once at init. It is logged
+  once, and rendering, capture and swap work afterwards, so it does not matter
+  in practice. It is Smithay's call, not ours.
 - Without a window, nothing draws. An empty compositor captures as one flat
   colour (the clear colour, 25,25,25). That is correct, not a failure.
 
@@ -149,4 +182,4 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 - No cursor capture (`paint_cursors`), no toplevel capture source, no
   rotated output.
 - Capture is served on the next redraw, so a request waits up to one frame.
-- Tests: the glass/switcher tests above and the trusted-path tests below; no test of the plain capture path beyond the manual runs in `demos/phase-0` and the control capture in `tests/trusted.rs`. The winit backend has no test at all.
+- Tests: the glass/switcher tests above and the trusted-path tests below; no test of the plain capture path beyond the manual runs in `demos/phase-0` and the control capture in `tests/trusted.rs`. The winit backend has no automated test (it needs a host window); it was checked by hand.

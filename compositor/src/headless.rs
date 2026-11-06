@@ -1,9 +1,7 @@
 //! Headless backend: no host window. A surfaceless EGL context and an offscreen
 //! texture stand in for the winit window, and a timer stands in for the host's
-//! frame callbacks. It exists because the winit backend blocks in
-//! `eglSwapBuffers` whenever the host compositor does not present its window
-//! (screen locked, window hidden), which stalls every client. Capture goes
-//! through the same `render_and_capture` as the winit backend.
+//! frame callbacks. Capture goes through the same `render_and_capture` as the
+//! winit backend (which also renders offscreen).
 
 use std::time::Duration;
 

@@ -40,7 +40,7 @@ pub fn render_and_capture(
         }
     }
     if !done {
-        smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
+        if let Err(e) = smithay::desktop::space::render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
             output,
             renderer,
             framebuffer,
@@ -50,8 +50,9 @@ pub fn render_and_capture(
             &[],
             tracker,
             CLEAR,
-        )
-        .unwrap();
+        ) {
+            tracing::error!("scene render failed: {e:?}");
+        }
     }
     state.serve_pending(renderer, framebuffer, size, state.start_time.elapsed());
     // The trusted overlay goes on last, after captures were served from the
