@@ -47,6 +47,7 @@ build() {
   (cd "$ROOT/controller" && go build -o "$BIN/" ./cmd/controllerd ./cmd/controller \
      && CGO_ENABLED=0 go build -o "$BIN/aurora-preflight" ./cmd/aurora-preflight) || die "controller build failed"
   (cd "$ROOT/shell" && GOWORK=off go build -o "$BIN/aurora" ./cmd/aurora && GOWORK=off go build -o "$BIN/powerbox" ./cmd/powerbox) || die "shell build failed"
+  (cd "$ROOT/index" && go build -o "$BIN/indexd" ./cmd/indexd) || die "indexd build failed"
   (cd "$ROOT/apps/lumen" && go build -o bin/lumen ./cmd/lumen && go build -o "$BIN/genimage" ./cmd/genimage) || die "lumen build failed"
   if [ $COMPOSITOR = 1 ]; then
     (cd "$ROOT/compositor" && cargo build --release --examples 2>&1 | tail -1) || die "compositor build failed"
@@ -59,7 +60,7 @@ build() {
 }
 if [ $BUILD = 1 ] || [ $BUILD_ONLY = 1 ]; then build; fi
 [ $BUILD_ONLY = 1 ] && { say "built into $BIN"; exit 0; }
-for b in busd bus domain controllerd controller aurora aurora-preflight; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
+for b in busd bus domain controllerd controller aurora aurora-preflight indexd; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
 [ $COMPOSITOR = 0 ] || { [ -x "$COMP" ] || die "compositor not built: run without --no-build, or pass --no-compositor"; }
 [ $HAIKU = 0 ] || [ -x "$LEDGER" ] || HAIKU=0
 
@@ -142,6 +143,19 @@ start controllerd "$RUN/controllerd.log" "$BIN/controllerd" --apps "$APPS" --dom
   --approval-timeout "$APPROVAL" $ISOLATION "${COMPFLAGS[@]}"
 waitfor controllerd 100 grep -q 'registered service' "$RUN/controllerd.log" || { cat "$RUN/controllerd.log"; exit 1; }
 
+# indexd turns the provenance events controllerd publishes into live queries.
+# It is started after controllerd only so its log reads in causal order; it
+# subscribes, so ordering does not actually matter.
+mkdir -p "$RUN/index/queries"
+cat > "$RUN/index/queries/images-today.query" <<'Q'
+# Seeded by aurora-up so `aurora query` has something to show.
+title: Images written today
+mime: image/*
+since: today
+Q
+start indexd "$RUN/indexd.log" "$BIN/indexd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/index"
+waitfor indexd 100 grep -q 'serving "index"' "$RUN/indexd.log" || { cat "$RUN/indexd.log"; exit 1; }
+
 HAIKU_UP=0
 if [ $HAIKU = 1 ]; then
   start "haiku_ledger" "$RUN/haiku.out" "$LEDGER"
@@ -168,6 +182,7 @@ cat <<EOF
 == Aurora is up
    busd          pid $(pidn busd)   $AURORA_BUS_SOCK
    controllerd   pid $(pidn controllerd)   registry service on the bus; approvals via $APPROVER
+   indexd        pid $(pidn indexd)   live queries over provenance (no capability filter; see index/README.md)
 EOF
 [ $COMPOSITOR = 1 ] && cat <<EOF
    compositor    pid $(pidn compositor)   headless $SIZE, wayland display $RUN/xdg/$WL
@@ -183,7 +198,7 @@ cat <<EOF
 == Try it (in another terminal)
    source $RUN/env          # puts the tools on PATH and points them at this stack
    aurora apps; aurora verbs --accepts image/png
-   genimage /tmp/photo.png && aurora open /tmp/photo.png --verb resize@v1 --arg width=300
+   genimage /tmp/photo.png && aurora open /tmp/photo.png --verb resize@v1 --app org.aurora.lumen --arg width=300
    controller provenance /tmp/photo.resize.png --verify
 EOF
 if [ $COMPOSITOR = 1 ]; then cat <<EOF
@@ -199,7 +214,9 @@ EOF
 EOF
 fi
 [ $HAIKU_UP = 1 ] && say "   bus send haiku-ledger add@v1 '{\"label\":\"coffee\",\"cents\":350}'"
-say "   bus inspect; bus log | tail"
+say "   bus inspect; bus log | tail
+   aurora query; aurora query run images-today --watch   # then run the open above again
+   aurora activity                                        # the whole recorded history, correlated"
 say
 say "Ctrl-C here stops everything and cleans up."
 
