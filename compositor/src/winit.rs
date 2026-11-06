@@ -1,45 +1,107 @@
 //! Winit backend: a real window on the host, for seeing the desktop.
 //!
-//! It renders the scene straight into the window surface and swaps. There is
-//! no offscreen pass, which costs it the effects pipeline and frame capture.
+//! Two EGL contexts, because of one driver bug.
 //!
-//! Why: binding an offscreen texture makes Smithay call `eglMakeCurrent` with
-//! no surface (`GlesRenderer::bind` for a texture, `wait`, `map_texture`,
+//! Binding an offscreen texture makes Smithay call `eglMakeCurrent` with no
+//! surface (`GlesRenderer::bind` for a texture, `wait`, `map_texture`,
 //! `with_context`). On this host -- NVIDIA 580, KWin, PLATFORM_WAYLAND_KHR --
 //! re-binding the window surface afterwards hands out a back buffer that
 //! `eglSwapBuffers` does not present. Every call returns success and the
-//! window stays blank, so nothing in a log reveals it.
+//! window stays blank. See `examples/winit_bisect.rs` (phases A-D) and
+//! `examples/winit_red.rs`.
 //!
-//! This was bisected with `examples/winit_bisect.rs`, which draws a colour
-//! four ways: clearing the window directly is visible; the same clear with an
-//! offscreen texture bound first is not, and neither is a blit from an
-//! offscreen, nor one with an explicit surfaceless `make_current`. Only the
-//! phase that never goes surfaceless appears on screen. `examples/winit_red.rs`
-//! is the matching baseline: a bare clear-and-swap, which is visible, proving
-//! the window path itself works here.
+//! So the window's context (A, owned by the winit backend) never goes
+//! surfaceless: per frame it binds the window, draws ONE texture over it and
+//! swaps. All other work happens in context B, a second `EGLContext` shared
+//! with A, driving its own `GlesRenderer`: the scene, the effects pipeline,
+//! capture read-back and the trusted overlay, exactly as headless does
+//! (`render::render_and_capture`), into a texture B owns. Shared contexts
+//! share texture objects, so A samples B's texture.
 //!
-//! So: use `--headless` for effects, capture and the test suites; use winit to
-//! look at the thing. Fixing this properly needs a second, shared EGL context
-//! so the window's context never goes surfaceless.
+//! Client buffers (shm/dmabuf imports) are imported by B only: the scene is
+//! built from B's renderer, and Smithay caches imports per renderer context
+//! id. A never sees a client surface.
+//!
+//! Ordering: B's work is finished (`glFinish`) before A binds the window, so
+//! the window is never left unbound at swap time and A reads a complete
+//! texture.
+//!
+//! Orientation: the output transform is `Normal`, like headless, so capture
+//! output is identical to headless. The texture holds the scene in Smithay's
+//! texture orientation; A draws it with a `Flipped180` frame transform, which
+//! is what a direct render into a window needs (GL's origin is bottom-left,
+//! the window's top-left) -- the same transform the direct path used.
+//!
+//! If B cannot be created, this falls back to rendering straight into the
+//! window (no effects, no capture), the previous behaviour.
 
 use smithay::{
     backend::{
         SwapBuffersError,
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
+        allocator::Fourcc,
+        egl::EGLContext,
+        renderer::{
+            Bind, Frame, Offscreen, Renderer,
+            damage::OutputDamageTracker,
+            gles::{GlesRenderer, GlesTarget, GlesTexture},
+        },
         winit::{self, WinitEvent},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Physical, Rectangle, Transform},
+    utils::{Buffer as BufferCoords, Physical, Rectangle, Size, Transform},
 };
 
 use crate::{Aurora, render};
+
+/// Context B's half of the frame: its renderer and the texture it draws into.
+struct Offscreen2 {
+    renderer: GlesRenderer,
+    target: GlesTexture,
+    size: Size<i32, Physical>,
+}
+
+/// A second renderer on an EGL context shared with the window's.
+fn make_offscreen(window_renderer: &GlesRenderer, size: Size<i32, Physical>) -> Result<Offscreen2, Box<dyn std::error::Error>> {
+    let a = window_renderer.egl_context();
+    let ctx = EGLContext::new_shared(a.display(), a)?;
+    let mut renderer = unsafe { GlesRenderer::new(ctx)? };
+    let target = new_target(&mut renderer, size)?;
+    Ok(Offscreen2 { renderer, target, size })
+}
+
+fn new_target(r: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<GlesTexture, Box<dyn std::error::Error>> {
+    Ok(r.create_buffer(Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((size.w, size.h)))?)
+}
+
+/// Draw `texture` (made by another context) over the whole window. A's only job.
+pub fn present_texture(
+    renderer: &mut GlesRenderer,
+    window: &mut GlesTarget<'_>,
+    texture: &GlesTexture,
+    size: Size<i32, Physical>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let full = Rectangle::<i32, Physical>::from_size(size);
+    let src = Rectangle::<f64, BufferCoords>::from_size((size.w as f64, size.h as f64).into());
+    let mut f = renderer.render(window, size, Transform::Flipped180)?;
+    f.render_texture_from_to(texture, src, full, &[full], &[], Transform::Normal, 1.0, None, &[])?;
+    let _ = f.finish()?;
+    Ok(())
+}
 
 pub fn init_winit(
     event_loop: &mut EventLoop<Aurora>,
     state: &mut Aurora,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    let win_size = backend.window_size();
+    let mut off = match make_offscreen(backend.renderer(), win_size) {
+        Ok(o) => Some(o),
+        Err(e) => {
+            tracing::warn!("winit: no second EGL context ({e}); drawing straight into the window, no effects or capture");
+            None
+        }
+    };
 
     let mode = Mode { size: backend.window_size(), refresh: 60_000 };
     let output = Output::new(
@@ -53,9 +115,11 @@ pub fn init_winit(
         },
     );
     let _global = output.create_global::<Aurora>(&state.display_handle);
-    // Flipped180 is Smithay's convention for a winit window (anvil does the
-    // same): GL's origin is bottom-left, the window's is top-left.
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    // With the offscreen pass the output is Normal, as in headless; the window
+    // flip happens in `present_texture`. The direct fallback draws into the
+    // window itself and needs Smithay's winit convention, Flipped180.
+    let transform = if off.is_some() { Transform::Normal } else { Transform::Flipped180 };
+    output.change_current_state(Some(mode), Some(transform), None, Some((0, 0).into()));
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
 
@@ -76,17 +140,49 @@ pub fn init_winit(
                     return;
                 }
                 let full = Rectangle::<i32, Physical>::from_size(size);
-                // One bind, one render, one swap, and nothing in between that
-                // could make the context current without the surface.
-                let drew = match backend.bind() {
-                    Ok((renderer, mut window)) => {
-                        render::render_direct(state, renderer, &mut window, &output, &mut damage_tracker, size);
-                        true
+                let drew = if let Some(o) = off.as_mut() {
+                    // 1. All of B's work, finished.
+                    if o.size != size {
+                        match new_target(&mut o.renderer, size) {
+                            Ok(t) => { o.target = t; o.size = size; }
+                            Err(e) => tracing::error!("winit: cannot resize the offscreen target: {e}"),
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("winit: cannot bind the window, stopping: {e}");
-                        state.loop_signal.stop();
-                        false
+                    if o.size == size {
+                        match o.renderer.bind(&mut o.target) {
+                            Ok(mut fb) => render::render_and_capture(state, &mut o.renderer, &mut fb, &output, &mut damage_tracker, size),
+                            Err(e) => tracing::error!("winit: cannot bind the offscreen target: {e}"),
+                        }
+                        // Make the shared texture complete before A samples it.
+                        let _ = o.renderer.with_context(|gl| unsafe { gl.Finish() });
+                    }
+                    // 2. Only now A: bind the window, one texture, swap.
+                    match backend.bind() {
+                        Ok((renderer, mut window)) => {
+                            if let Err(e) = present_texture(renderer, &mut window, &o.target, size) {
+                                tracing::error!("winit: drawing the frame into the window failed: {e}");
+                            }
+                            true
+                        }
+                        Err(e) => {
+                            tracing::error!("winit: cannot bind the window, stopping: {e}");
+                            state.loop_signal.stop();
+                            false
+                        }
+                    }
+                } else {
+                    // One bind, one render, one swap, and nothing in between that
+                    // could make the context current without the surface.
+                    match backend.bind() {
+                        Ok((renderer, mut window)) => {
+                            render::render_direct(state, renderer, &mut window, &output, &mut damage_tracker, size);
+                            true
+                        }
+                        Err(e) => {
+                            tracing::error!("winit: cannot bind the window, stopping: {e}");
+                            state.loop_signal.stop();
+                            false
+                        }
                     }
                 };
                 if drew {

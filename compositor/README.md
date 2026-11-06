@@ -112,7 +112,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 - A cooperating client learns a prompt exists: it receives `wl_keyboard.leave` when the overlay rises and `enter` when it falls. Not hiding that is the price of not leaving stuck keys.
 - Look-alikes are not prevented. A client can draw its own window that looks like this prompt. The real one differs only in that it is above everything, swallows keys and the client's focus is lost; the user has no secret or secure-attention key to tell them apart, and nothing in the compositor stops a client mimicking the layout.
 - Keys are matched by keysym of the active layout (`a`, `d`, Escape). Nothing shows that a human pressed it: key events come from the backend. Clients have no virtual-keyboard or input-method protocol here (not advertised), but on a real session host-level injection (uinput, the host compositor under winit) is outside what this compositor sees.
-- On winit there is no capture at all (see Known limits), so there is nothing there for the overlay to leak into; the exclusion property is the headless path's, and that is where it is tested. The host compositor can still screenshot the window, overlay included.
+- On winit capture runs through the same code as headless (second EGL context, see Known limits), but the exclusion property is only tested on the headless path. The host compositor can still screenshot the window, overlay included.
 - No dmabuf, cursor capture or toplevel capture exist, so there is nothing else to read the overlay today; that is a fact about the current feature set, not a guarantee.
 
 **Test and demo affordances (loud on purpose).**
@@ -127,7 +127,7 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 ## Known limits of the backends
 
-- **winit shows the desktop; it cannot do effects or capture.** Three wrong
+- **winit needs two EGL contexts.** Three wrong
   diagnoses preceded the real one, so the evidence is written down here.
   First it was blamed on a locked host screen: wrong, it failed the same way
   unlocked. Then on `submit().unwrap()` panicking after
@@ -147,19 +147,27 @@ The decision comes only from the keyboard, never from the socket: nothing on the
   Only the phase that never goes surfaceless appears. `examples/winit_red.rs`
   is the baseline it is measured against: a bare clear-and-swap, visible,
   which proves the window path itself works here.
-  So `src/winit.rs` renders the scene and the trusted overlay straight into
-  the window surface and swaps, with nothing in between that could make the
-  context current without a surface (`render::render_direct`). Queued capture
-  frames are failed rather than left waiting (`fail_pending`).
-  What that costs winit: the effects pipeline (blur, the switcher) and frame
-  capture, both of which need render-to-texture. Use `--headless` for those
-  and for every test suite; use winit to look at the thing. A proper fix needs
-  a second, shared EGL context so the window's context never goes surfaceless.
-  Verified by eye on KWin/NVIDIA 580: two clients mapped at (0,0) appear in
-  the window's upper-left corner, so the scene is visible and upright under
-  the `Flipped180` output transform.
-  Still untested on winit: resize, scale factors other than 1, and
-  keyboard/pointer input through the host window.
+  So `src/winit.rs` uses two contexts. The window's context A only ever
+  binds the window, draws one texture over it and swaps; it never goes
+  surfaceless. A second context B, shared with A (`EGLContext::new_shared`),
+  with its own `GlesRenderer`, does everything else through the same
+  `render::render_and_capture` as headless: scene, effects, capture read-back,
+  trusted overlay, into a texture B owns, finished with `glFinish` before A
+  samples it. B alone imports client buffers; A never sees a client surface.
+  The output transform is `Normal` as in headless, and A applies the
+  window flip (`Flipped180` frame transform). If B cannot be created winit
+  falls back to the old direct render (no effects, no capture).
+  Checked without a screen: `examples/winit_shared_check.rs` (B's texture read
+  back through A's window, exact colour), and `aurora-capture` against a winit
+  compositor decoding to the same pixels as headless, glass included.
+  Checked by eye on KWin/NVIDIA 580: two clients mapped at (0,0) are visible
+  in the window, upright, with the two-context path live -- so the window
+  presents and the blit transform is right. `BISECT_PHASES=AE
+  ./target/release/examples/winit_bisect` re-runs that check in isolation:
+  RED (direct baseline) then CYAN (two-context path), 3s each, both visible.
+  Still untested on winit: resize, scale factors other than 1, keyboard and
+  pointer input through the host window, the fallback path when B cannot be
+  created, and frame pacing across the B-to-A switch.
 - The startup log line `eglCreateSyncKHR ... EGL_SYNC_NATIVE_FENCE_FD_ANDROID
   specified valid fd but EGL_SYNC_STATUS is also being set` comes from Smithay
   probing native-fence support on the NVIDIA driver once at init. It is logged
