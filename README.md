@@ -1,5 +1,91 @@
 # Aurora
 
+## Quickstart
+
+From a clean checkout to driving the system by hand. Needs `go`, `cargo`, `bwrap`, `socat` and `python3`; `cmake` and `ninja` are only for the Haiku app (left out if missing). No root and no installs.
+
+    ./aurora-up                  # builds everything (first time: minutes), starts the stack, stays in the foreground
+
+It prints what is running, where each socket is, and the commands to try. Leave it running; Ctrl-C stops all of it and removes its domains, sockets and temp files. In a second terminal:
+
+    source /tmp/aurora-up-$(id -u)/env       # PATH and socket paths for this stack (note: it also sets XDG_RUNTIME_DIR)
+    aurora apps                              # apps and verbs come from manifests
+    aurora verbs --accepts image/png
+    genimage /tmp/photo.png                  # a 1200x800 test image
+    aurora open /tmp/photo.png --verb resize@v1 --arg width=300     # Lumen, in its own domain with its own uid
+    controller provenance /tmp/photo.resize.png --verify            # grants, cap ids, attested domain; checked with the daemon
+
+Approvals and the compositor (headless: there is no window, and no keyboard, so keys are typed into a test socket):
+
+    key() { echo "key $1" | socat - UNIX-CONNECT:$AURORA_INPUT_SOCK; }
+    controller invoke org.aurora.demo delete@v1 --input /tmp/photo.png --output /tmp/gone.png &   # destructive: blocks
+    sleep 2; "$AURORA_CAPTURE" --display "$AURORA_WAYLAND" -o /tmp/during.png   # a capture: no prompt in it
+    key a                                    # the compositor drew the prompt and reads the key; 'd' denies
+    echo "down alt" | socat - UNIX-CONNECT:$AURORA_INPUT_SOCK; key Tab          # the Flip 3D switcher
+    "$AURORA_CAPTURE" --display "$AURORA_WAYLAND" -o /tmp/switcher.png
+    key Escape; echo "up alt" | socat - UNIX-CONNECT:$AURORA_INPUT_SOCK         # close it
+
+The Haiku app: `aurora-up` starts `haiku_ledger`, a BApplication/BHandler serving verbs on the bus.
+
+    bus send haiku-ledger add@v1 '{"label":"coffee","cents":350}'
+    bus send haiku-ledger list@v1 '{}'
+    bus inspect; bus log | tail; bus replay --check "${XDG_RUNTIME_DIR%/xdg}/buslog"
+
+The scripted version of all this, with every step asserted, is `demos/full-stack/run.sh` (about 20 seconds, exits non-zero on any failure; it saves captures into `demos/full-stack/`). `aurora-up -h` lists the flags (`--no-compositor`, `--no-haiku`, `--no-fixtures`, `--require-isolation`, `--no-test-input`, ...).
+
+What each piece is for:
+
+- `busd`: the message bus. Typed envelopes, identity from the kernel (uid, cgroup, namespaces), minted capability handles, a log that can be replayed and checked.
+- `bus`: command-line client for the bus (send, subscribe, inspect, log, replay).
+- `domain`: creates bwrap domains, each with its own subuid, grants and cgroup. A library and CLI; it is not a daemon.
+- `controllerd`: loads app manifests, registers domains with the bus, runs verbs in domains granted exactly their input and output, writes provenance, gates destructive verbs on approval.
+- `controller`: its command-line client (invoke, decide, provenance --verify).
+- `aurora`: the launcher a person drives: open, chain, verbs, apps, watch, and `--pick` (the powerbox file picker, which needs a terminal).
+- `aurora-compositor`: a headless Wayland compositor: real screen capture, glass, the Flip 3D switcher, and the approval overlay that clients cannot see.
+- `lumen`: the demo image app (resize, export, histogram), run inside a domain by the controller.
+- `haiku_ledger`: a Haiku-style application on the `kits/` BeOS primitives, exposed on the bus through a bridge.
+
+Troubleshooting on this host:
+
+- **winit is blocked by a locked screen.** The windowed backend stalls when the host does not present its window, so the compositor runs `--headless`. `aurora-up` does that for you; the winit path was never verified to deliver a capture.
+- **`foot` is absent**, so `ghostty` is the terminal (`harness/nested-up` auto-detects it). Not a bug. To run a terminal in the compositor: `WAYLAND_DISPLAY=$XDG_RUNTIME_DIR/$AURORA_WAYLAND ghostty`, with `DISPLAY` unset.
+- **`capnp` and `zig` are absent on purpose.** The IDL choice (decision 0001) and libghostty are deferred; nothing here needs them.
+- **`domain limit --memory/--cpu` say NOT ENFORCED.** systemd delegates only `pids` to the user manager here; enforcing the rest needs root once.
+- **`aurora-up` says a stack is already running**: stop it, or use `--run DIR` for a second one. A stale run dir from a crash is swept on the next start.
+- **An approval never appears**: it needs the compositor (default) or `aurora watch` in a terminal (with `--no-compositor`). Unanswered prompts deny after `--approval-timeout`.
+
+## Status
+
+What works, what is partial, what is not built. Evidence is in each component's README and `demos/`; decisions are in `contracts/decisions/`.
+
+**Works** (run end to end by `demos/full-stack/run.sh` unless noted)
+- Bus: typed envelopes, per-domain attested identity (uid, cgroup, namespaces), minted capability handles, sealed-memfd segments, a log, invariant-checked replay (0001, 0006; `bus/README.md`). Segment contents are not replayable.
+- Domains on Linux without root: bwrap, one subuid each, grants, cgroups, pids limit, btrfs snapshots where available (`adapter/linux/README.md`; snapshots not in the walkthrough).
+- Controller: manifests, verbs run in domains granted exactly input and output, provenance with grants, cap ids and approval, `--verify` against the daemon, powerbox tickets (0002, 0007; the powerbox is covered by `shell/demo-powerbox.sh`, not the walkthrough).
+- Launcher: apps, verbs by type, open, chain (chain and `--pick` are not in the walkthrough).
+- Lumen: resize, export, histogram on real PNG and JPEG.
+- Compositor, headless: real `ext-image-copy-capture-v1` frames, glass (a measured blur, not a tint), Flip 3D and grid switchers, a trusted approval overlay that is excluded from captures by draw order (0003).
+- Kits: BeOS primitives, a BApplication, and a Haiku app serving a bus verb through a bridge (0008). Haiku's own `Message.cpp` and `Looper.cpp` compile in `kits/haiku-compat/`; that is not part of the stack and not in the walkthrough.
+
+**Partial**
+- Approval is a compositor prompt only on the headless backend, with keys injected through a test-only socket. A real keyboard has never answered one. winit was not verified.
+- Isolation is a mount namespace and a distinct uid. No Landlock, no seccomp, no network filtering (a net grant shares the host network), memory and CPU limits are recorded but not enforced here.
+- Compositor: one output, scale 1, shm capture only, no XWayland, no window management beyond move and resize, no animation, no client-to-domain binding.
+- Provenance is a record the controller writes about itself; `--verify` proves the daemon issued the handles, not that the app used them.
+- Ginux: the harness (`harness/ginux-up`) is written and has never run; decision 0005 changed its goal.
+- Phase 0's recorded exit demo is still outstanding (`demos/phase-0/`).
+
+**Not built**: a shell beyond the CLI launcher (dock, notification area, layer-shell UI), a theme engine, the indexer and agent gateway, the kernel adapter on Ginux, app installation and consent, signed manifests, ports as bus endpoints (0008 Stage A), an app_server for Haiku apps, bare metal.
+
+**The security ceiling, plainly.**
+- **One uid owns everything.** Domains, the bus, the controller and the compositor all run as the same host user. A same-user host process can `setns` into a domain's namespaces, join its cgroup, take its subuid and speak to the bus as that domain (attack 8g, `bus/README.md`, `adapter/linux/README.md`). Per-domain uids stop the cheap attacks, not that one. Closing it needs a uid the user does not control (root-made namespaces) or a policy denying `setns` to the user's other processes. Nothing here defends a domain against its own owner.
+- **The powerbox proves key possession, not a human.** A ticket says its holder had the 0600 key; any same-user process that can read the key can mint one, or drive the picker's pty. It is not a trusted picker (0007).
+- **0003's "which domain asked" is half met.** The compositor checks that the domain the controller names exists in busd and is attested, and says so on the prompt (VERIFIED or UNVERIFIED). It cannot check that the request came from that domain or that the invoke runs in it; the controller says so and any same-user process on the trusted socket can say the same. The controller likewise authenticates the compositor only by uid and cgroup, so a same-user process that binds the socket first can answer `allow`. The key press is not proven to be a person's, and a look-alike window is not prevented (0003; `compositor/README.md`, "Trusted path").
+
+This is a research prototype that demonstrates mechanisms and measures their limits. It is not a security boundary against a same-user attacker.
+
+## About
+
 Aurora is a toy desktop OS that explores what a desktop could be in 2026, starting from BeOS and Haiku's ideas: one integrated design across the layers people actually touch. Most of the work lives in userspace, on a message bus that apps, the shell and agents share, with apps described by typed-verb manifests, isolated in domains, and drawn by a compositor that owns animation and trusted UI. The first target is openSUSE Tumbleweed on the host GPU, behind a small kernel-adapter interface; a parallel track brings the same userland up on Ginux. Ginux began as an independent Rust kernel but is now a userspace kernel that runs as an ordinary Linux process, providing isolated Linux-compatibility domains; see decision 0005. Running on bare metal, where the kernel-to-pixels framing would hold in full, remains a goal but is deferred.
 
 Aurora is the working name for this repository; the plan still lists the project name as an open question.
@@ -21,6 +107,7 @@ The plan lives in `docs/` (`docs/toy-desktop-os-plan.md`) and is exported from a
 | `adapter/ginux/` | Kernel adapter, Ginux backend | Not fixed yet |
 | `ginux/` | Ginux kernel, as the git submodule `ginux/upstream` (https://github.com/gmkurtzer/ginux.git, pinned at `3f2fe7df`). Ginux is a userspace kernel that runs as an ordinary Linux process (decision 0005). | Rust |
 | `harness/` | Phase 0 bash scripts: `toolchain-report`, `nested-up`, `ginux-up` | Bash |
+| `aurora-up`, `demos/full-stack/` | The one-command stack launcher, and the scripted full-stack walkthrough with its captures | Bash |
 | `demos/` | Phase recordings, kept as exit evidence (tracked on purpose) | Video |
 | `docs/` | The plan (`toy-desktop-os-plan.md`) and the phase-sequence diagram (`revised-phase-sequence.png`) | Markdown, PNG |
 

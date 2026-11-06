@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# aurora-up: build what is needed and run the whole Aurora stack in the
+# foreground: busd, a headless compositor with a small scene, controllerd (wired
+# to the compositor's trusted socket and the domain binary) and, if built, the
+# Haiku ledger app on the bus. Ctrl-C (or SIGTERM) stops everything and removes
+# the domains, cgroups, sockets and temp files it made.
+#
+#   aurora-up [flags]         start (default run dir /tmp/aurora-up-UID)
+#   aurora-up --env           print `export` lines for a shell that wants to drive a running stack
+#   aurora-up --build-only    build and exit
+# Flags: --no-compositor --no-haiku --no-windows --no-fixtures --no-build
+#        --require-isolation --no-test-input --dump-overlay FILE --size WxH
+#        --approval-timeout DUR --run DIR -h
+set -uo pipefail
+ROOT=$(cd "$(dirname "$0")" && pwd)
+BIN=$ROOT/build/bin
+COMP=$ROOT/compositor/target/release/aurora-compositor
+EXAMPLES=$ROOT/compositor/target/release/examples
+CAPTURE=$ROOT/harness/capture/target/release/aurora-capture
+LEDGER=$ROOT/kits/build/haiku_ledger
+RUN=${AURORA_RUN:-/tmp/aurora-up-$(id -u)}
+COMPOSITOR=1 HAIKU=1 WINDOWS=1 FIXTURES=1 BUILD=1 BUILD_ONLY=0 ISOLATION= TESTINPUT=1 DUMP= SIZE=1280x800 APPROVAL=60s
+
+while [ $# -gt 0 ]; do case $1 in
+  --no-compositor) COMPOSITOR=0;; --no-haiku) HAIKU=0;; --no-windows) WINDOWS=0;;
+  --no-fixtures) FIXTURES=0;; --no-build) BUILD=0;; --build-only) BUILD_ONLY=1;;
+  --require-isolation) ISOLATION=--require-isolation;; --no-test-input) TESTINPUT=0;;
+  --dump-overlay) DUMP=$2; shift;; --size) SIZE=$2; shift;; --approval-timeout) APPROVAL=$2; shift;;
+  --run) RUN=$2; shift;;
+  --env) [ -f "$RUN/env" ] && cat "$RUN/env" || { echo "aurora-up: no running stack in $RUN" >&2; exit 1; }; exit 0;;
+  -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  *) echo "aurora-up: unknown flag $1 (try -h)" >&2; exit 2;;
+esac; shift; done
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'aurora-up: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- build
+build() {
+  say "== build"
+  mkdir -p "$BIN"
+  (cd "$ROOT/bus" && go build -o "$BIN/" ./cmd/busd ./cmd/bus) || die "bus build failed"
+  (cd "$ROOT/adapter/linux" && go build -o "$BIN/domain" ./cmd/domain) || die "domain build failed"
+  (cd "$ROOT/controller" && go build -o "$BIN/" ./cmd/controllerd ./cmd/controller) || die "controller build failed"
+  (cd "$ROOT/shell" && GOWORK=off go build -o "$BIN/aurora" ./cmd/aurora && GOWORK=off go build -o "$BIN/powerbox" ./cmd/powerbox) || die "shell build failed"
+  (cd "$ROOT/apps/lumen" && go build -o bin/lumen ./cmd/lumen && go build -o "$BIN/genimage" ./cmd/genimage) || die "lumen build failed"
+  if [ $COMPOSITOR = 1 ]; then
+    (cd "$ROOT/compositor" && cargo build --release --examples 2>&1 | tail -1) || die "compositor build failed"
+    (cd "$ROOT/harness/capture" && cargo build --release 2>&1 | tail -1) || die "capture build failed"
+  fi
+  if [ $HAIKU = 1 ]; then
+    if cmake -S "$ROOT/kits" -B "$ROOT/kits/build" -G Ninja >/dev/null 2>&1 && cmake --build "$ROOT/kits/build" >/dev/null 2>&1 && [ -x "$LEDGER" ]; then :
+    else say "   (kits build failed or cmake/ninja missing: the Haiku app will be left out)"; HAIKU=0; fi
+  fi
+}
+if [ $BUILD = 1 ] || [ $BUILD_ONLY = 1 ]; then build; fi
+[ $BUILD_ONLY = 1 ] && { say "built into $BIN"; exit 0; }
+for b in busd bus domain controllerd controller aurora; do [ -x "$BIN/$b" ] || die "$BIN/$b missing: run without --no-build"; done
+[ $COMPOSITOR = 0 ] || { [ -x "$COMP" ] || die "compositor not built: run without --no-build, or pass --no-compositor"; }
+[ $HAIKU = 0 ] || [ -x "$LEDGER" ] || HAIKU=0
+
+# ---------------------------------------------------------------- run dir
+PIDS=() NAMES=()
+export XDG_RUNTIME_DIR=$RUN/xdg AURORA_DOMAINS_DIR=$RUN/domains AURORA_BUS_SOCK=$RUN/bus.sock
+export AURORA_TRUSTED_SOCK=$RUN/xdg/aurora-trusted.sock AURORA_DOMAIN_BIN=$BIN/domain
+export AURORA_KITS_NS=up$$
+INPUT=$RUN/input.sock
+
+sweep() {  # destroy the domains of a (possibly dead) run, then its sockets and files
+  for d in "$RUN"/domains/*/; do [ -d "$d" ] && "$BIN/domain" destroy "$(basename "$d")" >/dev/null 2>&1; done
+  [ -f "$RUN/kitsns" ] && rm -f "/dev/shm/aurora-kits-$(id -u)-$(cat "$RUN/kitsns")"
+  rm -rf "$RUN"
+}
+if [ -f "$RUN/pid" ]; then
+  if kill -0 "$(cat "$RUN/pid")" 2>/dev/null; then die "a stack is already running (pid $(cat "$RUN/pid"), $RUN); stop it first or use --run DIR"; fi
+  say "(cleaning up a stale run in $RUN)"; sweep
+fi
+mkdir -p "$RUN" "$XDG_RUNTIME_DIR" && chmod 700 "$RUN" "$XDG_RUNTIME_DIR" || die "cannot create $RUN"
+echo $$ > "$RUN/pid"; echo "$AURORA_KITS_NS" > "$RUN/kitsns"
+
+CLEANED=0
+cleanup() {
+  [ $CLEANED = 1 ] && return; CLEANED=1; trap '' INT TERM
+  say; say "== shutting down"
+  for ((i=${#PIDS[@]}-1; i>=0; i--)); do
+    p=${PIDS[$i]}; kill "$p" 2>/dev/null && say "   stopped ${NAMES[$i]} ($p)"
+  done
+  for p in "${PIDS[@]:-}"; do [ -n "$p" ] && wait "$p" 2>/dev/null; done
+  jobs -p | xargs -r kill 2>/dev/null; wait 2>/dev/null
+  sweep; say "   removed domains, sockets and $RUN"
+}
+trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+
+start() {  # start NAME LOGFILE cmd...
+  local n=$1 log=$2; shift 2
+  "$@" >"$log" 2>&1 & PIDS+=($!); NAMES+=("$n")
+}
+waitfor() {  # waitfor DESC TIMEOUT_TENTHS cond...
+  local d=$1 t=$2; shift 2
+  for _ in $(seq "$t"); do "$@" && return 0; sleep 0.1; done
+  say "aurora-up: timed out waiting for $d" >&2; return 1
+}
+alive() { kill -0 "${PIDS[$1]}" 2>/dev/null; }
+
+# ---------------------------------------------------------------- start
+say "== starting (run dir $RUN)"
+start busd "$RUN/busd.log" "$BIN/busd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/buslog"
+waitfor busd 100 test -S "$AURORA_BUS_SOCK" || { cat "$RUN/busd.log"; exit 1; }
+
+WL=
+COMPFLAGS=()
+if [ $COMPOSITOR = 1 ]; then
+  cp -r "$ROOT/contracts/theme" "$RUN/theme"   # a copy: edit it and the compositor hot-reloads it
+  FLAGS=(--headless="$SIZE" --bus-socket "$AURORA_BUS_SOCK" --trusted-socket "$AURORA_TRUSTED_SOCK" --theme "$RUN/theme")
+  [ $TESTINPUT = 1 ] && FLAGS+=(--test-input "$INPUT")
+  [ -n "$DUMP" ] && FLAGS+=(--dump-overlay "$DUMP")
+  "$COMP" "${FLAGS[@]}" >"$RUN/compositor.out" 2>"$RUN/compositor.err" & PIDS+=($!); NAMES+=(compositor)
+  waitfor "compositor socket" 150 grep -q 'socket wayland' "$RUN/compositor.out" || { tail -5 "$RUN/compositor.err"; exit 1; }
+  WL=$(sed -n 's/^aurora-compositor: socket //p' "$RUN/compositor.out")
+  if [ $WINDOWS = 1 ] && [ -x "$EXAMPLES/testclient" ]; then
+    export WAYLAND_DISPLAY=$WL
+    start "scene: split window" "$RUN/win0.log" "$EXAMPLES/testclient" --size 400x500 --pattern split
+    waitfor "window 0" 100 grep -q enter "$RUN/win0.log"
+    start "scene: glass window" "$RUN/win1.log" "$EXAMPLES/testclient" --size 400x300 --pattern glass --rgb 255,255,255 --alpha 0.05
+    waitfor "window 1" 100 grep -q mapped "$RUN/win1.log"
+    if [ $TESTINPUT = 1 ]; then
+      printf 'move 0 100 50\nmove 1 200 150\n' | while read -r l; do echo "$l" | socat - "UNIX-CONNECT:$INPUT" >/dev/null; sleep 0.2; done
+    fi
+    unset WAYLAND_DISPLAY
+  fi
+  COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOCK")
+else
+  COMPFLAGS=(--no-compositor-approval)
+fi
+
+APPS=$ROOT/apps; [ $FIXTURES = 1 ] && APPS=$APPS,$ROOT/controller/testdata/apps
+start controllerd "$RUN/controllerd.log" "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" \
+  --approval-timeout "$APPROVAL" $ISOLATION "${COMPFLAGS[@]}"
+waitfor controllerd 100 grep -q 'registered service' "$RUN/controllerd.log" || { cat "$RUN/controllerd.log"; exit 1; }
+
+HAIKU_UP=0
+if [ $HAIKU = 1 ]; then
+  start "haiku_ledger" "$RUN/haiku.out" "$LEDGER"
+  waitfor "haiku_ledger" 100 grep -q READY "$RUN/haiku.out" && HAIKU_UP=1
+fi
+
+ISO="yes (bwrap domains, one subuid each)"
+grep -qiE 'unisolated|WITHOUT|not found' "$RUN/controllerd.log" && ISO="NO: see $RUN/controllerd.log"
+command -v bwrap >/dev/null || ISO="NO: bwrap not installed"
+
+# ---------------------------------------------------------------- env file and banner
+{
+  echo "export PATH=\"$BIN:\$PATH\""
+  for v in XDG_RUNTIME_DIR AURORA_DOMAINS_DIR AURORA_BUS_SOCK AURORA_TRUSTED_SOCK AURORA_DOMAIN_BIN AURORA_KITS_NS; do echo "export $v=\"${!v}\""; done
+  [ -n "$WL" ] && { echo "export AURORA_WAYLAND=\"$WL\""; echo "export AURORA_CAPTURE=\"$CAPTURE\""; }
+  [ $TESTINPUT = 1 ] && [ $COMPOSITOR = 1 ] && echo "export AURORA_INPUT_SOCK=\"$INPUT\""
+} > "$RUN/env"
+touch "$RUN/ready"
+
+pidn() { for i in "${!NAMES[@]}"; do [ "${NAMES[$i]}" = "$1" ] && { echo "${PIDS[$i]}"; return; }; done; }
+APPROVER="the bus (terminal prompt in 'aurora watch')"; [ $COMPOSITOR = 1 ] && APPROVER="the compositor's trusted overlay"
+cat <<EOF
+
+== Aurora is up
+   busd          pid $(pidn busd)   $AURORA_BUS_SOCK
+   controllerd   pid $(pidn controllerd)   registry service on the bus; approvals via $APPROVER
+EOF
+[ $COMPOSITOR = 1 ] && cat <<EOF
+   compositor    pid $(pidn compositor)   headless $SIZE, wayland display $RUN/xdg/$WL
+                 trusted socket  $AURORA_TRUSTED_SOCK
+EOF
+[ $COMPOSITOR = 1 ] && [ $TESTINPUT = 1 ] && say "                 test-input      $INPUT   (headless has no keyboard; keys go in here)"
+[ $HAIKU_UP = 1 ] && say "   haiku_ledger  a Haiku BApplication serving verbs add@v1 / list@v1 on the bus as service 'haiku-ledger'"
+say "   isolation     $ISO"
+say "   logs          $RUN/*.log, $RUN/*.out, $RUN/*.err"
+
+cat <<EOF
+
+== Try it (in another terminal)
+   source $RUN/env          # puts the tools on PATH and points them at this stack
+   aurora apps; aurora verbs --accepts image/png
+   genimage /tmp/photo.png && aurora open /tmp/photo.png --verb resize@v1 --arg width=300
+   controller provenance /tmp/photo.resize.png --verify
+EOF
+if [ $COMPOSITOR = 1 ]; then cat <<EOF
+   "\$AURORA_CAPTURE" --display "\$AURORA_WAYLAND" -o /tmp/screen.png     # a real frame from the compositor
+EOF
+  [ $TESTINPUT = 1 ] && cat <<EOF
+   key() { echo "key \$1" | socat - UNIX-CONNECT:\$AURORA_INPUT_SOCK; }
+   echo "down alt" | socat - UNIX-CONNECT:\$AURORA_INPUT_SOCK; key Tab    # open the Flip 3D switcher, then capture it
+   key Escape; echo "up alt" | socat - UNIX-CONNECT:\$AURORA_INPUT_SOCK    # close it
+   # approval: run a destructive verb, then press the key at the compositor's prompt:
+   controller invoke org.aurora.demo delete@v1 --input /tmp/photo.png --output /tmp/gone.png &
+   sleep 2; key a    # allow ('d' denies; it times out to deny in $APPROVAL)
+EOF
+fi
+[ $HAIKU_UP = 1 ] && say "   bus send haiku-ledger add@v1 '{\"label\":\"coffee\",\"cents\":350}'"
+say "   bus inspect; bus log | tail"
+say
+say "Ctrl-C here stops everything and cleans up."
+
+while true; do
+  for i in "${!PIDS[@]}"; do
+    if ! alive "$i"; then
+      case "${NAMES[$i]}" in
+        busd|controllerd|compositor) say "aurora-up: ${NAMES[$i]} exited; see $RUN/"; exit 1;;
+      esac
+    fi
+  done
+  sleep 1 & wait $!
+done
