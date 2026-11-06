@@ -65,6 +65,22 @@ extern void debug_printf(const char *format, ...);
 #ifdef __cplusplus
 }
 #endif
+/* --- third batch (Interface Kit): Haiku OS.h pieces View.cpp/Window.cpp/MenuBar.cpp/ScrollBar.cpp name. See kits/interface/ --- */
+#ifdef __cplusplus
+extern "C" {
+#endif
+#define B_SYSTEM_TIMEBASE 0
+#ifndef B_CLONEABLE_AREA
+#define B_CLONEABLE_AREA (1 << 8)
+#endif
+extern status_t snooze_until(bigtime_t time, int timeBase);
+extern status_t rename_thread(thread_id thread, const char *newName);
+extern status_t send_data(thread_id thread, int32 code, const void *buffer, size_t bufferSize);
+extern int32 receive_data(thread_id *sender, void *buffer, size_t bufferSize);
+extern bool has_data(thread_id thread);
+#ifdef __cplusplus
+}
+#endif
 #include <stdio.h>
 #define UNIMPLEMENTED() printf("UNIMPLEMENTED %s\n", __PRETTY_FUNCTION__)  /* Vitruvian: headers/build/LinuxBuildCompatibility.h */
 #endif
