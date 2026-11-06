@@ -102,30 +102,41 @@ func causalOrder(orig, replayed []proto.Envelope) CheckResult {
 	return res
 }
 
+// state summarises every event of one topic or service: how many, and a
+// running hash chain over all their payloads in order. Changing, dropping,
+// adding or reordering any payload changes chain.
 type state struct {
 	count int
-	last  string
+	chain string
 }
 
-func (s state) String() string { return fmt.Sprintf("n=%d last=%s", s.count, s.last) }
+func (s state) String() string { return fmt.Sprintf("n=%d chain=%s", s.count, s.chain) }
 
+// hash is sha256 truncated to 16 bytes (128 bits), hex encoded.
 func hash(p []byte) string {
 	h := sha256.Sum256(p)
-	return hex.EncodeToString(h[:4])
+	return hex.EncodeToString(h[:16])
 }
 
-// finalState: a subscriber of a topic sees the same events, so the final
-// state of every topic (event count, last payload) must match; likewise for
-// every service (requests handled, last request). Original state comes from
-// the original log; replayed topic state from what the probe subscriber
-// actually received, service state from the replay daemon's log.
+// fold extends the chain with one payload. The previous chain value is a
+// fixed-width prefix, so the concatenation is unambiguous.
+func fold(prev string, payload []byte) string {
+	return hash(append([]byte(prev), payload...))
+}
+
+// finalState: a subscriber of a topic sees the same events in the same
+// order, so the state of every topic (event count, hash chain over every
+// payload in order) must match; likewise for every service (requests
+// handled, chain over every request). Original state comes from the original
+// log; replayed topic state from what the probe subscriber actually
+// received, service state from the replay daemon's log.
 func finalState(orig, replayed, delivered []proto.Envelope) CheckResult {
 	res := CheckResult{Name: "final state per subscriber"}
 	want, got := map[string]state{}, map[string]state{}
 	add := func(m map[string]state, key string, e proto.Envelope) {
 		s := m[key]
 		s.count++
-		s.last = hash(e.Payload)
+		s.chain = fold(s.chain, e.Payload)
 		m[key] = s
 	}
 	for _, e := range orig {
@@ -147,7 +158,7 @@ func finalState(orig, replayed, delivered []proto.Envelope) CheckResult {
 	var problems []string
 	for k, w := range want {
 		if g, ok := got[k]; !ok || g != w {
-			problems = append(problems, fmt.Sprintf("%s: want %v, got %v", k, w, got[k]))
+			problems = append(problems, fmt.Sprintf("%s diverged: want %v, got %v", k, w, got[k]))
 		}
 	}
 	for k := range got {

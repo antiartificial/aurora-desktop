@@ -32,8 +32,11 @@ evolution rules.
   (tested in `server/server_test.go`). The MVP domain string is
   `uid<uid>:<process name>` (kernel-reported uid, `/proc/<pid>/comm`); Phase 2's
   attested domain id replaces it via `Config.Resolver`.
-- `ts` is a hybrid logical clock: `<wall ns, 19 digits>-<counter, 10 digits>`,
-  monotonic per daemon, and string order equals time order.
+- `ts` is a hybrid logical clock: `<wall ns, 19 digits>-<counter, 20 digits>`,
+  monotonic per daemon, and string order equals time order. The counter is
+  a uint64 (20 digits), so it cannot wrap in practice while the wall clock is
+  stuck or stepping backwards (an earlier uint32 counter wrapped after 2^32
+  stamps and produced a lexically smaller timestamp).
 - `verb` must carry its major version (`resize@v1`).
 - `qos` defaults to `user-initiated`.
 - `caps` are opaque handles. Recipients get them. **The log stores only
@@ -61,6 +64,22 @@ the writer always serves the most urgent non-empty class. Routing never blocks
 on a slow subscriber. `server/load_test.go` shows it: with 8000 background
 messages backed up behind a stalled subscriber, the last of 100
 user-interactive messages arrives at position about 1200 instead of 8099.
+
+**Known design consequence: background traffic can starve.** The outbox is
+strict priority with no aging, as 0001 requires ("user-interactive never
+queues behind background"). So if a connection's recipient is continuously
+fed user-interactive, user-initiated or utility messages faster than it
+drains them, its queued background messages are never sent at all, for as
+long as that load lasts (they wait until the higher classes are empty, or
+until the 100,000 per-class cap drops newer ones). This is distinct from the
+drop cap below. If background progress ever matters, the fix is aging
+(promote a message after it has waited some bound); that changes the delivery
+policy and the QoS test that asserts it, so it has not been done.
+Observability only: `bus inspect` prints, per client, each class with a
+backlog (queued count and age of its oldest undelivered message) and the drop
+count; `bus inspect --json` has the same as `outbox` (indexed by rank, 0
+user-interactive to 3 background) and `dropped`. A background `oldest_age_ms`
+that keeps growing beside higher-class traffic is starvation.
 
 Log: `<data-dir>/seg-000001.jsonl`, `seg-000002.jsonl`, ... one JSON message per
 line, rotated at 4 MiB. Each segment's min/max time is kept in memory (rebuilt
@@ -109,8 +128,12 @@ probe subscribes to `**`, and compares **invariants, never bytes**:
 
 1. causal order: every message present once, per-sender order and
    request-before-response preserved;
-2. final state: per topic (event count, last payload) as received by the
-   probe subscriber, and per service (requests handled, last request);
+2. final state: per topic (event count and an order-sensitive hash chain
+   over every event payload, 128-bit hashes) as received by the probe
+   subscriber, and per service (requests handled, chain over every request).
+   Altering, dropping, adding or reordering any event on a topic changes the
+   chain, and the failure names the diverging topic. (An earlier version
+   hashed only the last payload and missed tampering with earlier events);
 3. the set of capability grants (sender, target, capability identity).
 
 Exit status 0 means pass, 1 means fail. Byte diffing is deliberately absent.
@@ -127,8 +150,10 @@ The end-to-end demo, which leaves no process behind, is `./demo.sh`.
 the log), request/response, typed errors, glob match and non-match, QoS
 ordering (unit and under load), ephemeral delivered but not logged, log query
 by topic and time (with segment rotation), handles never appear in the log,
-replay invariant check passes on a recorded session and fails on tampered ones,
-HLC monotonic and sortable, unknown envelope fields preserved.
+replay invariant check passes on a recorded session and fails on tampered ones
+(including middle-event payload edits and same-topic reordering),
+HLC monotonic and sortable (including across the old 2^32 counter wrap),
+outbox starvation stats, unknown envelope fields preserved.
 
 ## Implemented vs not built
 

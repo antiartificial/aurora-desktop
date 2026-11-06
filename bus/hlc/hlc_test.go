@@ -77,3 +77,26 @@ func TestConcurrentUnique(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestCounterPastFormer32BitWrapStaysMonotonic(t *testing.T) {
+	c := NewWithSource(func() int64 { return 1000 }) // wall stuck
+	for _, start := range []uint64{1<<32 - 2, 1<<64 - 3} {
+		c.last = Timestamp{Wall: 1000, Counter: start}
+		prev := c.last
+		for i := 0; i < 4 && prev.Counter < 1<<64-1; i++ {
+			ts := c.Now()
+			if !prev.Less(ts) || prev.String() >= ts.String() {
+				t.Fatalf("not monotonic across %d: %v then %v (%s, %s)", start, prev, ts, prev, ts)
+			}
+			back, err := Parse(ts.String())
+			if err != nil || back != ts {
+				t.Fatalf("round trip %v: %v %v", ts, back, err)
+			}
+			prev = ts
+		}
+	}
+	c.last = Timestamp{Wall: 1000, Counter: 1<<32 - 1}
+	if u := c.Update(Timestamp{Wall: 1000, Counter: 1<<32 - 1}); u.Counter != 1<<32 {
+		t.Fatalf("Update across 2^32: %v", u)
+	}
+}

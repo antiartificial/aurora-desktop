@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/antiartificial/aurora/bus/proto"
 )
@@ -33,5 +34,28 @@ func TestOutboxPriority(t *testing.T) {
 	}
 	if l, _ := o.pop(); string(l) != "bg0" {
 		t.Fatalf("background must stay FIFO, got %s", l)
+	}
+}
+
+// Strict priority starves background while higher classes keep arriving; the
+// stats must show it (queued count and a growing oldest age), without
+// changing the policy.
+func TestOutboxStatsExposeStarvation(t *testing.T) {
+	o := newOutbox()
+	o.push(proto.QoSBackground.Rank(), []byte("bg\n"))
+	time.Sleep(20 * time.Millisecond)
+	for i := 0; i < 50; i++ {
+		o.push(proto.QoSInteractive.Rank(), []byte("ui\n"))
+		if line, _ := o.pop(); string(line) != "ui\n" {
+			t.Fatalf("policy changed: got %q before interactive", line)
+		}
+	}
+	cs, _ := o.stats()
+	bg := cs[proto.QoSBackground.Rank()]
+	if bg.Queued != 1 || bg.OldestAgeMS < 20 {
+		t.Fatalf("background stats = %+v, want 1 queued aged >= 20ms", bg)
+	}
+	if cs[0].Queued != 0 || cs[0].OldestAgeMS != 0 {
+		t.Fatalf("interactive stats = %+v, want empty", cs[0])
 	}
 }

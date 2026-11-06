@@ -111,6 +111,11 @@ type InspectClient struct {
 	Connected     time.Time `json:"connected"`
 	Services      []string  `json:"services"`
 	Subscriptions []string  `json:"subscriptions"`
+	// Outbox is the per-class backlog, indexed by QoS rank (0 user-interactive
+	// ... 3 background). A growing OldestAgeMS in a low class beside traffic
+	// in a higher one is starvation (no aging; see README).
+	Outbox  [proto.NumQoS]ClassStats `json:"outbox"`
+	Dropped int                      `json:"dropped"`
 }
 type InspectService struct {
 	Name   string `json:"name"`
@@ -132,7 +137,9 @@ type InspectReply struct {
 func (s *Server) inspect() InspectReply {
 	r := InspectReply{Clients: []InspectClient{}, Services: []InspectService{}, Subscriptions: []InspectSub{}, Clock: s.clock.Now().String()}
 	for _, c := range s.conns {
+		cs, dropped := c.out.stats()
 		r.Clients = append(r.Clients, InspectClient{
+			Outbox: cs, Dropped: dropped,
 			ID: c.id, Domain: c.domain, PID: c.cred.PID, UID: c.cred.UID, Connected: c.since,
 			Services: append([]string{}, c.services...), Subscriptions: append([]string{}, c.subs...),
 		})

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,5 +120,50 @@ func TestCheckDetectsViolations(t *testing.T) {
 	}
 	if r := replay.Check(orig, dropped, delivered); r.OK || r.Checks[2].OK {
 		t.Fatal("lost grants must be detected")
+	}
+}
+
+// tamperFixture returns an original log with several events on one topic, a
+// faithful replayed log, and the matching probe deliveries.
+func tamperFixture() (orig []proto.Envelope, replayed func() []proto.Envelope, delivered func() []proto.Envelope) {
+	for i, n := range []string{"1", "2", "3"} {
+		orig = append(orig, proto.Envelope{
+			ID: "m" + n, From: "d", Kind: proto.KindEvent, Topic: "t.x",
+			Payload: json.RawMessage(`{"n":` + n + `}`), TS: "0000000000000000001-000000000" + string(rune('0'+i)),
+		})
+	}
+	replayed = func() []proto.Envelope {
+		var out []proto.Envelope
+		for _, m := range orig {
+			c := m
+			c.Origin = &proto.Origin{ID: m.ID, From: m.From, TS: m.TS}
+			out = append(out, c)
+		}
+		return out
+	}
+	return orig, replayed, replayed
+}
+
+func TestFinalStateDetectsTamperedStream(t *testing.T) {
+	orig, replayed, delivered := tamperFixture()
+	if r := replay.Check(orig, replayed(), delivered()); !r.OK {
+		t.Fatalf("untampered replay must pass: %+v", r)
+	}
+	cases := map[string]func(d []proto.Envelope){
+		"middle payload": func(d []proto.Envelope) { d[1].Payload = json.RawMessage(`{"n":999}`) },
+		"last payload":   func(d []proto.Envelope) { d[2].Payload = json.RawMessage(`{"n":999}`) },
+		"first payload":  func(d []proto.Envelope) { d[0].Payload = json.RawMessage(`{"n":999}`) },
+		"reorder":        func(d []proto.Envelope) { d[0], d[1] = d[1], d[0] },
+	}
+	for name, mutate := range cases {
+		d := delivered()
+		mutate(d)
+		r := replay.Check(orig, replayed(), d)
+		fs := r.Checks[1]
+		if r.OK || fs.OK {
+			t.Errorf("%s: tamper not detected: %+v", name, r)
+		} else if !strings.Contains(fs.Detail, "topic t.x diverged") {
+			t.Errorf("%s: failure does not name the topic: %q", name, fs.Detail)
+		}
 	}
 }

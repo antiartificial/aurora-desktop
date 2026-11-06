@@ -107,6 +107,14 @@ func cmdInspect(args []string) int {
 	fmt.Printf("clients (%d):\n", len(r.Clients))
 	for _, c := range r.Clients {
 		fmt.Printf("  #%d %s pid=%d uid=%d since %s\n", c.ID, c.Domain, c.PID, c.UID, c.Connected.Format("15:04:05"))
+		for rank, cs := range c.Outbox {
+			if cs.Queued > 0 {
+				fmt.Printf("      backlog %s: %d queued, oldest %dms\n", qosNames[rank], cs.Queued, cs.OldestAgeMS)
+			}
+		}
+		if c.Dropped > 0 {
+			fmt.Printf("      dropped: %d\n", c.Dropped)
+		}
 	}
 	fmt.Printf("services (%d):\n", len(r.Services))
 	for _, s := range r.Services {
@@ -173,3 +181,5 @@ func cmdReplay(args []string) int {
 	fmt.Printf("re-delivered %d messages to %s\n", len(msgs), *sock)
 	return 0
 }
+
+var qosNames = [...]string{"user-interactive", "user-initiated", "utility", "background"}

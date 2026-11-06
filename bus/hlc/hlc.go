@@ -14,11 +14,12 @@ import (
 // Timestamp is a wall time (unix ns) and a logical counter.
 type Timestamp struct {
 	Wall    int64
-	Counter uint32
+	Counter uint64
 }
 
-// String is fixed width, so string order equals timestamp order.
-func (t Timestamp) String() string { return fmt.Sprintf("%019d-%010d", t.Wall, t.Counter) }
+// String is fixed width (uint64 needs at most 20 digits), so string order
+// equals timestamp order.
+func (t Timestamp) String() string { return fmt.Sprintf("%019d-%020d", t.Wall, t.Counter) }
 
 // Less orders timestamps.
 func (t Timestamp) Less(o Timestamp) bool {
@@ -35,11 +36,11 @@ func Parse(s string) (Timestamp, error) {
 	if err != nil {
 		return Timestamp{}, fmt.Errorf("bad hlc %q: %w", s, err)
 	}
-	ctr, err := strconv.ParseUint(c, 10, 32)
+	ctr, err := strconv.ParseUint(c, 10, 64)
 	if err != nil {
 		return Timestamp{}, fmt.Errorf("bad hlc %q: %w", s, err)
 	}
-	return Timestamp{wall, uint32(ctr)}, nil
+	return Timestamp{wall, ctr}, nil
 }
 
 // Clock issues monotonic timestamps.
