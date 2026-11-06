@@ -52,6 +52,11 @@ pub struct Aurora {
     pub seat: Seat<Self>,
     pub trusted: crate::trusted::Trusted,
     pub fx: crate::fx::Fx,
+    pub shell: crate::shell::Shell,
+    /// The input config last applied to the seat, so a theme reload only touches it on a real change.
+    pub applied_input: Option<crate::fx::theme::Input>,
+    /// Name of the keysym the last key press produced under the live keymap (test evidence).
+    pub last_keysym: Option<String>,
 }
 
 impl Aurora {
@@ -127,6 +132,9 @@ impl Aurora {
             seat,
             trusted: Default::default(),
             fx: crate::fx::Fx::new(None),
+            shell: crate::shell::Shell::new(),
+            applied_input: None,
+            last_keysym: None,
         }
     }
 

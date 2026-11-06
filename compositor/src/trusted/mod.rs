@@ -9,7 +9,7 @@
 pub mod attest;
 pub mod draw;
 pub mod dump;
-mod font;
+pub mod font;
 pub mod sign;
 pub mod socket;
 pub mod testinput;

@@ -65,6 +65,9 @@ impl Aurora {
     pub fn switcher_key(&mut self, code: Keycode, state: KeyState, time: smithay::backend::input::InputTime) {
         let kb = self.seat.get_keyboard().unwrap();
         kb.input::<(), _>(self, code, state, SERIAL_COUNTER.next_serial(), time, |st, mods, h| {
+            if state == KeyState::Pressed {
+                st.last_keysym = Some(smithay::input::keyboard::xkb::keysym_get_name(h.modified_sym()));
+            }
             st.fx.switcher.filter(code, state, mods.alt, h.modified_sym().raw())
         });
         if let Some(a) = self.fx.switcher.pending.take() { self.switch(a); }
@@ -143,7 +146,7 @@ pub fn draw(fx: &mut Fx, r: &mut GlesRenderer, size: Size<i32, Physical>, space:
     if fx.switcher.order.is_empty() { fx.switcher.open = false; return Ok(()); }
     fx.switcher.sel = fx.switcher.sel.min(fx.switcher.order.len() - 1);
     let (theme, progs) = (fx.theme.clone(), fx.progs.clone());
-    let [Some(down), Some(up), _, Some(card)] = &progs else { return Err("shaders missing".into()) };
+    let [Some(down), Some(up), _, Some(card), _] = &progs else { return Err("shaders missing".into()) };
     let full = Rectangle::<i32, Physical>::from_size(size);
     let s = fx.scratch.as_mut().unwrap();
     blur::run(r, s, down, up, &theme.glass, size)?;

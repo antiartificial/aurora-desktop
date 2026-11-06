@@ -41,11 +41,11 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    fn new(w: usize, h: usize, fill: [u8; 4]) -> Self {
+    pub fn new(w: usize, h: usize, fill: [u8; 4]) -> Self {
         Canvas { w, h, rgba: fill.iter().copied().cycle().take(w * h * 4).collect() }
     }
 
-    fn rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: [u8; 4]) {
+    pub fn rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: [u8; 4]) {
         for yy in y..(y + h).min(self.h) {
             for xx in x..(x + w).min(self.w) {
                 self.rgba[(yy * self.w + xx) * 4..][..4].copy_from_slice(&c);
@@ -54,7 +54,7 @@ impl Canvas {
     }
 
     /// Draw `s` (already sanitised) at integer `scale`. Returns the x after it.
-    fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, c: [u8; 4]) -> usize {
+    pub fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, c: [u8; 4]) -> usize {
         let mut cx = x;
         for ch in s.chars() {
             let g = &GLYPHS[(ch as usize).clamp(0x20, 0x7e) - 0x20];

@@ -6,16 +6,19 @@ use std::{path::{Path, PathBuf}, time::SystemTime};
 use serde::Deserialize;
 
 pub const THEME_FILE: &str = "aurora-glass.toml";
-pub const SHADERS: [&str; 4] = ["down", "up", "glass", "card"];
+pub const SHADERS: [&str; 5] = ["down", "up", "glass", "card", "background"];
 
 /// Built-in copies, used when no theme directory exists and as the "last
 /// good" shader when the first load of an on-disk one fails.
 pub const BUILTIN_THEME: &str = include_str!("../../../contracts/theme/aurora-glass.toml");
-pub const BUILTIN_SHADERS: [&str; 4] = [
+pub const BUILTIN_SHADERS: [&str; 5] = [
     include_str!("../../../contracts/theme/shaders/down.frag"),
     include_str!("../../../contracts/theme/shaders/up.frag"),
     include_str!("../../../contracts/theme/shaders/glass.frag"),
     include_str!("../../../contracts/theme/shaders/card.frag"),
+    // Not in contracts/theme/shaders yet (that directory is outside compositor/): the
+    // built-in default lives here, and a copy in the theme dir overrides it, hot-reloaded.
+    include_str!("background.frag"),
 ];
 
 #[derive(Deserialize, Clone, Debug)]
@@ -45,9 +48,98 @@ pub struct SwitcherParams {
     pub flip_angle_deg: f32,
     pub accent: [f32; 3],
 }
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BgMode { Shader, Image, Gradient, Solid }
+/// The desktop surface behind every window. `shader`: the `background` shader
+/// (time-animated); `image`: `image` file, scaled to cover and centred;
+/// `gradient`: vertical Oklab gradient top to bottom; `solid`: `top` only.
+/// An image that cannot be read falls back to the gradient.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Background {
+    pub mode: BgMode,
+    pub image: String,
+    pub top: [f32; 3],
+    pub bottom: [f32; 3],
+    pub accent: [f32; 3],
+    /// Shader time multiplier; 0 freezes the animation.
+    pub speed: f32,
+}
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Desktop { pub clock: bool, pub hostname: bool, pub clock_oklab: [f32; 3] }
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DockEdge { Bottom, Top, Left, Right }
+/// Sizes are LOGICAL pixels (multiplied by the output scale to draw).
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Dock {
+    pub enabled: bool,
+    pub edge: DockEdge,
+    pub item_height: f32,
+    pub gap: f32,
+    pub padding: f32,
+    pub spacing: f32,
+    pub hover_oklab: [f32; 3],
+    pub hover_strength: f32,
+    pub text_oklab: [f32; 3],
+    /// "auto" (first terminal found), "" (run the launcher directly), or a command.
+    pub terminal: String,
+}
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct FontCfg {
+    /// A font file to load in addition to the system fonts ("" = none).
+    pub file: String,
+    /// Preferred family ("" = first installed of a built-in preference list).
+    pub family: String,
+    /// Logical size of UI text.
+    pub size: f32,
+}
+/// The seat's keyboard. Hot-reloaded: a keymap change is applied to the live
+/// seat and re-sent to clients; an invalid layout is rejected and the old one stays.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Input {
+    pub rules: String,
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+    pub repeat_delay: i32,
+    pub repeat_rate: i32,
+}
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
-pub struct Theme { pub glass: Glass, pub switcher: SwitcherParams }
+pub struct Theme {
+    pub glass: Glass,
+    pub switcher: SwitcherParams,
+    pub background: Background,
+    pub desktop: Desktop,
+    pub dock: Dock,
+    pub font: FontCfg,
+    pub input: Input,
+}
+
+impl Default for Background {
+    fn default() -> Self {
+        Background { mode: BgMode::Shader, image: String::new(), top: [0.27, -0.015, -0.085], bottom: [0.15, 0.025, -0.045], accent: [0.62, 0.11, -0.10], speed: 1.0 }
+    }
+}
+impl Default for Desktop { fn default() -> Self { Desktop { clock: true, hostname: true, clock_oklab: [0.97, 0.0, 0.0] } } }
+impl Default for Dock {
+    fn default() -> Self {
+        Dock { enabled: true, edge: DockEdge::Bottom, item_height: 36.0, gap: 10.0, padding: 8.0, spacing: 6.0, hover_oklab: [0.95, 0.0, 0.0], hover_strength: 0.22, text_oklab: [0.97, 0.0, 0.0], terminal: "auto".into() }
+    }
+}
+impl Default for FontCfg { fn default() -> Self { FontCfg { file: String::new(), family: String::new(), size: 14.0 } } }
+impl Default for Input {
+    fn default() -> Self {
+        Input { rules: String::new(), model: String::new(), layout: String::new(), variant: String::new(), options: String::new(), repeat_delay: 200, repeat_rate: 25 }
+    }
+}
 
 impl Default for Tint { fn default() -> Self { Tint { oklab: [0.80, -0.01, -0.04], strength: 0.22 } } }
 impl Default for Edge { fn default() -> Self { Edge { oklab: [0.98, 0.0, 0.0], width: 1.5, strength: 0.75 } } }
@@ -69,6 +161,22 @@ impl Theme {
         {
             if !v.is_finite() { return Err("non-finite number in theme".into()); }
         }
+        let (b, d, f) = (&mut t.background, &mut t.dock, &mut t.font);
+        for v in [b.speed, d.item_height, d.gap, d.padding, d.spacing, d.hover_strength, f.size]
+            .into_iter().chain(b.top).chain(b.bottom).chain(b.accent).chain(d.hover_oklab).chain(d.text_oklab).chain(t.desktop.clock_oklab)
+        {
+            if !v.is_finite() { return Err("non-finite number in theme".into()); }
+        }
+        b.speed = b.speed.clamp(0.0, 20.0);
+        d.item_height = d.item_height.clamp(16.0, 128.0);
+        d.gap = d.gap.clamp(0.0, 64.0);
+        d.padding = d.padding.clamp(0.0, 32.0);
+        d.spacing = d.spacing.clamp(0.0, 32.0);
+        d.hover_strength = d.hover_strength.clamp(0.0, 1.0);
+        f.size = f.size.clamp(6.0, 64.0);
+        t.input.repeat_delay = t.input.repeat_delay.clamp(1, 5000);
+        t.input.repeat_rate = t.input.repeat_rate.clamp(0, 200);
+        let g = &mut t.glass;
         g.blur_passes = g.blur_passes.clamp(1, 6);
         g.blur_radius = g.blur_radius.clamp(0.0, 16.0);
         g.corner_radius = g.corner_radius.clamp(0.0, 64.0);
@@ -97,6 +205,9 @@ pub fn oklab_to_srgb([l, a, b]: [f32; 3]) -> [f32; 3] {
         if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
     })
 }
+
+/// Oklab token to 8-bit sRGB.
+pub fn oklab_to_u8(c: [f32; 3]) -> [u8; 3] { oklab_to_srgb(c).map(|v| (v * 255.0).round() as u8) }
 
 /// Where the theme comes from, and what it looked like when last read.
 pub struct Files { pub dir: PathBuf, stamps: Vec<Option<SystemTime>> }

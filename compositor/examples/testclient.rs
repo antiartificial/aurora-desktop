@@ -1,7 +1,10 @@
 //! Test client for the trusted-path tests: one solid-colour xdg toplevel that
 //! prints every keyboard event it receives (`enter`, `leave`, `key <code> <state>`)
 //! to stdout, one per line, so a test can see exactly what a focused client sees.
-//! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|split|bars|glass] [--alpha A]
+//! It also prints `keymap <xkb_symbols line>` and `repeat <rate> <delay>` as the seat sends them,
+//! `configure WxH` for each non-zero toplevel configure, and with `--maximize` asks to be
+//! maximised and redraws at the size it is given.
+//! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|split|bars|glass] [--alpha A] [--maximize]
 //! (connects via WAYLAND_DISPLAY). `glass` is a translucent ARGB panel with rounded
 //! corners (what the compositor's blur shows through); the others are opaque, with
 //! sharp edges so blur is easy to see behind them.
@@ -15,10 +18,21 @@ use wayland_client::{
         wl_seat::{self, WlSeat}, wl_shm::{self, WlShm}, wl_shm_pool::WlShmPool, wl_surface::WlSurface},
 };
 use wayland_protocols::xdg::shell::client::{
-    xdg_surface::{self, XdgSurface}, xdg_toplevel::XdgToplevel, xdg_wm_base::{self, XdgWmBase},
+    xdg_surface::{self, XdgSurface}, xdg_toplevel::{self, XdgToplevel}, xdg_wm_base::{self, XdgWmBase},
 };
 
-struct App { surface: WlSurface, buffer: WlBuffer, configured: bool }
+struct App {
+    surface: WlSurface, buffer: WlBuffer, configured: bool,
+    shm: WlShm, pattern: String, rgb: [u8; 3], alpha: f32, size: (usize, usize), pending: Option<(usize, usize)>,
+}
+
+fn make_buffer(shm: &WlShm, qh: &QueueHandle<App>, pattern: &str, (w, h): (usize, usize), rgb: [u8; 3], alpha: f32) -> WlBuffer {
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&pixels(pattern, w, h, rgb, alpha)).unwrap();
+    let format = if pattern == "glass" { wl_shm::Format::Argb8888 } else { wl_shm::Format::Xrgb8888 };
+    let pool = shm.create_pool(file.as_fd(), (w * h * 4) as i32, qh, ());
+    pool.create_buffer(0, w as i32, h as i32, (w * 4) as i32, format, qh, ())
+}
 
 fn say(s: &str) { println!("{s}"); let _ = std::io::stdout().flush(); }
 
@@ -28,9 +42,15 @@ impl Dispatch<XdgWmBase, ()> for App {
     }
 }
 impl Dispatch<XdgSurface, ()> for App {
-    fn event(s: &mut Self, x: &XdgSurface, e: xdg_surface::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(s: &mut Self, x: &XdgSurface, e: xdg_surface::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
         if let xdg_surface::Event::Configure { serial } = e {
             x.ack_configure(serial);
+            if let Some(sz) = s.pending.take().filter(|sz| *sz != s.size) {
+                s.size = sz;
+                s.buffer = make_buffer(&s.shm, qh, &s.pattern, sz, s.rgb, s.alpha);
+                s.surface.attach(Some(&s.buffer), 0, 0);
+                s.surface.commit();
+            }
             if !s.configured {
                 s.configured = true;
                 s.surface.attach(Some(&s.buffer), 0, 0);
@@ -49,7 +69,17 @@ impl Dispatch<WlSeat, ()> for App {
 }
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
     fn event(_: &mut Self, _: &wl_keyboard::WlKeyboard, e: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        use std::os::unix::fs::FileExt;
         match e {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let mut buf = vec![0u8; size as usize];
+                let _ = std::fs::File::from(fd).read_at(&mut buf, 0);
+                let text = String::from_utf8_lossy(&buf);
+                let tag = |k: &str| text.find(k).map(|i| text[i + k.len()..].split('"').next().unwrap_or("").to_string()).unwrap_or_else(|| "?".into());
+                let sym = format!("symbols={} keycodes={}", tag("xkb_symbols \""), tag("xkb_keycodes \""));
+                say(&format!("keymap {sym}"));
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => say(&format!("repeat {rate} {delay}")),
             wl_keyboard::Event::Enter { .. } => say("enter"),
             wl_keyboard::Event::Leave { .. } => say("leave"),
             wl_keyboard::Event::Key { key, state, .. } => say(&format!("key {key} {}", match state { WEnum::Value(wl_keyboard::KeyState::Pressed) => "Pressed", WEnum::Value(wl_keyboard::KeyState::Released) => "Released", _ => "Other" })),
@@ -65,11 +95,22 @@ delegate_noop!(App: ignore WlShm);
 delegate_noop!(App: WlShmPool);
 delegate_noop!(App: ignore WlBuffer);
 delegate_noop!(App: ignore WlSurface);
-delegate_noop!(App: ignore XdgToplevel);
+impl Dispatch<XdgToplevel, ()> for App {
+    fn event(s: &mut Self, _: &XdgToplevel, e: xdg_toplevel::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = e {
+            if width > 0 && height > 0 {
+                say(&format!("configure {width}x{height}"));
+                if s.pattern != "glass" && s.pending_allowed() { s.pending = Some((width as usize, height as usize)); }
+            }
+        }
+    }
+}
+impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--maximize") } }
 
 fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
     let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
+    let mut maximize = false;
     let mut a = std::env::args().skip(1);
     while let Some(f) = a.next() {
         match f.as_str() {
@@ -77,6 +118,7 @@ fn main() {
             "--rgb" => { let v: Vec<u8> = a.next().unwrap().split(',').map(|n| n.parse().unwrap()).collect(); rgb = [v[0], v[1], v[2]]; }
             "--pattern" => pattern = a.next().unwrap(),
             "--alpha" => alpha = a.next().unwrap().parse().unwrap(),
+            "--maximize" => maximize = true,
             o => panic!("unknown argument {o}"),
         }
     }
@@ -88,18 +130,14 @@ fn main() {
     let wm: XdgWmBase = globals.bind(&qh, 1..=1, ()).unwrap();
     let _seat: WlSeat = globals.bind(&qh, 1..=5, ()).unwrap();
 
-    let mut file = tempfile::tempfile().unwrap();
-    let px = pixels(&pattern, w, h, rgb, alpha);
-    let format = if pattern == "glass" { wl_shm::Format::Argb8888 } else { wl_shm::Format::Xrgb8888 };
-    file.write_all(&px).unwrap();
-    let pool = shm.create_pool(file.as_fd(), (w * h * 4) as i32, &qh, ());
-    let buffer = pool.create_buffer(0, w as i32, h as i32, (w * 4) as i32, format, &qh, ());
+    let buffer = make_buffer(&shm, &qh, &pattern, (w, h), rgb, alpha);
     let surface = comp.create_surface(&qh, ());
     let xs = wm.get_xdg_surface(&surface, &qh, ());
     let top = xs.get_toplevel(&qh, ());
     top.set_title("aurora-testclient".into());
+    if maximize { top.set_maximized(); }
     surface.commit();
-    let mut app = App { surface, buffer, configured: false };
+    let mut app = App { surface, buffer, configured: false, shm, pattern, rgb, alpha, size: (w, h), pending: None };
     loop { q.blocking_dispatch(&mut app).expect("dispatch"); }
 }
 

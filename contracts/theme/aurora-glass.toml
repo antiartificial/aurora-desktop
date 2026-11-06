@@ -39,3 +39,62 @@ layout = "flip"        # "grid" or "flip"
 backdrop_dim = 0.45    # black over the blurred desktop, 0..1
 flip_angle_deg = 42.0
 accent = [0.72, 0.10, 0.12]  # Oklab, the selected card's border
+
+# --- Phase 8 shell: desktop, dock, text and input -----------------------------
+# Added 2026-11-06. Every key below is its built-in default, so deleting a
+# section changes nothing; they are written out because this file is meant to be
+# the complete reference for what the compositor reads.
+
+[background]
+# shader | image | gradient | solid
+mode = "shader"
+# Used only by mode = "image". Cover-fit, centre-cropped, Lanczos3. Re-read when
+# its mtime changes; an unreadable path falls back to the gradient.
+image = ""
+# Oklab tokens. "shader" and "gradient" run top -> bottom; accent is the bloom.
+top = [0.27, -0.015, -0.085]
+bottom = [0.15, 0.025, -0.045]
+accent = [0.62, 0.11, -0.10]
+# Multiplies the shader's time uniform. 0 freezes it.
+speed = 1.0
+
+[desktop]
+clock = true
+hostname = true
+clock_oklab = [0.97, 0.0, 0.0]
+
+[dock]
+enabled = true
+# bottom | top | left | right. The dock reserves its strip, so a maximised
+# window is sized to the area that is left.
+edge = "bottom"
+item_height = 36.0
+gap = 10.0
+padding = 8.0
+spacing = 6.0
+hover_oklab = [0.95, 0.0, 0.0]
+hover_strength = 0.22
+text_oklab = [0.97, 0.0, 0.0]
+# Terminal used when launching an app that wants one. "auto" tries ghostty,
+# foot, kitty, alacritty, konsole, xterm in that order.
+terminal = "auto"
+
+[font]
+# An extra font file to load alongside the system fonts ("" = none).
+file = ""
+# Preferred family ("" = first installed from a built-in preference list).
+family = ""
+# Logical pixels. Glyphs are rasterised at size x output scale, so this stays
+# the same number whatever the display scale.
+size = 14.0
+
+[input]
+# xkb. Empty means the server default, which is a US layout.
+rules = ""
+model = ""
+layout = ""
+variant = ""
+options = ""
+# Milliseconds before a held key repeats, and repeats per second.
+repeat_delay = 200
+repeat_rate = 25

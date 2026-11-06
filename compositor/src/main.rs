@@ -8,7 +8,9 @@ mod grabs;
 mod headless;
 mod render;
 mod input;
+mod shell;
 mod state;
+mod text;
 mod trusted;
 mod winit;
 
@@ -29,6 +31,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--test-input is a test affordance that exists only with --headless (no input device); refusing".into());
     }
     state.fx = fx::Fx::new(args.theme.clone().or_else(default_theme_dir));
+    state.fx.preload_theme();
+    state.shell.legacy_scene = args.legacy_scene;
+    state.shell.freeze_time = args.freeze_time;
+    state.shell.scale = args.scale.unwrap_or(1.0);
+    state.shell.registry = shell::apps::Registry::new(args.bus_socket.clone());
+    if let Some(a) = &args.aurora_bin {
+        state.shell.aurora_bin = a.clone();
+    }
+    state.apply_input_config();
     state.trusted.dump_path = args.dump_overlay.clone();
     if let Some(uids) = args.trusted_uids.clone() {
         state.trusted.allow.uids = uids;
@@ -108,6 +119,11 @@ struct Args {
     test_input: Option<std::path::PathBuf>,
     dump_overlay: Option<std::path::PathBuf>,
     theme: Option<std::path::PathBuf>,
+    legacy_scene: bool,
+    freeze_time: bool,
+    /// `--scale F`: the output scale for headless (winit reads the host's).
+    scale: Option<f64>,
+    aurora_bin: Option<String>,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -125,6 +141,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -140,6 +157,10 @@ fn parse_args() -> Args {
             "--test-input" => args.test_input = it.next().map(Into::into),
             "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
+            "--legacy-scene" => args.legacy_scene = true,
+            "--freeze-time" => args.freeze_time = true,
+            "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
+            "--aurora" => args.aurora_bin = it.next(),
             "--headless" => args.headless = Some((1280, 800)),
             s if s.starts_with("--headless=") => {
                 let dims = s["--headless=".len()..].split_once('x');

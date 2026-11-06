@@ -95,6 +95,7 @@ pub fn init_winit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
     let win_size = backend.window_size();
+    state.shell.scale = backend.scale_factor();
     // TEST AFFORDANCE: AURORA_TEST_NO_SHARED_EGL=1 behaves as if context B could
     // not be created, so the direct fallback below can be exercised. Loud, and
     // only ever makes the compositor LESS capable (no effects, no capture).
@@ -142,6 +143,7 @@ pub fn init_winit(
             WinitEvent::Resized { size, scale_factor } => {
                 tracing::debug!("winit: resized to {}x{} physical (host scale {scale_factor})", size.w, size.h);
                 output.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
+                state.shell.scale = scale_factor;
                 state.update_capture_constraints(&output);
             }
             WinitEvent::Input(event) => state.process_input_event(event),

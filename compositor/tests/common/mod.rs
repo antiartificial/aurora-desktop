@@ -54,7 +54,16 @@ impl Comp {
     }
 
     /// Like `start`, after `prep` has seen the (empty) runtime dir.
+    /// A compositor with the shell as users get it: no `--legacy-scene`.
+    pub fn start_shell(extra: &[&str]) -> Comp {
+        Comp::start_inner(|_| {}, extra, false)
+    }
+
     pub fn start_with(prep: impl FnOnce(&Path), extra: &[&str]) -> Comp {
+        Comp::start_inner(prep, extra, true)
+    }
+
+    fn start_inner(prep: impl FnOnce(&Path), extra: &[&str], legacy: bool) -> Comp {
         let dir = tempfile::tempdir().unwrap();
         // the runtime dir must be 0700 or wayland sockets are refused
         fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
@@ -62,7 +71,10 @@ impl Comp {
         let (trusted, input, dump) = (dir.path().join("trusted.sock"), dir.path().join("input.sock"), dir.path().join("overlay.png"));
         let mut child = Command::new(env!("CARGO_BIN_EXE_aurora-compositor"))
             .args(["--headless=1280x800", "--trusted-socket"]).arg(&trusted)
-            .arg("--test-input").arg(&input).arg("--dump-overlay").arg(&dump).args(extra)
+            .arg("--test-input").arg(&input).arg("--dump-overlay").arg(&dump)
+            // The pre-shell scene (flat background, no clock): these tests compare frames for
+            // byte equality, which an animated desktop would defeat. The shell has its own tests.
+            .args(if legacy { &["--legacy-scene"][..] } else { &[][..] }).args(extra)
             .env("XDG_RUNTIME_DIR", dir.path()).env_remove("WAYLAND_DISPLAY")
             .stdout(Stdio::piped()).stderr(fs::File::create(dir.path().join("comp.log")).unwrap())
             .spawn().expect("spawn compositor");
@@ -221,4 +233,39 @@ pub fn demo_scene(c: &mut Comp) {
         c.inject(&format!("move {i} {x} {y}"));
     }
     std::thread::sleep(Duration::from_millis(300));
+}
+
+impl Theme {
+    /// Append TOML (new sections) to the theme file; picked up by hot reload.
+    pub fn append(&self, toml: &str) {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().append(true).open(self.dir.path().join("aurora-glass.toml")).unwrap();
+        writeln!(f, "\n{toml}").unwrap();
+    }
+}
+
+impl Comp {
+    /// Like `inject` but returns the reply text (`ok ...`).
+    pub fn inject_reply(&self, cmd: &str) -> String {
+        let mut s = UnixStream::connect(&self.input).unwrap();
+        writeln!(s, "{cmd}").unwrap();
+        let mut ans = String::new();
+        BufReader::new(s).read_line(&mut ans).unwrap();
+        ans.trim().to_string()
+    }
+}
+
+/// `x,y,w,h` rectangles from the compositor's `dock: layout` log line: (scale, panel, reserved, items).
+pub fn dock_layout(log: &str) -> Option<(f64, [i32; 4], [i32; 4], Vec<[i32; 4]>)> {
+    let line = log.lines().rev().find(|l| l.contains("dock: layout"))?;
+    let field = |k: &str| line.split(&format!("{k}=")).nth(1).map(|r| r.split_whitespace().next().unwrap_or("").to_string());
+    let rect = |t: &str| -> [i32; 4] { let v: Vec<i32> = t.split(',').filter_map(|n| n.parse().ok()).collect(); [v[0], v[1], v[2], v[3]] };
+    let items = field("items")?;
+    let items = items.trim_matches(|c| c == '[' || c == ']');
+    Some((
+        field("scale")?.parse().ok()?,
+        rect(&field("panel")?),
+        rect(&field("reserved")?),
+        items.split(';').filter(|s| !s.is_empty()).map(rect).collect(),
+    ))
 }

@@ -29,12 +29,14 @@ pub fn render_and_capture(
     size: Size<i32, Physical>,
 ) {
     state.fx.poll(renderer);
+    state.shell.sync(&state.fx.theme);
+    state.apply_input_config();
     if state.overlay_up() {
         state.fx.switcher.open = false;
     }
     let mut done = false;
-    if state.fx.active() {
-        match state.fx.render_scene(renderer, framebuffer, output, size, &state.space) {
+    if state.fx.active(&state.shell) {
+        match state.fx.render_scene(renderer, framebuffer, output, size, &state.space, &mut state.shell) {
             Ok(()) => done = true,
             Err(e) => tracing::error!("effects pipeline failed, drawing flat this frame: {e}"),
         }
@@ -112,6 +114,7 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     });
     state.space.refresh();
     state.trusted_tick();
+    state.shell.tick();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();
 }

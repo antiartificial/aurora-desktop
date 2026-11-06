@@ -46,7 +46,7 @@ pub struct Fx {
     files: Option<Files>,
     initialised: bool,
     next_poll: Instant,
-    pub progs: [Option<GlesTexProgram>; 4], // down, up, glass, card: each keeps its last good version
+    pub progs: [Option<GlesTexProgram>; 5], // down, up, glass, card, background: each keeps its last good version
     pub switcher: switcher::Switcher,
     scratch: Option<Scratch>,
     cards: Vec<GlesTexture>,
@@ -58,6 +58,7 @@ fn uniform_names(i: usize) -> Vec<UniformName<'static>> {
     use UniformType::*;
     let l: &[(&'static str, UniformType)] = match i {
         0 | 1 => &[("halfpixel", _2f), ("offset", _1f)],
+        4 => &[("time", _1f), ("res", _2f), ("top", _3f), ("bottom", _3f), ("accent", _3f)],
         2 => &[("rect", _4f), ("texsize", _2f), ("radius", _1f), ("tint", _4f), ("edge", _4f), ("edge_width", _1f)],
         _ => &[("screen", _2f), ("pose", _4f), ("csize", _2f), ("focal", _1f), ("shade", _1f), ("sel", _1f), ("accent", _3f)],
     };
@@ -72,6 +73,18 @@ impl Fx {
         }
     }
 
+    /// Read the theme file once, without a renderer, so settings that do not
+    /// need one (the seat's keymap) are in force from the first frame. The
+    /// first `poll` loads it again for real (and logs it).
+    pub fn preload_theme(&mut self) {
+        let text = match self.files.as_ref().and_then(|f| f.read_theme()) {
+            Some(Ok(t)) => t,
+            Some(Err(_)) => return,
+            None => BUILTIN_THEME.to_string(),
+        };
+        if let Ok(t) = Theme::parse(&text) { self.theme = t; }
+    }
+
     /// Check the theme files (at most every 250 ms) and apply changes. A theme
     /// that does not parse, or a shader that does not compile, is logged and
     /// the previous good one stays in use; the compositor never stops for it.
@@ -80,7 +93,7 @@ impl Fx {
         self.next_poll = Instant::now() + POLL;
         let changed = match &mut self.files {
             Some(f) => f.changed(),
-            None if !self.initialised => vec![true; 5],
+            None if !self.initialised => vec![true; 6],
             None => return,
         };
         self.initialised = true;
@@ -97,7 +110,7 @@ impl Fx {
                 }
             }
         }
-        for i in 0..4 {
+        for i in 0..5 {
             if !changed[i + 1] { continue; }
             let src = match self.files.as_ref().and_then(|f| f.read_shader(i)) {
                 Some(Ok(s)) => s,
@@ -119,7 +132,7 @@ impl Fx {
 
     pub fn ready(&self) -> bool { self.progs.iter().all(Option::is_some) }
     /// Whether the effects pipeline (not the plain renderer) draws this frame.
-    pub fn active(&self) -> bool { self.ready() && (self.theme.glass.enabled || self.switcher.open) }
+    pub fn active(&self, shell: &crate::shell::Shell) -> bool { self.ready() && (self.theme.glass.enabled || self.switcher.open || shell.wants_pipeline()) }
 
     fn ensure(&mut self, r: &mut GlesRenderer, size: Size<i32, Physical>) -> Res<()> {
         let passes = self.theme.glass.blur_passes as usize;
@@ -134,17 +147,19 @@ impl Fx {
     }
 
     /// Compose the scene (and the switcher, if open) and blit it to `fb`.
-    pub fn render_scene(&mut self, r: &mut GlesRenderer, fb: &mut GlesTarget<'_>, output: &Output, size: Size<i32, Physical>, space: &Space<Window>) -> Res<()> {
+    pub fn render_scene(&mut self, r: &mut GlesRenderer, fb: &mut GlesTarget<'_>, output: &Output, size: Size<i32, Physical>, space: &Space<Window>, shell: &mut crate::shell::Shell) -> Res<()> {
         self.ensure(r, size)?;
+        shell.prepare(r, size)?;
         let glass = self.theme.glass.clone();
         let full = Rectangle::<i32, Physical>::from_size(size);
         let progs: Vec<&GlesTexProgram> = self.progs.iter().flatten().collect();
-        let (down, up, glass_p) = (progs[0], progs[1], progs[2]);
+        let (down, up, glass_p, bg_p) = (progs[0], progs[1], progs[2], progs[4]);
         let s = self.scratch.as_mut().unwrap();
         {
             let mut t = r.bind(&mut s.scene)?;
             let mut f = r.render(&mut t, size, Transform::Normal)?;
             f.clear(Color32F::new(crate::render::CLEAR[0], crate::render::CLEAR[1], crate::render::CLEAR[2], 1.0), &[full])?;
+            shell.draw_background(&mut f, bg_p, size)?;
             let sy = f.finish()?; wait(r, sy)?;
         }
         for w in space.elements() {
@@ -155,6 +170,19 @@ impl Fx {
             let mut f = r.render(&mut t, size, Transform::Normal)?;
             if glass.enabled { draw_glass(&mut f, glass_p, &s.up[0], geo, &glass)?; }
             draw_elements(&mut f, &els)?;
+            let sy = f.finish()?; wait(r, sy)?;
+        }
+        if let Some((tex, panel)) = shell.dock_draw(size) {
+            let geo = Rectangle::<i32, Logical>::new((panel.x, panel.y).into(), (panel.w, panel.h).into());
+            if glass.enabled { blur::run(r, s, down, up, &glass, size)?; }
+            let mut t = r.bind(&mut s.scene)?;
+            let mut f = r.render(&mut t, size, Transform::Normal)?;
+            if glass.enabled {
+                let mut g = glass.clone();
+                g.corner_radius = shell.dock_radius();
+                draw_glass(&mut f, glass_p, &s.up[0], geo, &g)?;
+            }
+            crate::shell::draw_tex(&mut f, tex, panel)?;
             let sy = f.finish()?; wait(r, sy)?;
         }
         if self.switcher.open {

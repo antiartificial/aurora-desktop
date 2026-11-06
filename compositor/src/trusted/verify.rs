@@ -96,13 +96,18 @@ pub(super) fn inspect(sock: &Path) -> Result<Value, String> {
     call(sock, "bus.inspect@v1", None)
 }
 
-/// One control request on the session socket; the reply payload.
+/// One control request on the session socket, addressed to the `bus` service; the reply payload.
 pub(super) fn call(sock: &Path, verb: &str, payload: Option<Value>) -> Result<Value, String> {
+    call_to(sock, "bus", verb, payload)
+}
+
+/// One request to service `to` on the session socket; the reply payload.
+pub fn call_to(sock: &Path, to: &str, verb: &str, payload: Option<Value>) -> Result<Value, String> {
     let start = Instant::now();
     let s = UnixStream::connect(sock).map_err(|e| format!("connect {}: {e}", sock.display()))?;
     s.set_write_timeout(Some(DEADLINE)).ok();
     let id = "v1";
-    let mut req = serde_json::json!({"id": id, "kind": "request", "to": "bus", "verb": verb});
+    let mut req = serde_json::json!({"id": id, "kind": "request", "to": to, "verb": verb});
     if let Some(p) = payload {
         req["payload"] = p;
     }

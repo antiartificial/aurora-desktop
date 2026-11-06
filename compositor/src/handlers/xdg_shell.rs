@@ -34,7 +34,9 @@ impl XdgShellHandler for Aurora {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let wl = surface.wl_surface().clone();
         let window = Window::new_wayland_window(surface);
-        self.space.map_element(window, (0, 0), false);
+        // New windows start inside the usable area, never under the dock.
+        let origin = self.usable_area().loc;
+        self.space.map_element(window, origin, false);
         // A new window takes keyboard focus, except while the trusted overlay
         // is up: then it must not receive keys until the overlay is gone.
         if !self.overlay_up() {
@@ -120,6 +122,33 @@ impl XdgShellHandler for Aurora {
             );
 
             pointer.set_grab(self, grab, serial, Focus::Clear);
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        // Maximise to the usable area: the output minus the dock's reserved strip.
+        let area = self.usable_area();
+        surface.with_pending_state(|s| {
+            s.states.set(xdg_toplevel::State::Maximized);
+            s.size = Some(area.size);
+        });
+        let wl = surface.wl_surface().clone();
+        let win = self.space.elements().find(|w| w.toplevel().unwrap().wl_surface() == &wl).cloned();
+        if let Some(w) = win {
+            self.space.relocate_element(&w, area.loc);
+        }
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|s| {
+            s.states.unset(xdg_toplevel::State::Maximized);
+            s.size = None;
+        });
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
         }
     }
 

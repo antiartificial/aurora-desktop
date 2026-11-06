@@ -112,6 +112,20 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             _ => "err bad move".into(),
         };
     }
+    if cmd.starts_with("pointer ") {
+        // `pointer X Y`: move the pointer (output pixels), through the same function winit uses.
+        let v: Vec<f64> = it.skip(1).filter_map(|t| t.parse().ok()).collect();
+        return match v.as_slice() {
+            [x, y] if !state.overlay_up() => { state.pointer_moved((*x, *y).into(), t); "ok".into() }
+            _ => "err bad pointer".into(),
+        };
+    }
+    if cmd == "click" {
+        if state.overlay_up() { return "err overlay up".into(); }
+        state.pointer_button(0x110, smithay::backend::input::ButtonState::Pressed, t);
+        state.pointer_button(0x110, smithay::backend::input::ButtonState::Released, t);
+        return "ok".into();
+    }
     let (verb, name) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
     let Some(code) = keycode(name) else { return format!("err unknown key {name:?}") };
     match verb {
@@ -121,6 +135,13 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         }
         "down" => state.keyboard_input(code, KeyState::Pressed, t),
         "up" => state.keyboard_input(code, KeyState::Released, t),
+        "keysym" => {
+            // Press and release, and answer with the keysym the live keymap produced.
+            state.last_keysym = None;
+            state.keyboard_input(code, KeyState::Pressed, t);
+            state.keyboard_input(code, KeyState::Released, t);
+            return format!("ok {}", state.last_keysym.take().unwrap_or_else(|| "none".into()));
+        }
         _ => return format!("err unknown command {verb:?}"),
     }
     "ok".to_string()
