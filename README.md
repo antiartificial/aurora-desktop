@@ -15,7 +15,7 @@ append-only, hash-chained log.
 It runs **nested inside another compositor**. It does not boot. See
 [Limits](#limits).
 
-📄 **[Illustrated overview with architecture diagrams](docs/overview.html)**
+📄 **[Illustrated overview with architecture diagrams](https://antiartificial.github.io/aurora-desktop/overview.html)**
 
 ## Quickstart
 
@@ -93,7 +93,7 @@ contracts/    decision records (10) and the theme contract
 
 ## Reading the reasoning
 
-- [`docs/overview.html`](docs/overview.html) — illustrated, with diagrams
+- [Illustrated overview](https://antiartificial.github.io/aurora-desktop/overview.html) — architecture diagrams and design notes
 - [`contracts/decisions/`](contracts/decisions/) — ten records, each saying what
   it left undecided
 - [`docs/visual-system.md`](docs/visual-system.md) — the glass design system,
