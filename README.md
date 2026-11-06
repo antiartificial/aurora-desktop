@@ -20,6 +20,13 @@ It runs **nested inside another compositor**. It does not boot. See
 ## Quickstart
 
 ```sh
+make desktop                           # build everything, start the stack, open the desktop
+```
+
+`make` on its own lists the rest (`make up`, `make test`, `make demos`, `make
+env`). Or drive it by hand:
+
+```sh
 ./aurora-up                            # one terminal: bus, controller, index, supervisor
 source /tmp/aurora-up-1000/env         # another terminal
 aurora apps                            # what's installed
@@ -54,8 +61,8 @@ streams new files as they're made.
 | **Agents** | MCP tools generated from manifests; destructive calls stop at a person |
 
 Each `demos/*/run.sh` starts a real stack, asserts decoded output, and exits
-non-zero on failure. They're the actual regression suite: 112 compositor tests,
-86 Interface Kit checks, 85 live-query, 60 supervisor, 57 gateway.
+non-zero on failure. They're the actual regression suite: 130 compositor tests,
+135 Interface Kit checks, 85 live-query, 60 supervisor, 57 gateway.
 
 ## Limits
 
@@ -71,8 +78,9 @@ Stated here for the same reason they're stated in the code.
   `demos/ptrace-ancestry/run.sh`.
 - **The log is tamper-evident, not tamper-proof.** The hash is unkeyed — whoever
   can write the directory can rewrite history and its anchor together.
-- **Dock labels are invisible on a light background** (1.13:1 contrast, WCAG
-  wants 4.5:1). Fix specified in DR 0010, in progress.
+- **`demos/interface-kit/run.sh` is flaky.** Its browser section raced to five
+  failures in one of two consecutive runs and 135/135 in the other. Being
+  chased.
 - No XWayland, no IME, no crash survival, no app store.
 
 ## Layout
