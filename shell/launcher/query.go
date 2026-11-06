@@ -12,18 +12,25 @@ package launcher
 // busd" when it is the bus's own From; nothing here says "attested" about a
 // claim, only that the controller said so.
 //
-// What this command does NOT do, and says every time it runs (queryCaveats):
-// the plan's "results honor capabilities" is not implemented. indexd answers
-// every caller with every indexed file and this command applies no filter of
-// its own. And the index is built only from provenance.created events, so it
-// knows nothing of files made outside Aurora, before indexd ran, or deleted
-// since.
+// Who sees what: indexd filters every reply by the identity busd stamped on
+// this connection's request (index/access.go). This command sends no identity
+// and applies no filter of its own; it prints the viewer object indexd returns,
+// as indexd's word, so you can read whose view you got. A reply with no viewer
+// object comes from an indexd that does not filter at all, and says so.
 //
-// The live path: subscribe to index.match.NAME first, then ask for the
-// current matches, print those, then print live events, skipping any the
-// snapshot already contained. A live event is believed only if its bus-stamped
-// sender is indexd's connection (name "indexd", not a domain); the name is the
-// process name, which a same-user process can choose.
+// What this command does NOT claim, and says every time it runs (queryCaveats):
+// the filter covers the index service only. provenance.created is still
+// broadcast to every bus subscriber, a domain included, in full. And the index
+// is built only from provenance.created events, so it knows nothing of files
+// made outside Aurora, before indexd ran, or deleted since.
+//
+// The live path is a long poll, not a subscription: index.next@v1 {after}
+// returns the writes after a cursor that this caller may see, or is held until
+// one arrives. indexd publishes no index.match.* topic (a topic reaches every
+// subscriber, including other domains), so an answer reaches only the asker.
+// A live answer is believed only if its bus-stamped sender is indexd's
+// connection (name "indexd", not a domain); the name is the process name, which
+// a same-user process can choose.
 
 import (
 	"context"
@@ -39,17 +46,36 @@ import (
 )
 
 const (
-	indexService     = "index"
-	indexMatchPrefix = "index.match."
+	indexService = "index"
+	// watchHold is how long one index.next@v1 is asked to wait; the call's own
+	// timeout is the backend's plus this, so a quiet poll is never mistaken for a dead bus.
+	watchHold = 20 * time.Second
 )
 
 // queryNameRE mirrors indexd's rule for query names (they become topics).
 var queryNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-const queryCaveats = `  NOT FILTERED BY CAPABILITY: every caller gets every indexed file; the plan's per-domain visibility is not implemented.
+const queryCaveats = `  THE FILTER COVERS THE INDEX ONLY: provenance.created, which indexd learns from, is still broadcast on the bus to every subscriber, a domain included, in full.
   Only files whose provenance.created event indexd saw are here. Files made outside Aurora, before indexd first ran, or while it was down are
   invisible; deletions and renames are not tracked (the present/MISSING mark is an lstat taken when the answer was made).
   Type comes from the file extension (indexd never opens files). App, verb, inputs and domain are the controller's published text, not verified here.`
+
+// QueryViewer is indexd's statement of whose view a reply is.
+type QueryViewer struct {
+	Identity string `json:"identity"`
+	Kind     string `json:"kind"`
+	Rule     string `json:"rule"`
+}
+
+// viewLines says whose view this is. It is indexd's word about the From busd
+// stamped on this connection's request; this command cannot check it.
+func viewLines(v *QueryViewer) string {
+	if v == nil || v.Identity == "" {
+		return "  VIEW: indexd did not say whose view this is. It may be an older indexd that does NOT filter by identity: assume every caller sees every file."
+	}
+	return fmt.Sprintf("  VIEW: indexd says it saw this request from %s (the sender busd stamped, as indexd reports it) and filtered for it as a %s: %s",
+		short(v.Identity), short(v.Kind), short(v.Rule))
+}
 
 // ---- wire types (decoded from indexd; all text is app- or controller-supplied) ----
 
@@ -96,8 +122,9 @@ type QueryInfo struct {
 }
 
 type QueryList struct {
-	Queries []QueryInfo `json:"queries"`
-	Stats   QueryStats  `json:"stats"`
+	Queries []QueryInfo  `json:"queries"`
+	Stats   QueryStats   `json:"stats"`
+	Viewer  *QueryViewer `json:"viewer"`
 }
 
 type QueryRun struct {
@@ -106,12 +133,23 @@ type QueryRun struct {
 	Total     int        `json:"total"`
 	Truncated bool       `json:"truncated"`
 	Stats     QueryStats `json:"stats"`
+	// AsOfSeq is indexd's sequence number when the snapshot was taken: the
+	// cursor for QueryWatch's first index.next@v1.
+	AsOfSeq int          `json:"as_of_seq"`
+	Viewer  *QueryViewer `json:"viewer"`
+}
+
+// QueryNext is the reply to index.next@v1.
+type QueryNext struct {
+	Hits    []QueryHit `json:"hits"`
+	AsOfSeq int        `json:"as_of_seq"`
 }
 
 type QueryShow struct {
-	Versions []QueryHit `json:"versions"`
-	UsedIn   []string   `json:"used_in"`
-	Stats    QueryStats `json:"stats"`
+	Versions []QueryHit   `json:"versions"`
+	UsedIn   []string     `json:"used_in"`
+	Stats    QueryStats   `json:"stats"`
+	Viewer   *QueryViewer `json:"viewer"`
 }
 
 // QueryBackend is the optional half of a Backend that can talk to indexd.
@@ -119,41 +157,48 @@ type QueryBackend interface {
 	QueryList(ctx context.Context) (QueryList, error)
 	QueryRun(ctx context.Context, name string) (QueryRun, error)
 	QueryShow(ctx context.Context, file string) (QueryShow, error)
-	// QueryWatch subscribes, takes the snapshot (passed to snap), then calls
-	// live for each new match event, with the event's bus-stamped sender, until
-	// ctx ends. Hits already in the snapshot are not repeated.
+	// QueryWatch takes the snapshot (passed to snap), then long-polls
+	// index.next@v1 from the snapshot's cursor and calls live for each new
+	// match, with the bus-stamped sender of the reply that carried it, until ctx
+	// ends. Hits already in the snapshot are not repeated.
 	QueryWatch(ctx context.Context, name string, snap func(QueryRun), live func(sender string, h QueryHit)) error
 }
 
 func (b *busBackend) callIndex(ctx context.Context, verb string, req, resp any) error {
+	_, err := b.callIndexFrom(ctx, b.timeout, verb, req, resp)
+	return err
+}
+
+// callIndexFrom also returns the reply's From, which busd stamped.
+func (b *busBackend) callIndexFrom(ctx context.Context, timeout time.Duration, verb string, req, resp any) (string, error) {
 	c, err := b.conn()
 	if err != nil {
-		return err
+		return "", err
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return err
+		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, b.timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	r, err := c.Call(ctx, proto.Envelope{To: indexService, Verb: verb, Payload: payload})
 	if err != nil {
 		var re *client.RemoteError
 		if errors.As(err, &re) {
 			if re.Code == "no_such_service" {
-				return errors.New("the index service is not running: start `indexd`")
+				return "", errors.New("the index service is not running: start `indexd`")
 			}
-			return fmt.Errorf("%s: %s: %s", verb, re.Code, re.Message)
+			return "", fmt.Errorf("%s: %s: %s", verb, re.Code, re.Message)
 		}
 		if errors.Is(err, client.ErrClosed) {
-			return fmt.Errorf("%w (connection closed)", ErrBusDown)
+			return "", fmt.Errorf("%w (connection closed)", ErrBusDown)
 		}
-		return fmt.Errorf("%s: %w", verb, err)
+		return "", fmt.Errorf("%s: %w", verb, err)
 	}
 	if err := json.Unmarshal(r.Payload, resp); err != nil {
-		return fmt.Errorf("%s: malformed reply: %w", verb, err)
+		return "", fmt.Errorf("%s: malformed reply: %w", verb, err)
 	}
-	return nil
+	return r.From, nil
 }
 
 func (b *busBackend) QueryList(ctx context.Context) (out QueryList, err error) {
@@ -172,47 +217,28 @@ func (b *busBackend) QueryShow(ctx context.Context, file string) (out QueryShow,
 }
 
 func (b *busBackend) QueryWatch(ctx context.Context, name string, snap func(QueryRun), live func(string, QueryHit)) error {
-	c, err := b.conn()
+	run, err := b.QueryRun(ctx, name)
 	if err != nil {
 		return err
-	}
-	sctx, cancel := context.WithTimeout(ctx, b.timeout)
-	err = c.Subscribe(sctx, indexMatchPrefix+name)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("subscribe %s%s: %w", indexMatchPrefix, name, err)
-	}
-	run, err := b.QueryRun(ctx, name) // after the subscribe: no gap
-	if err != nil {
-		return err
-	}
-	seen := map[string]bool{}
-	for _, h := range run.Hits {
-		seen[fmt.Sprintf("%s\x00%d", h.File, h.Seq)] = true
 	}
 	snap(run)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case e, ok := <-c.Events():
-			if !ok {
-				return fmt.Errorf("%w (connection closed)", ErrBusDown)
+	cursor := run.AsOfSeq // the next poll starts exactly after the snapshot: no gap, no repeat
+	for ctx.Err() == nil {
+		var n QueryNext
+		from, err := b.callIndexFrom(ctx, b.timeout+watchHold, "index.next@v1",
+			map[string]any{"name": name, "after": cursor, "wait_ms": watchHold.Milliseconds()}, &n)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
 			}
-			var m struct {
-				Hit QueryHit `json:"hit"`
-			}
-			if json.Unmarshal(e.Payload, &m) != nil {
-				continue
-			}
-			k := fmt.Sprintf("%s\x00%d", m.Hit.File, m.Hit.Seq)
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			live(e.From, m.Hit)
+			return err
 		}
+		for _, h := range n.Hits {
+			live(from, h)
+		}
+		cursor = max(cursor, n.AsOfSeq)
 	}
+	return nil
 }
 
 // trustedIndexer says whether a bus-stamped sender may speak for indexd.
@@ -313,7 +339,7 @@ func queryList(ctx context.Context, env *Env, qb QueryBackend) int {
 		}
 		fmt.Fprintf(env.Out, "%-24s %s\n", short(q.Name), dash(q.Title))
 	}
-	fmt.Fprintf(env.Out, "\n%s\n", statsLine(l.Stats))
+	fmt.Fprintf(env.Out, "\n%s\n%s\n", statsLine(l.Stats), viewLines(l.Viewer))
 	return 0
 }
 
@@ -396,9 +422,9 @@ func queryRun(ctx context.Context, env *Env, qb QueryBackend, name string, watch
 			emit(false, h)
 		}
 		if !asJSON {
-			fmt.Fprintf(env.Out, "%s\n", queryCaveats)
+			fmt.Fprintf(env.Out, "%s\n%s\n", viewLines(r.Viewer), queryCaveats)
 			if watch {
-				fmt.Fprintln(env.Out, "watching index.match."+short(r.Query.Name)+" (Ctrl-C to stop); '+' marks a new match")
+				fmt.Fprintln(env.Out, "watching "+short(r.Query.Name)+" by long poll of index.next@v1 (Ctrl-C to stop); '+' marks a new match; nothing is subscribed, so no other client is sent your matches")
 			}
 		}
 	}
@@ -415,7 +441,7 @@ func queryRun(ctx context.Context, env *Env, qb QueryBackend, name string, watch
 	n := 0
 	err := qb.QueryWatch(ctx, name, snap, func(from string, h QueryHit) {
 		if !trustedIndexer(from) {
-			fmt.Fprintf(env.Err, "aurora: ignored an index.match event from %s (stamped by busd): not indexd\n", short(from))
+			fmt.Fprintf(env.Err, "aurora: ignored an index.next reply from %s (stamped by busd): not indexd\n", short(from))
 			return
 		}
 		emit(true, h)
@@ -444,11 +470,11 @@ func queryShow(ctx context.Context, env *Env, qb QueryBackend, file string, asJS
 	}
 	fmt.Fprintf(env.Out, "file %s\n", short(file))
 	if len(s.Versions) == 0 {
-		fmt.Fprintf(env.Out, "  not in the index. That does NOT mean Aurora did not make it: indexd only knows provenance.created events it saw.\n")
+		fmt.Fprintf(env.Out, "  not in the index, or not visible to you: for a domain caller another domain's file looks exactly like this. That does NOT mean Aurora did not make it: indexd only knows provenance.created events it saw.\n")
 		if len(s.UsedIn) > 0 {
 			fmt.Fprintf(env.Out, "  used in: %s\n", joinShort(s.UsedIn))
 		}
-		fmt.Fprintf(env.Out, "\n%s\n", statsLine(s.Stats))
+		fmt.Fprintf(env.Out, "\n%s\n%s\n", statsLine(s.Stats), viewLines(s.Viewer))
 		return 1
 	}
 	fmt.Fprintf(env.Out, "  %s, %d indexed write(s), oldest first; history reaches back only to %s\n",
@@ -472,7 +498,7 @@ func queryShow(ctx context.Context, env *Env, qb QueryBackend, file string, asJS
 		}
 	}
 	fmt.Fprintf(env.Out, "\n  used in (files whose latest write names this one as an input): %s\n", joinShort(s.UsedIn))
-	fmt.Fprintf(env.Out, "\n%s\n%s\n", statsLine(s.Stats), queryCaveats)
+	fmt.Fprintf(env.Out, "\n%s\n%s\n%s\n", statsLine(s.Stats), viewLines(s.Viewer), queryCaveats)
 	fmt.Fprintf(env.Out, "  Identities marked 'stamped by busd' come from the connection; every other value is text the sender wrote.\n")
 	return 0
 }

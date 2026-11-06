@@ -130,7 +130,7 @@ func (ix *Index) Add(e *Entry) (bool, error) {
 	if e.BusID != "" && ix.seenBus[e.BusID] {
 		return false, nil
 	}
-	e.Seq = len(ix.entries) + 1
+	e.Seq = ix.lastSeq() + 1 // not len+1: skipped lines on load would repeat a Seq
 	b, err := json.Marshal(e)
 	if err != nil {
 		return false, err
@@ -148,33 +148,84 @@ func (ix *Index) Add(e *Entry) (bool, error) {
 // NoteRejected counts an event indexd refused.
 func (ix *Index) NoteRejected() { ix.mu.Lock(); ix.rejected++; ix.mu.Unlock() }
 
-// Latest returns the newest entry of every file, oldest first.
-func (ix *Index) Latest() []*Entry {
+// Latest returns the newest entry of every file that vis accepts (nil: all),
+// oldest first. vis judges the NEWEST entry only: a file another domain has
+// since overwritten is not its earlier writer's any more.
+func (ix *Index) Latest(vis func(*Entry) bool) []*Entry {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 	var out []*Entry
 	for _, vs := range ix.byFile {
-		out = append(out, vs[len(vs)-1])
+		if e := vs[len(vs)-1]; vis == nil || vis(e) {
+			out = append(out, e)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out
 }
 
-// Versions returns every indexed write of file, oldest first.
-func (ix *Index) Versions(file string) []*Entry {
+// Versions returns every indexed write of file that vis accepts (nil: all),
+// oldest first, and whether the file's NEWEST write is among them.
+func (ix *Index) Versions(file string, vis func(*Entry) bool) (vs []*Entry, latestVisible bool) {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
-	return append([]*Entry(nil), ix.byFile[file]...)
+	all := ix.byFile[file]
+	for _, e := range all {
+		if vis == nil || vis(e) {
+			vs = append(vs, e)
+		}
+	}
+	return vs, len(all) > 0 && (vis == nil || vis(all[len(all)-1]))
+}
+
+// LastSeq is the Seq of the newest entry (0 for an empty index).
+func (ix *Index) LastSeq() int {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	return ix.lastSeq()
+}
+
+func (ix *Index) lastSeq() int {
+	if len(ix.entries) == 0 {
+		return 0
+	}
+	return ix.entries[len(ix.entries)-1].Seq
+}
+
+// After returns the entries with Seq > after that keep accepts, oldest first,
+// at most limit of them, and the highest Seq it examined: the cursor to pass
+// next time. Entries it skipped (not keep) are examined, so a caller never
+// re-scans them. If limit cut the list short the cursor is the last returned
+// entry's Seq.
+func (ix *Index) After(after, limit int, keep func(*Entry) bool) (out []*Entry, cursor int) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	cursor = after
+	start := sort.Search(len(ix.entries), func(i int) bool { return ix.entries[i].Seq > after })
+	for _, e := range ix.entries[start:] {
+		if keep(e) {
+			if len(out) == limit {
+				return out, cursor
+			}
+			out = append(out, e)
+		}
+		cursor = e.Seq
+	}
+	return out, cursor
 }
 
 // UsedIn lists the files whose latest recorded inputs include file: the
-// reverse of "derived from". Sorted, deduplicated.
-func (ix *Index) UsedIn(file string) []string {
+// reverse of "derived from". Sorted, deduplicated. Only files whose latest
+// entry vis accepts are listed (nil: all).
+func (ix *Index) UsedIn(file string, vis func(*Entry) bool) []string {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 	set := map[string]bool{}
 	for _, out := range ix.usedIn[file] {
 		vs := ix.byFile[out]
+		if vis != nil && !vis(vs[len(vs)-1]) {
+			continue
+		}
 		for _, in := range vs[len(vs)-1].Inputs {
 			if in == file {
 				set[out] = true
@@ -189,12 +240,28 @@ func (ix *Index) UsedIn(file string) []string {
 	return r
 }
 
-func (ix *Index) Stats() Stats {
+func (ix *Index) Stats() Stats { return ix.StatsFor(nil) }
+
+// StatsFor counts only what vis accepts (nil: everything): entries, files whose
+// newest entry is accepted, and the first accepted entry's time. The refused
+// and skipped-line counters are about indexd's own input, not about files, and
+// are kept.
+func (ix *Index) StatsFor(vis func(*Entry) bool) Stats {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
-	s := Stats{Entries: len(ix.entries), Files: len(ix.byFile), StartedAt: ix.started, Rejected: ix.rejected, SkippedLines: ix.skipped}
-	if len(ix.entries) > 0 {
-		s.FirstSeen = ix.entries[0].ObservedAt
+	s := Stats{StartedAt: ix.started, Rejected: ix.rejected, SkippedLines: ix.skipped}
+	for _, e := range ix.entries {
+		if vis == nil || vis(e) {
+			if s.Entries == 0 {
+				s.FirstSeen = e.ObservedAt
+			}
+			s.Entries++
+		}
+	}
+	for _, vs := range ix.byFile {
+		if vis == nil || vis(vs[len(vs)-1]) {
+			s.Files++
+		}
 	}
 	return s
 }

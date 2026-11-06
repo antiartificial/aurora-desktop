@@ -86,7 +86,10 @@ func TestQueryRunSaysWhatItDoesNotKnow(t *testing.T) {
 	}
 	s := out.String()
 	mustContain(t, s, "1 match(es)", "image/png", "<- /pics/in.png", "[present now]",
-		"NOT FILTERED BY CAPABILITY", "invisible", "extension")
+		"THE FILTER COVERS THE INDEX ONLY", "provenance.created", "invisible", "extension")
+	if strings.Contains(s, "NOT FILTERED") {
+		t.Errorf("the old no-filter warning is still printed: %q", s)
+	}
 	if strings.Contains(s, "\x1b") || strings.Contains(strings.ToLower(s), "attested") {
 		t.Errorf("escape survived or a claim was called attested: %q", s)
 	}
@@ -114,7 +117,7 @@ func TestQueryWatchDropsForgedEvents(t *testing.T) {
 	if strings.Contains(out.String(), "forged") || strings.Count(out.String(), "\n+  ") != 1 {
 		t.Errorf("out: %q", out.String())
 	}
-	mustContain(t, errb.String(), "ignored an index.match event from uid1000:bash (stamped by busd)", "domain:app-x:11")
+	mustContain(t, errb.String(), "ignored an index.next reply from uid1000:bash (stamped by busd)", "domain:app-x:11")
 }
 
 func TestQueryRunJSON(t *testing.T) {
@@ -189,4 +192,32 @@ func TestTrustedIndexer(t *testing.T) {
 			t.Errorf("%q", from)
 		}
 	}
+}
+
+func TestQueryPrintsWhoseViewItIs(t *testing.T) {
+	dom := &QueryViewer{Identity: "domain:app-x:aaaaaaaa" + esc, Kind: "domain", Rule: "only your own files" + esc}
+	f := &fakeIndex{fakeBackend: newFake(),
+		run:  QueryRun{Query: QueryInfo{Name: "imgs"}, Viewer: dom},
+		show: QueryShow{Viewer: dom},
+		list: QueryList{Viewer: dom}}
+	for _, args := range [][]string{{"query", "run", "imgs"}, {"query", "show", "/pics/x.png"}, {"query"}} {
+		env, out, _ := queryHarness(f)
+		Run(env, args)
+		mustContain(t, out.String(), "VIEW: indexd says it saw this request from domain:app-x:aaaaaaaa", "as indexd reports it", "as a domain", "only your own files")
+		if strings.Contains(out.String(), "\x1b") || strings.Contains(strings.ToLower(out.String()), "attested") {
+			t.Errorf("%v: escape survived or the identity was called attested: %q", args, out.String())
+		}
+	}
+	// A reply with no viewer comes from an indexd that does not filter: say so.
+	f.run.Viewer = nil
+	env, out, _ := queryHarness(f)
+	Run(env, []string{"query", "run", "imgs"})
+	mustContain(t, out.String(), "did not say whose view this is", "does NOT filter")
+	// A domain's "no such file" must not claim the file was never made, nor that it does not exist.
+	f.show = QueryShow{Viewer: dom}
+	env, out, _ = queryHarness(f)
+	if rc := Run(env, []string{"query", "show", "/b/theirs.png"}); rc != 1 {
+		t.Errorf("rc %d", rc)
+	}
+	mustContain(t, out.String(), "not in the index, or not visible to you", "another domain's file looks exactly like this", "does NOT mean")
 }

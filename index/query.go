@@ -44,8 +44,8 @@ import (
 	"time"
 )
 
-// NameRE is what a query name may be. It becomes part of a bus topic
-// (index.match.<name>), so it cannot contain dots, wildcards or control bytes.
+// NameRE is what a query name may be. It is kept to a topic-safe shape
+// (no dots, wildcards or control bytes) in case it is ever put in one.
 var NameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Query is a parsed saved query.

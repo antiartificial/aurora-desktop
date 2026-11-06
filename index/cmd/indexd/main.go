@@ -47,7 +47,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	svc := &index.Service{Idx: ix, QueriesDir: *qdir, C: c, Logf: log.Printf}
-	log.Printf("indexd: index only knows what provenance.created events it sees; NOT filtered by capability (see index/README.md)")
+	log.Printf("indexd: index only knows what provenance.created events it sees; see index/README.md for who sees what")
 	if err := svc.Run(ctx); err != nil {
 		log.Fatalf("indexd: %v", err)
 	}
