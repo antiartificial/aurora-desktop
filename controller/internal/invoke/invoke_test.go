@@ -191,3 +191,20 @@ func TestDomainNameShape(t *testing.T) {
 		t.Fatal(n)
 	}
 }
+
+func TestReportedLandsInProvenance(t *testing.T) {
+	inv, fk, dir, _, recs := setup(t)
+	fk.OnRun = func(a []string, in []byte) domain.Result {
+		writeOut(a, in)
+		return domain.Result{Stdout: []byte(`{"ok":true,"secret":"not recorded","reported":{"cc":"gcc 1"}}`)}
+	}
+	in := filepath.Join(dir, "in.png")
+	os.WriteFile(in, png, 0o644)
+	res, e := inv.Invoke(t.Context(), Request{App: "org.aurora.demo", Verb: "copy@v1", Input: in, Output: filepath.Join(dir, "out.png")})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if string(res.Provenance.Reported) != `{"cc":"gcc 1"}` || len(*recs) != 1 || string((*recs)[0].Reported) != `{"cc":"gcc 1"}` {
+		t.Fatalf("%s / %+v", res.Provenance.Reported, *recs)
+	}
+}
