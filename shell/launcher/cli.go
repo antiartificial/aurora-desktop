@@ -48,6 +48,12 @@ Usage:
                                 with its grants, approval (route, decider, domain trust),
                                 handle ids and output provenance; unmatched entries and
                                 hidden state (timeouts, claims, unlogged revokes) are listed
+  aurora query                  list saved queries (NAME.query files kept by indexd)
+  aurora query run NAME [--watch] [--count N] [--json]
+                                the files a saved query matches; --watch then streams new
+                                matches live. NOT filtered by capability, and it only knows
+                                files whose provenance.created event indexd saw
+  aurora query show FILE        one file's indexed writes, provenance and derived-from edges
   --yes (open, chain, watch, approvals) allows every request WITHOUT asking.
                                 A test affordance that defeats the point.
 
@@ -119,6 +125,8 @@ func Run(env *Env, args []string) int {
 		return cmdWatch(env, rest)
 	case "activity":
 		return cmdActivity(env, rest)
+	case "query":
+		return cmdQuery(env, rest)
 	}
 	fmt.Fprintf(env.Err, "aurora: unknown command %q\n\n%s", cmd, usage)
 	return 2
