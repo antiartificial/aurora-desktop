@@ -408,11 +408,42 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 	}
 }
 
+// systemPrefixes are the topic namespaces that carry the system's own business:
+// provenance records (paths, apps, grants, capability handle ids), approval
+// requests, the daemon's own events, agent traffic, index matches. A confined
+// app has no need to hear any of it, and provenance.created in particular names
+// every other domain's files. A domain connection (one that arrived on a
+// per-domain socket, so its identity was stamped by busd from the socket, never
+// by the client) is never delivered these. The user's own session still hears
+// everything.
+var systemPrefixes = []string{"provenance.", "approval.", "bus.", "agent.", "index."}
+
+func isSystemTopic(topic string) bool {
+	for _, p := range systemPrefixes {
+		if strings.HasPrefix(topic, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // publish records an event and delivers it to every matching subscriber.
 // Callers hold s.mu.
+//
+// DELIVERY filter: a domain connection is never sent a system-namespace event,
+// whatever pattern it subscribed with. ctlSubscribe also refuses the explicit
+// subscription, but that alone leaves the hole open: "**" and "*.created" are
+// legitimate patterns for a domain's own app topics, so they are accepted, and
+// only this check keeps system events out of them. Neither half replaces the
+// other: delete this one and "**" leaks; delete the subscribe check and a domain
+// gets a silent subscription that never fires instead of being told no.
 func (s *Server) publish(e proto.Envelope) {
 	s.record(e)
+	system := isSystemTopic(e.Topic)
 	for _, sub := range s.conns {
+		if system && sub.viaDomain {
+			continue
+		}
 		for _, pat := range sub.subs {
 			if proto.Match(pat, e.Topic) {
 				s.enqueue(sub, e)

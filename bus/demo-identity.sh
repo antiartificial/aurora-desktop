@@ -79,7 +79,10 @@ step "4. the holder presents it: accepted"
 inA send vault use@v1 --cap "$TOK"
 
 step "5. transfer alpha -> beta (beta must be connected; the daemon pushes the token to it)"
-inB sub bus.cap.granted >"$TMP/beta.grants" 2>"$TMP/beta.err" &
+# The daemon pushes bus.cap.granted straight to the recipient's connection, so no
+# subscription is needed (and a domain may not subscribe to bus.*: reserved_topic).
+# This subscription only gives `bus sub` something to hold open and print with.
+inB sub demo.wait >"$TMP/beta.grants" 2>"$TMP/beta.err" &
 PIDS+=($!)
 waitfor "$TMP/beta.err" "subscribed"
 inA send bus bus.transfer@v1 "{\"handle\":\"$TOK\",\"to\":\"$IDB\"}"

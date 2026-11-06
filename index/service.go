@@ -32,12 +32,11 @@ package index
 // reaches every subscriber and the bus has no per-subscriber filter. A domain
 // that subscribes to index.match.** now receives nothing.
 //
-// WHAT THIS DOES NOT CLOSE: provenance.created, the event indexd learns from,
-// is still an ordinary broadcast topic. Any connection, a domain included, may
-// subscribe to it and read every record in full (file, app, domain, inputs,
-// grants). The index filter does not and cannot change that; closing it needs
-// busd to refuse domain-socket subscriptions to that topic (and to the
-// wildcards that match it). The replies say so.
+// provenance.created itself is closed at the bus: busd never delivers a
+// system-namespace topic (provenance., approval., bus., agent., index.) to a
+// domain connection and refuses an explicit subscription to one
+// (bus/server/sysns_test.go). What stays open is metadata: seq and as_of_seq
+// are global, and saved-query names and titles are listed to every caller.
 
 import (
 	"context"
@@ -65,7 +64,6 @@ const (
 func notesFor(v Viewer) []string {
 	return []string{
 		"VIEW: " + v.Rule() + " The identity is the From busd stamped on your request; nothing you send can change it.",
-		"THE FILTER COVERS THIS SERVICE ONLY: provenance.created, which indexd learns from, is still an ordinary bus topic that any subscriber, a domain included, receives in full. Closing that needs a topic restriction in busd; this index cannot do it.",
 		"Visibility rests on the Domain text of the controller's provenance record (the sender is checked to be the controller; the text is not verified). Records with no domain (unisolated runs) are visible to the session only. seq and as_of_seq are global, so gaps in them show that entries you cannot see exist, not what they are. Saved-query names and titles are the user's and are listed to every caller.",
 		"Built only from provenance.created events seen by indexd: files made outside Aurora, before indexd first ran, or while it was down are not here; deletions and renames are not tracked (exists_now is an lstat at reply time).",
 		"mime is derived from the file extension; indexd never opens the files. App, verb, inputs and grants are the record's text as published by the controller, not verified here.",

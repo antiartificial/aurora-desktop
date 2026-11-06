@@ -19,9 +19,7 @@ package launcher
 // object comes from an indexd that does not filter at all, and says so.
 //
 // What this command does NOT claim, and says every time it runs (queryCaveats):
-// the filter covers the index service only. provenance.created is still
-// broadcast to every bus subscriber, a domain included, in full. And the index
-// is built only from provenance.created events, so it knows nothing of files
+// the index is built only from provenance.created events, so it knows nothing of files
 // made outside Aurora, before indexd ran, or deleted since.
 //
 // The live path is a long poll, not a subscription: index.next@v1 {after}
@@ -55,8 +53,7 @@ const (
 // queryNameRE mirrors indexd's rule for query names (they become topics).
 var queryNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-const queryCaveats = `  THE FILTER COVERS THE INDEX ONLY: provenance.created, which indexd learns from, is still broadcast on the bus to every subscriber, a domain included, in full.
-  Only files whose provenance.created event indexd saw are here. Files made outside Aurora, before indexd first ran, or while it was down are
+const queryCaveats = `  Only files whose provenance.created event indexd saw are here. Files made outside Aurora, before indexd first ran, or while it was down are
   invisible; deletions and renames are not tracked (the present/MISSING mark is an lstat taken when the answer was made).
   Type comes from the file extension (indexd never opens files). App, verb, inputs and domain are the controller's published text, not verified here.`
 

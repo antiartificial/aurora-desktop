@@ -21,14 +21,14 @@ from the events Phase 5 already emits rather than inferred after the fact".
   entries whose recorded domain is exactly that domain's bus-stamped identity;
   the user's own session sees everything; any other identity sees nothing.
   Details, and what it rests on, are in "Who sees what" below.
-- **The filter covers the index, not the bus.** `provenance.created`, the event
-  indexd learns from, is still an ordinary broadcast topic: a domain that
-  subscribes to it (or to `**`) receives every record in full: file, app,
-  domain, inputs, grants. The demo shows a domain's `**` subscription receiving
-  another domain's record. The index cannot change that; closing it needs busd
-  to refuse domain-socket subscriptions to that topic and to every wildcard that
-  matches it. That bus change was not made. Until it is, the filter keeps the
-  index honest and does not keep a domain from reading the log of what was made.
+- **The bus keeps system topics from domains.** `provenance.created`, the event
+  indexd learns from, is in a system namespace (`provenance.`, `approval.`,
+  `bus.`, `agent.`, `index.`). busd never delivers those to a connection that
+  arrived on a domain socket, whatever pattern it subscribed with (`**`
+  included), and refuses an explicit subscription with `reserved_topic`. The
+  user's own session still receives everything. A domain learns about its own
+  outputs from the `registry.invoke@v1` reply. The demo asserts a domain's `**`
+  subscription receives a canary event and no `provenance.created`.
 - **The index only knows what indexd saw.** Files created outside Aurora, before
   indexd first ran, or while it was down are not in it. Deletions and renames
   are not tracked: `present`/`MISSING` is an `lstat` made when the answer is

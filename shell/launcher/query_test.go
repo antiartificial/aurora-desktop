@@ -86,9 +86,9 @@ func TestQueryRunSaysWhatItDoesNotKnow(t *testing.T) {
 	}
 	s := out.String()
 	mustContain(t, s, "1 match(es)", "image/png", "<- /pics/in.png", "[present now]",
-		"THE FILTER COVERS THE INDEX ONLY", "provenance.created", "invisible", "extension")
-	if strings.Contains(s, "NOT FILTERED") {
-		t.Errorf("the old no-filter warning is still printed: %q", s)
+		"provenance.created", "invisible", "extension")
+	if strings.Contains(s, "NOT FILTERED") || strings.Contains(s, "still broadcast") {
+		t.Errorf("a no-longer-true leak warning is still printed: %q", s)
 	}
 	if strings.Contains(s, "\x1b") || strings.Contains(strings.ToLower(s), "attested") {
 		t.Errorf("escape survived or a claim was called attested: %q", s)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/antiartificial/aurora/bus/buslog"
@@ -85,6 +86,16 @@ func (s *Server) ctlSubscribe(c *conn, raw json.RawMessage, add bool) (any, erro
 		return nil, fmt.Errorf("needs {\"topic\":\"glob\"}")
 	}
 	if add {
+		// SUBSCRIPTION refusal, the explicit half: see publish for why the
+		// delivery filter is the one that closes the hole and this one is only
+		// the honest answer. A literal pattern in a system namespace gets an
+		// error rather than a subscription that can never fire. Wildcards that
+		// merely could match one ("**", "*.created") are accepted and filtered
+		// at delivery. Like reserved_topic for publishing, the test is on what
+		// busd stamped on the connection (viaDomain), not on anything sent.
+		if c.viaDomain && isSystemTopic(p.Topic) {
+			return nil, cerr("reserved_topic", "domains may not subscribe to system topics (%s); a domain learns about its own outputs from the registry.invoke@v1 reply", strings.Join(systemPrefixes, " "))
+		}
 		c.subs = append(c.subs, p.Topic)
 		return map[string]string{"subscribed": p.Topic}, nil
 	}
