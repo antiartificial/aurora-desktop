@@ -4,7 +4,7 @@ Run 2026-11-06. Everything below was run; what was not run is in "Not built, not
 
 **Result in one paragraph.** Haiku's own `View.cpp`, `Window.cpp`, `Font.cpp`, `Button.cpp`, `StringView.cpp`, `Control.cpp`, `HaikuControlLook.cpp` and 60 more Interface Kit files (Vitruvian fork, compiled in place, unmodified, nothing copied) run against a small `app_server` analogue that speaks Haiku's real link protocol over our ports, rasterises with FreeType + HarfBuzz and a small software canvas, and presents through `wl_shm` + `xdg_shell` to the Aurora compositor. A `BApplication`/`BWindow`/`BView`/`BFont`/`BButton` program appears as a real window; its pixels are verified in a decoded capture from the headless compositor. `BFont` answers from the font file. Scale is carried end to end.
 
-Contents: [1 Investigation](#1-investigation) · [2 Decision](#2-decision-and-why) · [3 What was built](#3-what-was-built) · [4 Text and the seam](#4-text-the-narrow-interface-and-convergence-with-the-compositor) · [5 HiDPI](#5-hidpi-scale-is-carried-from-the-first-line) · [6 Run it](#6-run-it) · [7 Not built, not verified](#7-not-built-not-verified)
+Contents: [1 Investigation](#1-investigation) · [2 Decision](#2-decision-and-why) · [3 What was built](#3-what-was-built) · [4 Text and the seam](#4-text-the-narrow-interface-and-convergence-with-the-compositor) · [5 HiDPI](#5-hidpi-scale-is-carried-from-the-first-line) · [6 Run it](#6-run-it) · [7 Not built, not verified](#7-not-built-not-verified) · [10 The kitchen sink](#10-the-kitchen-sink-every-control-in-one-application)
 
 ## 1. Investigation
 
@@ -140,7 +140,8 @@ Whatever is chosen, keep `Metrics`/`Shape` as the contract for layout and make `
 
 ```
 demos/interface-kit/run.sh          # builds, runs 45 checks, starts the compositor headless, captures, decodes
-cd kits && cmake -S . -B build -G Ninja && ninja -C build && (cd build && ctest)    # 14 tests, 5 of them new
+cd kits && cmake -S . -B build -G Ninja && ninja -C build && (cd build && ctest)    # 16 tests (ctest, run 2026-11-06)
+demos/kitchen-sink/run.sh           # one application with every working control; 75 checks on decoded pixels (section 10)
 kits/build/interface/iface_hello         # on a real Wayland session: the window of the demo
 kits/build/interface/iface_controls      # BStringView + BButton; click the button
 ```
@@ -151,23 +152,29 @@ What `run.sh` asserts (decoded pixels): the capture is 1280x800 with 3.5k distin
 
 ## 7. Not built, not verified
 
-Not built:
-- **Cross-process server.** `_kern_transfer_area` is the haiku-compat stub (returns `B_NOT_SUPPORTED`), so a link message above one port buffer (large regions, long strings) is expected to fail; this was not tested; the colour area is not shared (`ui_color()` uses Haiku's compiled-in defaults; there is no server-side colour table or `B_COLORS_UPDATED`).
-- **Bitmaps, pictures, cursors, `BScreen`, `BPicture`, `BDirectWindow`, clipboard, drag and drop, menus, `BTextView` editing, scroll bars, layouts exercised.** `BMenu`/`BTextView`/layout files are linked or compile but were never run. `BMessageRunner` (pulse, tooltips) is hollow.
-- **Drawing gaps:** stroked ellipses/arcs/beziers/round rects (a stroked round rect draws a plain rect; stroked ellipses draw nothing), shapes, polygons other than filled triangles, non-linear gradients, patterns other than solid high/low, drawing modes other than copy/over (all draw as source-over with the high colour), user clip *regions* (only the bounding rect is honoured), view scale/origin transform beyond `(p+origin)*scale`, `B_DRAW_ON_CHILDREN`. Text: no `escapement_delta` beyond space/non-space, no rotation/shear, no fallback fonts (missing glyphs draw `.notdef`), no emoji, `AS_GET_EDGES`, `AS_GET_BOUNDINGBOXES_*`, `AS_GET_FONT_BOUNDING_BOX`, `AS_GET_HAS_GLYPHS`, `AS_GET_UNICODE_BLOCKS` unimplemented (each answers `B_ERROR`).
-- **No decorator, no window position, no focus/keyboard.** `wl_keyboard` is not wired: no `B_KEY_DOWN`. `B_WINDOW_ACTIVATED`/`B_WINDOW_MOVED` are never sent; `BWindow::MoveTo` updates the server's idea of the frame only.
-- **Fractional scale** (no protocol in the compositor).
-- **Registrar, Storage Kit**: `BEntry/BFile/BNode/BAppFileInfo` hollow, `BRoster` hollow; `BApplication` is single-process with no launch/quit coordination.
-- **The `_init_interface_kit_()` remainder:** `PaletteConverter::InitializeDefault`, clipboard, `MenuPrivate::CreateBitmaps`, `get_menu_info`: skipped, so 8-bit palette conversions and system menus are not available.
+Rewritten 2026-11-06 from what the kitchen sink (section 10), `test_widgets`, `demos/interface-kit/run.sh` and `ctest` actually run. The first version of this section said menus, `BTextView`, scroll bars, layouts and the keyboard were never run. All of those run now, are covered by the tests above, and are described in sections 8, 9 and 10.
 
-Not verified:
-- **Resize and close through the compositor.** The code paths exist (`xdg_toplevel.configure` -> `B_WINDOW_RESIZED`; close -> `B_QUIT_REQUESTED`); no test made the compositor send either.
-- **Pointer through the compositor** (see 3). Only the headless injection.
+**Not built:**
+- **Cross-process server.** `_kern_transfer_area` is the haiku-compat stub (returns `B_NOT_SUPPORTED`), so a link message above one port buffer (large regions, long strings) is expected to fail (not tested). The colour area is not shared: `ui_color()` uses Haiku's compiled-in defaults, there is no server-side colour table and no `B_COLORS_UPDATED`.
+- **Bitmaps are in-process only** (`AS_CREATE_BITMAP` areas, 32/24/8-bit and CMAP8, nearest-neighbour scaling). Not built: `BPicture` playback to the server, `BDirectWindow`, drag and drop, a shared clipboard (it is per process). Cursors are acknowledged and ignored (`AS_SET_VIEW_CURSOR` answers `B_OK`; nothing here passes a `BCursor` on to the compositor). `BScreen` answers for one 32-bit screen the size of the output.
+- **No decorator, and the window position is the compositor's.** `AS_GET_DECORATOR_SETTINGS` answers "no tab, no border". `BWindow::MoveTo` is not honoured by the compositor: the `BAlert` of the kitchen sink centres itself, and appears at (0,0) on top of the main window. `B_WINDOW_MOVED` is never sent.
+- **Stock icons.** `BIconUtils::GetSystemIcon` is a stub that returns `B_ERROR` (the real one reads HVIF from Storage Kit resources and renders through libicon/agg), so a `BAlert` has no icon; the kitchen sink asks for `B_EMPTY_ALERT`.
+- **Drawing gaps that remain** (none of them blocks a control in the kitchen sink, judged on the captures; the references in the demos come from the same server, so they would not show a wrong-but-consistent rendering): stroked arcs and beziers (shapes are flattened polylines), polygons other than filled triangles and shapes, non-linear gradients (`AS_FILL_*_GRADIENT` for radial/conic/diamond count as unhandled and draw nothing), patterns other than solid high/low, drawing modes other than copy/over/invert (all the rest draw as source-over with the high colour), user clip *regions* (only the bounding rect is honoured), a non-identity `SetTransform` (counted as unhandled; only `BTab`'s identity transform is accepted), view scale/origin beyond `(p+origin)*scale`, `B_DRAW_ON_CHILDREN`. Text: `escapement_delta` only for space/non-space, no rotation/shear, no fallback fonts (missing glyphs draw `.notdef`), no emoji; `AS_GET_EDGES`, `AS_GET_BOUNDINGBOXES_*`, `AS_GET_FONT_BOUNDING_BOX`, `AS_GET_HAS_GLYPHS`, `AS_GET_UNICODE_BLOCKS` are unimplemented (each answers `B_ERROR`).
+- **Rough edges seen in the captures:** the Command-key symbol next to a menu shortcut draws as a small box; a `BMenu` pop-up is an `xdg_popup` and the compositor's xdg_shell handler says `TODO popup grabs` (read in `compositor/src/handlers/xdg_shell.rs`, not exercised).
+- **Fractional scale** (no protocol in the compositor).
+- **Registrar, Storage Kit:** `BEntry/BFile/BNode/BAppFileInfo` hollow, `BRoster` hollow; `BApplication` is single-process with no launch/quit coordination.
+- **The `_init_interface_kit_()` remainder:** `PaletteConverter::InitializeDefault`, `MenuPrivate::CreateBitmaps` (`get_menu_info` is served by the server now): skipped, so 8-bit palette conversions are not available.
+- **Compiled but never run:** `BDecimalSpinner` (it is in `IFACE_REAL` because `BSpinner` shares `BAbstractSpinner`), `BOptionControl`'s other subclasses, `SplitLayoutBuilder` (not compiled). Not compiled at all: `BChannelControl`/`BChannelSlider`, `BColorItem`/`BColumnListView`.
+
+**Not verified:**
+- **Resize and close through the compositor.** The code paths exist (`xdg_toplevel.configure` -> `B_WINDOW_RESIZED`; close -> `B_QUIT_REQUESTED`); nothing made the compositor send either. Wheel scrolling (`B_MOUSE_WHEEL_CHANGED`): wired, but `--test-input` has no wheel command.
+- **Keyboard navigation inside an open menu**, submenus opened through the compositor (the Format submenu of `demo/menu.cpp` was only exercised with the server's internal pointer), dismissing a menu by clicking outside.
 - **The winit (non-headless) compositor backend**, a real GPU session, and any compositor other than `aurora-compositor --headless`.
 - **Interop with stock Haiku.** The source is the Vitruvian fork (see `haiku-compat/README.md`); stock `src/kits` was not tried.
-- **Thread-safety beyond 160 consecutive headless test runs without failure** (`test_font`, `test_iface_window` at 2 scales, `test_controls`, ran 40 times each) and 6 runs of `run.sh`. There is one global server mutex; the Wayland presenter has its own.
+- **Thread safety beyond what ran:** 160 consecutive headless test runs without failure in the earlier session (`test_font`, `test_iface_window` at 2 scales, `test_controls`, 40 times each), 3 consecutive passes of `demos/kitchen-sink/run.sh` (75 checks each), and `ctest` once (16 of 16). There is one global server mutex; the Wayland presenter has its own.
 - **Memory:** frames are copied at every update (`last` for tests, a fresh `memfd` per present); glyph cache is unbounded. Fine for a demo; not a design.
 - **Hinted rendering at 1x** (not offered): at scale 1 the text is anti-aliased and unhinted, so it is softer than hinted Haiku text. A judgement call, recorded in 5.
+- **One tolerance in the kitchen-sink demo:** on the Extras page the capture is compared with a reference render pixel for pixel, except that one pixel column (the blinking caret of the colour control's focused field, B_PULSE at 500 ms) may be in the other phase. Everything else is exact.
 
 ## Next steps, if the direction is confirmed
 
@@ -202,3 +209,46 @@ Run 2026-11-06. `demos/interface-kit/run.sh` now has TEXT, MENUS and LAYOUTS sec
 **Layouts** needed nothing from the BView API, only the window-size-limits reply above (and `GridLayout` added to the build list).
 
 Not built / not verified: keyboard navigation of an open menu (keys do not reach the tracker); selecting an item through the compositor (a 1 ms press+release, the only click --test-input has, is not seen by BMenu's 16 ms polling; verified only with 80 ms clicks via the server's internal pointer events); submenus (Format) opened, popup grabs/dismissal on outside click, BPopUpMenu, menu fields; bitmaps other than 32/24/8-bit and CMAP8, scaling is nearest-neighbour; update clip is the bounding box of the dirty region, not the region; IME, drag and drop, undo of BTextView through menus, text on multiple lines/wrapping/scrolling are untested; the clipboard is per-process.
+
+## 10. The kitchen sink: every control in one application
+
+Run 2026-11-06. `kits/interface/demo/kitchensink.cpp` (one `BApplication`, one `BWindow`, 371 lines) and `demos/kitchen-sink/run.sh`. Screenshots taken by the compositor's own capture are in `demos/kitchen-sink/screenshots/` (cropped to the window, plus one full 1280x800 capture with the alert open).
+
+```
+demos/kitchen-sink/run.sh                      # builds, starts a headless compositor and the app, drives it, decodes the captures
+KEEP_CAPTURES=/tmp/ks demos/kitchen-sink/run.sh  # keeps every capture and log of the run
+kits/build/interface/iface_kitchensink         # on a real Wayland session
+```
+
+**What is on it.** A `BMenuBar` (File: Reset all, Show alert, Quit; Edit: Clear text, Next tab; with Command shortcuts) over a `BTabView` with four pages, laid out with `BLayoutBuilder`, and a status line. Every control is live: acting on it changes a label or another control, and prints `EV name value` on stdout.
+
+| Page | Controls (Haiku's real classes) | What they do |
+|---|---|---|
+| Buttons | `BButton`, `BStringView`, `BBox` x2, `BCheckBox` x2, `BRadioButton` x3 | the button counts presses; the checkboxes switch a label's font to bold/italic; the radio group sets the size label; "Show alert..." opens a `BAlert` whose answer is written back |
+| Input | `BTextControl`, `BOptionPopUp`, `BSlider`, `BStatusBar`, `BSpinner` | typing in the field edits a greeting; the pop-up picks a value; the slider drives the status bar; the spinner counts |
+| Data | `BListView` + `BScrollView`, `BTextView` + `BScrollView`, `BSplitView` | picking a list item appends a line to the text view; the divider drags |
+| Extras | `BColorControl`, `BCardLayout` (with `<` `>` buttons) | the colour control paints a swatch; the buttons turn the cards |
+
+**What `run.sh` proves, with decoded pixels of the compositor's capture** (75 checks, three consecutive passes). References are made by separate processes with no compositor, pointer or keyboard (`AURORA_APPSERVER_PRESENT=0`; `AURORA_APPSERVER_CLICK` for a clicked window), so "the app did something" and "this is what it should look like" meet only in pixels:
+
+- The app's own last frame appears verbatim in the capture at (0,0); each page, reached by clicking its tab (or through the Edit menu), equals the headless reference of that page pixel for pixel (page 3 bar the caret, see section 7). Every control on every page has pixels of its own.
+- **Checkbox:** a click changes 310 pixels, all inside the style box, equal to a reference render of a clicked window; a second click returns the capture to the first one, pixel for pixel. **Radio:** the accent-coloured dot (29 px) moves from Medium to Large, and nothing outside the box changes. **Button:** three clicks, the label grows from "Pressed 1 time" to "Pressed 3 times".
+- **Slider:** the thumb face is found by colour (x=125..138), the button is held with the new `press`/`release` test-input commands and dragged 80 px; the thumb moves 77 px (quantised to whole values), the slider reports 4 values ending at 44, and the status bar's fill, measured in pixels, is 44 % of its width.
+- **Text control:** `key a`, `key b` through the compositor's keyboard put glyph pixels in the field and change the greeting label.
+- **Spinner, pop-up:** the `+` arrow twice gives 2; holding the button on the option pop-up opens a real `xdg_popup` (two new item rows in the capture), dragging to the third item and releasing selects it and the pop-up disappears (the rows it covered equal the capture from before).
+- **List, scroll bar, text view, split view:** five clicks on the scroll bar's arrow scroll the list (all changed pixels inside the list); clicking row 7 highlights it and appends a line in the text view; three typed characters land in the text view; a 60 px drag of the divider moves the right-hand view's edge by 60 px.
+- **Colour control, card layout:** a click on the grey ramp reports `EV colour 6974058`, and the swatch's pixel in the capture is exactly (106,106,106); `>` replaces the card's text, `<` twice goes round to card 2.
+- **Menus** (the tracker polls the button, so the button is held): File > Reset all returns the whole window, after everything above had been changed, to the first page's pixels (**0 differing pixels** against the headless reference of page 0); Edit > Next tab twice reaches the Data page; Edit > Clear text empties the text view (1234 ink pixels to 0); File > Quit ends the process.
+- **BAlert:** "Show alert..." opens a second window; its own frame is found verbatim in the capture; the OK button (located by the app in the alert's coordinates) is clicked in the capture and the answer arrives; Command+A (`down alt`, `key a`) opens it again and Escape cancels it.
+- **`aurora::unhandled_opcodes()` is 0** for the whole run (printed by the app when it quits, `UNHANDLED 0 (0 of them asked for a reply)`), and `ctest` has the same assertion headless (`iface_kitchensink`, every page drawn).
+
+**What it took** (every item below was hit and fixed by running the app):
+
+- **Compiled in place, nothing copied:** `CheckBox RadioButton Box TextControl AbstractSpinner Spinner DecimalSpinner OptionControl OptionPopUp StatusBar TabView Slider ColorControl Alert CardLayout SplitLayout SplitView` plus the files they pull in: `GroupView`, `SpaceLayoutItem` (`BLayoutBuilder` glue and `BAlert`), `TextInput` (`BTextControl`'s `_BTextInput_`) and `src/kits/shared/HSL.cpp` (`BTextControl` colours). `IFACE_REAL` now names 79 files. All of them compiled on the first attempt; the problems were at link and run time. **None had to be left out.**
+- **Drawing gaps filled in `appserver/` (the ones the controls hit):** `AS_FILL_ELLIPSE_GRADIENT` (the radio button's circle was not drawn at all), stroked ellipses (it drew nothing) and stroked round rects (it drew a plain rect). The fill rasteriser takes several loops now, which is what a ring is. The user-clip-region, pattern and drawing-mode gaps of section 7 were **not** hit by any control, so they were not touched.
+- **New opcodes:** `AS_VIEW_SET_TRANSFORM` (identity only: `BTab` sets and resets one around every label; the trace showed it hundreds of times on the Input page), `AS_VALID_SCREEN_ID`, `AS_SCREEN_GET_MODE` (`BScreen`), `AS_GET_DECORATOR_SETTINGS` (`BAlert` centres itself), `AS_SET_VIEW_CURSOR` (acknowledged; `BSplitView`), `AS_VIEW_SET_MOUSE_EVENT_MASK`.
+- **Two bugs in the port, not in Haiku's code.** (1) `BSlider::UpdateTextChanged()` does `strdup(UpdateText())` and `UpdateText()` returns NULL by default: Haiku's libroot returns NULL, glibc crashes, so *a plain `BSlider` killed the process the moment it was attached to a window*. Fixed for the whole kit with a force-included header (`shim/strdup_null.h`, a `-include` on `haiku_iface_real`). (2) `BMenuField` (so `BOptionPopUp`) opens its menu from `MouseDown`, calls `SetMouseEventMask(B_POINTER_EVENTS)` and installs a filter that drops every `B_MOUSE_DOWN` until the field has seen the `B_MOUSE_UP`. The server ignored event masks, so the up went to the menu bar inside the field, the filter never came off, and **after choosing a pop-up item no click reached the window again**. The server now honours the mask (the view that asks becomes the pointer grab until the button is up).
+- A view on a hidden tab page no longer draws (its clip is empty): without that, an outline the size of the Input page's spinner field appeared on the Buttons page when a second alert took the window's activation (seen in a capture; it is gone from every capture after the fix).
+- `test_widgets` (17 checks) covers the new controls headless (values read back, pixels changed, a slider drag, a tab click, no unhandled opcodes); `ctest` in `kits/` is 16 of 16.
+
+**Known rough edges of the showcase:** the alert has no icon and opens at (0,0) over the main window (section 7); menu shortcuts show their Command-key symbol as a small box; the colour control's text field shows a blinking caret when its page is first shown (which is why one pixel column is exempt in the check, section 7).
