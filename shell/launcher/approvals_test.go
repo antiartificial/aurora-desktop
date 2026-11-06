@@ -204,3 +204,106 @@ func TestApprovalsCommandAnswersAndWatchRunsResponder(t *testing.T) {
 		t.Fatalf("--no-approvals: %s", out.String())
 	}
 }
+
+// The controller publishes domain_source, domain_mismatch and domain_claim in
+// approval.requested. The launcher used to drop all three and print only
+// "bus attested: false", which looks the same whether the bus disagreed with
+// the controller or was simply never asked. These tests pin the distinction.
+
+func TestFormatApprovalDomainTrust(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		req              ApprovalRequest
+		want, wantNoneOf []string
+	}{
+		{
+			name:       "attested by the bus",
+			req:        ApprovalRequest{Domain: "app-org-aurora-demo-0011", DomainAttested: true, DomainSource: "bus"},
+			want:       []string{"app-org-aurora-demo-0011", "[attested by the bus]"},
+			wantNoneOf: []string{"UNVERIFIED", "MISMATCH"},
+		},
+		{
+			name:       "only the controller's claim",
+			req:        ApprovalRequest{Domain: "app-org-aurora-demo-0011", DomainSource: "claim"},
+			want:       []string{"UNVERIFIED", "not attested"},
+			wantNoneOf: []string{"[attested by the bus]"},
+		},
+		{
+			name:       "no source at all is not trusted",
+			req:        ApprovalRequest{Domain: "d"},
+			want:       []string{"UNVERIFIED"},
+			wantNoneOf: []string{"[attested by the bus]"},
+		},
+		{
+			name:       "an unrecognised source is never shown as trusted",
+			req:        ApprovalRequest{Domain: "d", DomainSource: "totally-fine-trust-me"},
+			want:       []string{"UNVERIFIED"},
+			wantNoneOf: []string{"[attested by the bus]"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := FormatApproval(c.req)
+			for _, w := range c.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("want %q in:\n%s", w, got)
+				}
+			}
+			for _, w := range c.wantNoneOf {
+				if strings.Contains(got, w) {
+					t.Errorf("did not want %q in:\n%s", w, got)
+				}
+			}
+		})
+	}
+}
+
+// A mismatch is the case to deny: the bus attested a domain the controller did
+// not expect. Both names must be on screen, and it must be unmissable.
+func TestFormatApprovalMismatchShowsBothDomains(t *testing.T) {
+	got := FormatApproval(ApprovalRequest{
+		Domain: "app-evil-9999", DomainClaim: "app-org-aurora-demo-0011",
+		DomainAttested: true, DomainSource: "bus", DomainMismatch: true,
+	})
+	for _, w := range []string{"MISMATCH", "app-org-aurora-demo-0011", "app-evil-9999", "Deny unless"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("want %q in:\n%s", w, got)
+		}
+	}
+	// The attested domain, not the claim, is the one presented as the domain.
+	if !strings.Contains(got, "domain:  app-evil-9999") {
+		t.Errorf("the domain line must show the bus's domain:\n%s", got)
+	}
+}
+
+// An app controls its own id, so it reaches these strings. It must not be able
+// to repaint the prompt that judges it.
+func TestFormatApprovalMismatchCleansControlChars(t *testing.T) {
+	got := FormatApproval(ApprovalRequest{
+		Domain: "d", DomainClaim: "a\x1b[2Jb\nc", DomainMismatch: true, DomainSource: "bus", DomainAttested: true,
+	})
+	if strings.Contains(got, "\x1b") {
+		t.Fatalf("escape survived into the prompt:\n%q", got)
+	}
+	if !strings.Contains(got, "a?[2Jb?c") {
+		t.Errorf("want the cleaned claim, got:\n%s", got)
+	}
+}
+
+// Cross-module wiring: these exact bytes were produced by marshalling the
+// controller's own invoke.ApprovalRequest (controller/internal/invoke/
+// approval.go). If a json tag drifts on either side, every unit test above
+// still passes while the field silently arrives as the zero value, which is
+// the failure mode that hid the mismatch warning in the first place.
+func TestFormatApprovalDecodesTheControllersRealPayload(t *testing.T) {
+	const fromController = `{"request_id":"r1","app":"org.aurora.demo","domain":"app-evil-9999","domain_name":"","domain_attested":true,"domain_source":"bus","domain_mismatch":true,"domain_claim":"app-org-aurora-demo-0011","verb":"delete@v1","effect":"destructive","grants":null,"args":null,"timeout_seconds":60,"expires_at":""}`
+	var r ApprovalRequest
+	if err := json.Unmarshal([]byte(fromController), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.DomainSource != "bus" || !r.DomainMismatch || r.DomainClaim != "app-org-aurora-demo-0011" {
+		t.Fatalf("a json tag has drifted from the controller: source=%q mismatch=%v claim=%q", r.DomainSource, r.DomainMismatch, r.DomainClaim)
+	}
+	if got := FormatApproval(r); !strings.Contains(got, "MISMATCH") {
+		t.Fatalf("the controller said mismatch and the prompt did not:\n%s", got)
+	}
+}

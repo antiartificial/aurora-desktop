@@ -15,11 +15,18 @@ import (
 // ApprovalRequest is an approval.requested payload from the controller: the
 // real verb, grants and arguments of an invoke that is blocked waiting.
 type ApprovalRequest struct {
-	RequestID      string          `json:"request_id"`
-	App            string          `json:"app"`
-	Domain         string          `json:"domain"`
-	DomainName     string          `json:"domain_name"`
-	DomainAttested bool            `json:"domain_attested"`
+	RequestID      string `json:"request_id"`
+	App            string `json:"app"`
+	Domain         string `json:"domain"`
+	DomainName     string `json:"domain_name"`
+	DomainAttested bool   `json:"domain_attested"`
+	// DomainSource is "bus" when Domain came from an approval.preflight event
+	// busd stamped from inside the domain, "claim" when it is only the
+	// controller's assertion. The controller publishes these three; dropping
+	// them would hide a mismatch from the person being asked to approve.
+	DomainSource   string          `json:"domain_source"`
+	DomainMismatch bool            `json:"domain_mismatch"`
+	DomainClaim    string          `json:"domain_claim"`
 	Verb           string          `json:"verb"`
 	Effect         string          `json:"effect"`
 	Grants         []ApprovalGrant `json:"grants"`
@@ -57,6 +64,23 @@ func clean(s string) string {
 	}, s)
 }
 
+// domainTrust describes in a few words where Domain came from, so the person
+// approving can tell an attested identity from an app's own claim. Anything
+// other than an explicit bus attestation is reported as unverified: an
+// unrecognised or absent source is never shown as trusted.
+func domainTrust(r ApprovalRequest) string {
+	switch {
+	case r.DomainAttested && r.DomainSource == "bus":
+		return "[attested by the bus]"
+	case r.DomainSource == "claim":
+		return "[UNVERIFIED: the controller's claim, not attested]"
+	case r.DomainAttested:
+		return "[attested, source " + clean(r.DomainSource) + "]"
+	default:
+		return "[UNVERIFIED]"
+	}
+}
+
 // FormatApproval renders the request for a human: app, verb, effect class,
 // every grant with its source, and the arguments.
 func FormatApproval(r ApprovalRequest) string {
@@ -64,7 +88,13 @@ func FormatApproval(r ApprovalRequest) string {
 	fmt.Fprintf(&b, "\n=== APPROVAL REQUESTED (%s) ===\n", clean(r.RequestID))
 	fmt.Fprintf(&b, "  app:     %s\n", clean(r.App))
 	if r.Domain != "" {
-		fmt.Fprintf(&b, "  domain:  %s (bus attested: %v)\n", clean(r.Domain), r.DomainAttested)
+		fmt.Fprintf(&b, "  domain:  %s %s\n", clean(r.Domain), domainTrust(r))
+		if r.DomainMismatch {
+			// The bus attested a different domain than the controller expected.
+			// Say so first and in full: this is the case to deny.
+			fmt.Fprintf(&b, "  !! MISMATCH: the controller expected %s, the bus attested %s.\n", clean(r.DomainClaim), clean(r.Domain))
+			fmt.Fprintf(&b, "  !! The domain above is the bus's. Deny unless you know why they differ.\n")
+		}
 	}
 	fmt.Fprintf(&b, "  verb:    %s\n  effect:  %s\n", clean(r.Verb), strings.ToUpper(clean(r.Effect)))
 	for _, g := range r.Grants {
