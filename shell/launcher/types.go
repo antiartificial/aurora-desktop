@@ -37,6 +37,9 @@ type Verb struct {
 	Effect  string   `json:"effect"`
 	Accepts []string `json:"accepts"`
 	Summary string   `json:"summary"`
+	// Default and Group come from the manifest. Group is presentation only.
+	Default bool   `json:"default,omitempty"`
+	Group   string `json:"group,omitempty"`
 }
 
 // NeedsApproval reports whether the effect class is one the plan gates.

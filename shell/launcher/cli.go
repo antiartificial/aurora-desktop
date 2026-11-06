@@ -37,6 +37,11 @@ Usage:
                                 controller can then tell your pick from a typed path)
   aurora chain <file> --verb A --verb B
                                 run A, then feed its output to B
+  aurora plumb SELECTION [--path|--mime|--text] [--limit N] [--json]
+                                what could be done with a selection: a path, a MIME type
+                                (--mime), or text that looks like a path, path:line:col,
+                                URL or hostname. Ranked verbs with their effect classes;
+                                lists only, runs nothing
   aurora verbs [--accepts MIME] list verbs the registry knows
   aurora apps                   list installed apps
   aurora watch [--yes]          live log of provenance.created events, and
@@ -115,6 +120,8 @@ func Run(env *Env, args []string) int {
 		return cmdOpen(env, rest)
 	case "chain":
 		return cmdChain(env, rest)
+	case "plumb":
+		return cmdPlumb(env, rest)
 	case "verbs":
 		return cmdVerbs(env, rest)
 	case "apps":
