@@ -190,6 +190,7 @@ impl PointerGrab<Aurora> for ResizeSurfaceGrab {
                 *state = ResizeSurfaceState::WaitingForLastCommit {
                     edges: self.edges,
                     initial_rect: self.initial_rect,
+                    size: self.last_window_size,
                 };
             });
         }
@@ -305,6 +306,10 @@ enum ResizeSurfaceState {
         edges: ResizeEdge,
         /// The initial window size and location.
         initial_rect: Rectangle<i32, Logical>,
+        /// The size the last configure asked for. A client that is behind still has commits in flight
+        /// from EARLIER configures (the first one's is at the old size), and the last commit is the one
+        /// that reaches this size, not the first one after the release.
+        size: Size<i32, Logical>,
     },
 }
 
@@ -321,12 +326,14 @@ impl ResizeSurfaceState {
         })
     }
 
-    fn commit(&mut self) -> Option<(ResizeEdge, Rectangle<i32, Logical>)> {
+    fn commit(&mut self, committed: Size<i32, Logical>) -> Option<(ResizeEdge, Rectangle<i32, Logical>)> {
         match *self {
             Self::Resizing { edges, initial_rect } => Some((edges, initial_rect)),
-            Self::WaitingForLastCommit { edges, initial_rect } => {
-                // The resize is done, let's go back to idle
-                *self = Self::Idle;
+            Self::WaitingForLastCommit { edges, initial_rect, size } => {
+                // The resize is done once a commit arrives at the size the last configure asked for.
+                if committed == size {
+                    *self = Self::Idle;
+                }
 
                 Some((edges, initial_rect))
             }
@@ -347,7 +354,7 @@ pub fn handle_commit(space: &mut Space<Window>, surface: &WlSurface) -> Option<(
 
     let new_loc: Point<Option<i32>, Logical> = ResizeSurfaceState::with(surface, |state| {
         state
-            .commit()
+            .commit(geometry.size)
             .and_then(|(edges, initial_rect)| {
                 // If the window is being resized by top or left, its location must be adjusted
                 // accordingly.

@@ -359,6 +359,18 @@ mod tests {
         assert_eq!((r.blur_radius, r.blur_passes, r.corner_radius, r.tint.strength, r.linear_blur, r.precision, r.share_prepass), (d.blur_radius, d.blur_passes, d.corner_radius, d.tint.strength, d.linear_blur, d.precision, d.share_prepass));
         assert!(BUILTIN_THEME.contains("[glass.chrome]"), "the reference theme documents chrome glass");
     }
+    /// The harness strips `[decoration]` from its copy of the reference theme too (tests append their own), so the
+    /// same holds: the file must spell out exactly the parser's defaults, and a bad value must be clamped, not trusted.
+    #[test]
+    fn the_reference_decoration_table_is_the_default_and_its_numbers_are_kept_sane() {
+        let (r, d) = (Theme::parse(BUILTIN_THEME).unwrap().decoration, Decoration::default());
+        assert_eq!(r, d);
+        assert!(BUILTIN_THEME.contains("\n[decoration]\n"), "the reference theme documents the decoration table");
+        let t = Theme::parse("[decoration]\nstyle = \"tab\"\nheight = 900.0\ngrip = 0.0\ncorner = 1.0\ndouble_click_ms = 1\n").unwrap().decoration;
+        assert_eq!((t.style, t.height, t.grip, t.double_click_ms), (DecoStyle::Tab, 64.0, 2.0, 100));
+        assert!(t.corner >= t.grip, "a corner reaches at least as far as the edge it joins");
+        assert!(Theme::parse("[decoration]\nstyle = \"pillow\"\n").is_err());
+    }
     #[test]
     fn linear_and_encoded_tokens_agree() {
         // Oklab L 0.6 grey is linear 0.6^3 = 0.216, which encodes to 0.502 (code 128)

@@ -287,6 +287,70 @@ fn without_the_ceiling_the_same_sweep_breaks_the_floor() {
     assert!(white.glass_max > GLASS_Y_MAX, "ceiling off: glass luminance {:.4} should exceed {GLASS_Y_MAX}", white.glass_max);
 }
 
+// ---- window decorations: the title text meets the same floor as the dock's labels ----------------------------
+
+/// Contrast of a window title's lightest pixel against the brightest glass directly above it in the bar, over
+/// `behind`, for a FOCUSED title and an UNFOCUSED one (two probe windows in the same run, one created after the other).
+/// The glass sample strip is the bar's top rows (clear of the corners), as the dock's is its padding.
+fn title_contrast(behind: Behind, extra_theme: &str) -> (String, f64, f64) {
+    let t = Theme::new();
+    let bg = match behind {
+        Behind::DesktopWhite => "[background]\nmode = \"solid\"\ntop = [1.0, 0.0, 0.0]\nbottom = [1.0, 0.0, 0.0]\n",
+        Behind::Client(..) => "[background]\nmode = \"solid\"\ntop = [0.30, 0.0, 0.0]\nbottom = [0.30, 0.0, 0.0]\n",
+    };
+    t.append(&format!("{bg}[desktop]\nclock = false\nhostname = false\n{extra_theme}"));
+    let mut c = Comp::start_shell(&["--theme", t.path(), "--freeze-time"]);
+    let label = match behind {
+        Behind::DesktopWhite => "desktop white".to_string(),
+        Behind::Client(pat, rgb) => {
+            c.client_args(&["--size", "1280x700", "--pattern", pat, "--rgb", rgb, "--title", "Backdrop"]);
+            c.inject("move 0 0 0");
+            format!("client {pat} {rgb}")
+        }
+    };
+    let skip = if matches!(behind, Behind::Client(..)) { 1 } else { 0 };
+    c.client_args(&["--size", "420x200", "--pattern", "solid", "--rgb", "120,120,120", "--title", "Unfocused probe title"]);
+    c.inject(&format!("move {} 100 200", skip));
+    c.client_args(&["--size", "420x200", "--pattern", "solid", "--rgb", "120,120,120", "--title", "Focused probe title"]);
+    c.inject(&format!("move {} 600 200", skip + 1));
+    wait_for("both probe bars", || ["Unfocused probe title", "Focused probe title"].iter().all(|t| decos(&c.log()).iter().any(|d| d.text == *t)));
+    std::thread::sleep(Duration::from_millis(500));
+    c.step_frames(4);
+    let img = c.capture("title.png");
+    let read = |text: &str| {
+        let d = decos(&c.log()).into_iter().rev().find(|d| d.text == text).unwrap();
+        // The log is written when a bar is drawn, and the `move` came after the first draw: find the bar where it is now.
+        let (x0, x1) = ((d.title[0]) as usize, (d.title[0] + d.title[2]) as usize);
+        let (y0, y1) = ((d.bar[1] + 3) as usize, (d.bar[1] + d.bar[3] - 6) as usize);
+        let ink = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).max_by(|a, b| img.luminance(a.0, a.1).total_cmp(&img.luminance(b.0, b.1))).unwrap();
+        let above = (d.bar[1] as usize + 3..d.bar[1] as usize + 6).flat_map(|y| (x0..x1).map(move |x| (x, y))).max_by(|a, b| img.luminance(a.0, a.1).total_cmp(&img.luminance(b.0, b.1))).unwrap();
+        (img.contrast(ink, above), d.focused)
+    };
+    let (unfocused, uf) = read("Unfocused probe title");
+    let (focused, ff) = read("Focused probe title");
+    assert!(!uf && ff, "the probes are in the focus states the sweep says they are ({uf}, {ff})");
+    (label, focused, unfocused)
+}
+
+#[test]
+fn window_titles_keep_the_contrast_floor_over_every_backdrop_focused_or_not() {
+    for b in BACKDROPS {
+        let (label, focused, unfocused) = title_contrast(b, "");
+        println!("TITLE over {label:<24}: focused {focused:.2}:1, unfocused {unfocused:.2}:1");
+        assert!(focused >= FLOOR, "the focused title over {label} has contrast {focused:.2}:1, floor {FLOOR}:1");
+        assert!(unfocused >= FLOOR, "the unfocused title over {label} has contrast {unfocused:.2}:1, floor {FLOOR}:1");
+    }
+}
+
+/// The control for the sweep above: remove the glass's luminance ceiling and the same measurement over white must
+/// fall under the floor. If it stops doing so, the assertion above has stopped measuring the ceiling.
+#[test]
+fn without_the_ceiling_the_title_sweep_breaks_the_floor_too() {
+    let (_, focused, unfocused) = title_contrast(Behind::Client("solid", "255,255,255"), "[glass.chrome]\nluminance_max = 0.0\ntint = { oklab = [0.38, -0.005, -0.020], strength = 0.45 }\n");
+    println!("TITLE without the ceiling: focused {focused:.2}:1, unfocused {unfocused:.2}:1");
+    assert!(focused.min(unfocused) < FLOOR, "with luminance_max = 0 the titles over white still read {focused:.2} / {unfocused:.2}; the sweep cannot see the ceiling");
+}
+
 // ---- item 3: the shared prepass --------------------------------------------------------------------
 
 /// (surfaces, prepasses) of the last frame in a `--frame-stats` file.
@@ -298,9 +362,16 @@ fn last_counts(path: &Path) -> (u32, u32) {
 }
 
 /// A scene of opaque patterned and translucent windows at the given positions, the dock up; its frame and counts.
+/// The counts are of WINDOW glass: the bars the compositor draws above windows are chrome glass of their own,
+/// switched off here (`bars_scene` below runs the same comparison with them on).
 fn prepass_scene(share: bool, spots: &[(i32, i32)]) -> (Img, (u32, u32)) {
+    prepass_scene_with(share, spots, "[decoration]\nenabled = false\n")
+}
+
+fn prepass_scene_with(share: bool, spots: &[(i32, i32)], decoration: &str) -> (Img, (u32, u32)) {
     let t = Theme::new();
     t.append("[background]\nmode = \"gradient\"\ntop = [0.60, 0.0, 0.0]\nbottom = [0.25, 0.05, -0.05]\n[desktop]\nclock = false\nhostname = false\n");
+    t.append(decoration);
     if !share { t.edit("share_prepass = true", "share_prepass = false"); }
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("s.csv");
@@ -331,6 +402,20 @@ fn sharing_the_prepass_changes_no_pixel_and_costs_one_prepass_for_surfaces_that_
     assert_eq!(prepasses, 1, "windows that do not touch each other must share one prepass");
     assert_eq!(prepasses_each, 5, "the oracle (share_prepass = false) redoes it for each surface");
     assert_eq!(shared.diff_count(&each), 0, "sharing the prepass changed pixels: the reach used to decide 'does not touch' is too short");
+}
+
+#[test]
+fn sharing_the_prepass_changes_no_pixel_with_title_bars_either() {
+    // The same comparison with the bars on (and their ease off, so two runs cannot differ by where a fade is):
+    // each bar is a chrome surface drawn between its window's glass and its client, and none of them may read a stale prepass.
+    let apart = [(20, 60), (335, 60), (20, 340), (335, 340)];
+    let bars = "[decoration]\nease_ms = 0\n";
+    let (shared, (surfaces, prepasses)) = prepass_scene_with(true, &apart, bars);
+    let (each, (_, prepasses_each)) = prepass_scene_with(false, &apart, bars);
+    println!("PREPASS with bars: {surfaces} glass surfaces, {prepasses} prepass(es) shared vs {prepasses_each} unshared; frames differ in {} px", shared.diff_count(&each));
+    assert_eq!(surfaces, 9, "four windows, four bars and the dock");
+    assert!(prepasses < prepasses_each, "sharing saves prepasses even with bars ({prepasses} vs {prepasses_each})");
+    assert_eq!(shared.diff_count(&each), 0, "sharing the prepass changed pixels once bars were drawn");
 }
 
 #[test]

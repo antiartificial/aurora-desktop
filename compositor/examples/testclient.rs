@@ -71,7 +71,7 @@ struct App {
 delegate_noop!(App: ZxdgDecorationManagerV1);
 impl Dispatch<ZxdgToplevelDecorationV1, ()> for App {
     fn event(_: &mut Self, _: &ZxdgToplevelDecorationV1, e: zxdg_toplevel_decoration_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = e { say(&format!("decoration mode {mode:?}")); }
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = e { say(&format!("decoration mode {}", match mode { WEnum::Value(m) => format!("{m:?}"), WEnum::Unknown(n) => format!("unknown({n})") })); }
     }
 }
 impl Dispatch<XdgSurface, Child> for App {
@@ -183,8 +183,13 @@ impl Dispatch<XdgSurface, ()> for App {
     fn event(s: &mut Self, x: &XdgSurface, e: xdg_surface::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
         if let xdg_surface::Event::Configure { serial } = e {
             x.ack_configure(serial);
+            let follow = std::env::args().any(|a| a == "--follow");
             if let Some(sz) = s.pending.take().filter(|sz| *sz != s.size) {
                 s.size = sz;
+                s.present(qh);
+            } else if follow && s.configured {
+                // A client that follows configures commits after every ack, as the protocol asks: the
+                // compositor's resize finishes on the commit that answers the last configure.
                 s.present(qh);
             }
             if !s.configured {

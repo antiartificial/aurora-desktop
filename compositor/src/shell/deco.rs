@@ -174,10 +174,13 @@ pub struct DecoDraw<'a> {
     pub dst: Rect,
 }
 
+/// Where the title text landed in its bar: left, top, width (device pixels, relative to the bar) and the clipped text.
+type Placed = (i32, i32, i32, String);
+
 #[derive(Default)]
 pub(super) struct DecoStore {
     states: Vec<Option<DecoState>>,
-    tex: HashMap<String, (String, GlesTexture)>,
+    tex: HashMap<String, (String, GlesTexture, Placed)>,
     anim: HashMap<String, (Ease, Ease)>,
     seq: HashMap<String, u32>,
     logged: HashMap<String, String>,
@@ -300,12 +303,15 @@ impl Shell {
                     "{}x{}|{}|{fq}|{hq}|{s}|{}|{}|{:?}|{}|{}|{:?}",
                     bar.w, bar.h, st.spec.title, self.glass_on, self.font.size, self.deco.style, self.font.family, self.rev, self.deco
                 );
-                if self.decos.tex.get(&st.spec.id).is_some_and(|(k, _)| *k == key) {
-                    continue;
-                }
-                let (c, placed) = self.draw_bar(st, bar.w, bar.h, ext);
-                let tex = r.import_memory(&c.rgba, Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((c.w as i32, c.h as i32)), false)?;
-                self.decos.tex.insert(st.spec.id.clone(), (key, tex));
+                let placed = match self.decos.tex.get(&st.spec.id) {
+                    Some((k, _, p)) if *k == key => p.clone(),
+                    _ => {
+                        let (c, placed) = self.draw_bar(st, bar.w, bar.h, ext);
+                        let tex = r.import_memory(&c.rgba, Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((c.w as i32, c.h as i32)), false)?;
+                        self.decos.tex.insert(st.spec.id.clone(), (key, tex, placed.clone()));
+                        placed
+                    }
+                };
                 // One line per change of layout, not per animation frame: tests read geometry off it.
                 let r4 = |r: Rect| format!("{},{},{},{}", r.x, r.y, r.w, r.h);
                 let (_, _, close) = device(&st.frame, s);
@@ -328,7 +334,7 @@ impl Shell {
     /// The bar's texture and where it goes, for the window at `i` in `Space` order.
     pub fn deco_draw(&self, i: usize) -> Option<DecoDraw<'_>> {
         let st = self.decos.states.get(i)?.as_ref()?;
-        let (_, tex) = self.decos.tex.get(&st.spec.id)?;
+        let (_, tex, _) = self.decos.tex.get(&st.spec.id)?;
         let (win, bar, _) = device(&st.frame, self.scale);
         let ext = ((self.glass_radius as f64 * self.scale).round() as i32).min(win.h).max(0);
         Some(DecoDraw { tex, dst: Rect { x: bar.x, y: bar.y, w: bar.w, h: bar.h + ext } })

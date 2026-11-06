@@ -179,7 +179,9 @@ fn the_reserved_area_constrains_maximised_and_new_windows() {
         wait_for("configure", || read(&log).contains("configure"));
         settle();
         let cfg = read(&log).lines().rev().find(|l| l.starts_with("configure")).unwrap().to_string();
+        // The usable area less the title bar that hangs above a maximised window (30 logical px, scale 1).
         let (uw, uh) = match edge { "bottom" | "top" => (1280, 800 - reserved[3]), _ => (1280 - reserved[2], 800) };
+        let uh = uh - 30;
         let img = c.capture("max.png");
         let green = img.count([10, 220, 10]);
         println!("MAXIMISE edge={edge}: reserved {reserved:?}; client was told `{cfg}`, expected {uw}x{uh}; capture has {green} client pixels (usable area = {})", uw * uh);
@@ -190,14 +192,14 @@ fn the_reserved_area_constrains_maximised_and_new_windows() {
         let in_strip = (ry..ry + rh).flat_map(|y| (rx..rx + rw).map(move |x| (x, y))).filter(|&(x, y)| img.at(x, y) == [10, 220, 10]).count();
         assert_eq!(in_strip, 0, "{edge}: maximised window overlaps the dock strip");
         assert_ne!(img.at((panel[0] + panel[2] / 2) as usize, (panel[1] + 2) as usize), [10, 220, 10]);
-        // a normal new window starts at the top-left of the usable area, not under the dock
+        // a normal new window starts near the top-left of the usable area (one cascade step in, below its bar), not under the dock
         let l2 = c.client_args(&["--size", "200x100", "--rgb", "200,10,10"]);
         let _ = l2;
         let img2 = c.capture("new.png");
         let first_red = (0..800usize).flat_map(|y| (0..1280usize).map(move |x| (x, y))).find(|&(x, y)| img2.at(x, y) == [200, 10, 10]);
         println!("NEW WINDOW edge={edge}: first pixel of the new window at {first_red:?}");
         let (ux, uy) = match edge { "top" => (0, reserved[3]), "left" => (reserved[2], 0), _ => (0, 0) };
-        assert_eq!(first_red, Some((ux as usize, uy as usize)));
+        assert_eq!(first_red, Some(((ux + 32) as usize, (uy + 30 + 24) as usize)));
     }
 }
 

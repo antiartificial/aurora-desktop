@@ -370,3 +370,36 @@ pub fn stat(summary: &str, group: &str, key: &str) -> f64 {
     let v = g.split_whitespace().find_map(|t| t.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key} in {g}"));
     v.parse().unwrap()
 }
+
+/// One `deco: layout` line of the compositor's log: where a window's title bar is, in device pixels.
+#[derive(Clone, Debug)]
+pub struct Deco {
+    pub scale: f64,
+    pub win: u32,
+    pub window: [i32; 4],
+    pub bar: [i32; 4],
+    pub close: [i32; 4],
+    pub focused: bool,
+    /// the title text's left, top and width in device pixels
+    pub title: [i32; 3],
+    pub text: String,
+}
+
+fn deco_nums(s: &str) -> Vec<i32> {
+    s.split(',').filter_map(|n| n.parse().ok()).collect()
+}
+
+/// Every `deco: layout` line, oldest first.
+pub fn decos(log: &str) -> Vec<Deco> {
+    log.lines()
+        .filter_map(|l| l.split("deco: layout ").nth(1))
+        .filter_map(|l| {
+            let (head, text) = l.split_once(" text=")?;
+            let f = |k: &str| head.split_whitespace().find_map(|t| t.strip_prefix(&format!("{k}=")));
+            let r = |k: &str| -> Option<[i32; 4]> { let v = deco_nums(f(k)?); Some([v[0], v[1], v[2], v[3]]) };
+            let t = deco_nums(f("title")?);
+            Some(Deco { scale: f("scale")?.parse().ok()?, win: f("win")?.parse().ok()?, window: r("window")?, bar: r("bar")?, close: r("close")?, focused: f("focused")? == "true", title: [t[0], t[1], t[2]], text: text.to_string() })
+        })
+        .collect()
+}
+
