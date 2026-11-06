@@ -95,16 +95,17 @@ void Canvas::StrokeRect(FRect r, Color c, float pen)
 	StrokeLine(r.r, r.t, r.r, r.b, c, pen);
 }
 
-// Even-odd polygon fill with 4x4 supersampling, in device space.
-void Canvas::FillDevicePoly(const std::vector<float>& xy, const Paint& paint)
+// Even-odd fill of one or more closed loops with 4x4 supersampling, in device space. Several loops are what a stroked
+// ellipse or round rect is: an outer and an inner outline, with the hole between them left unfilled by even-odd.
+void Canvas::FillDevicePolys(const std::vector<std::vector<float> >& loops, const Paint& paint)
 {
-	int n = (int)xy.size() / 2;
-	if (n < 3) return;
-	float minx = xy[0], maxx = xy[0], miny = xy[1], maxy = xy[1];
-	for (int i = 1; i < n; i++) {
-		minx = std::min(minx, xy[2 * i]); maxx = std::max(maxx, xy[2 * i]);
-		miny = std::min(miny, xy[2 * i + 1]); maxy = std::max(maxy, xy[2 * i + 1]);
-	}
+	float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f;
+	for (size_t l = 0; l < loops.size(); l++)
+		for (size_t i = 0; i + 1 < loops[l].size(); i += 2) {
+			minx = std::min(minx, loops[l][i]); maxx = std::max(maxx, loops[l][i]);
+			miny = std::min(miny, loops[l][i + 1]); maxy = std::max(maxy, loops[l][i + 1]);
+		}
+	if (minx > maxx) return;
 	int x0 = std::max((int)floorf(minx), fClip.x0), x1 = std::min((int)ceilf(maxx), fClip.x1);
 	int y0 = std::max((int)floorf(miny), fClip.y0), y1 = std::min((int)ceilf(maxy), fClip.y1);
 	if (x1 <= x0 || y1 <= y0) return;
@@ -116,11 +117,16 @@ void Canvas::FillDevicePoly(const std::vector<float>& xy, const Paint& paint)
 		for (int sy = 0; sy < S; sy++) {
 			float py = y + (sy + 0.5f) / S;
 			xs.clear();
-			for (int i = 0; i < n; i++) {
-				float ax = xy[2 * i], ay = xy[2 * i + 1];
-				float bx = xy[2 * ((i + 1) % n)], by = xy[2 * ((i + 1) % n) + 1];
-				if ((ay <= py && by > py) || (by <= py && ay > py))
-					xs.push_back(ax + (py - ay) * (bx - ax) / (by - ay));
+			for (size_t l = 0; l < loops.size(); l++) {
+				const std::vector<float>& xy = loops[l];
+				int n = (int)xy.size() / 2;
+				if (n < 3) continue;
+				for (int i = 0; i < n; i++) {
+					float ax = xy[2 * i], ay = xy[2 * i + 1];
+					float bx = xy[2 * ((i + 1) % n)], by = xy[2 * ((i + 1) % n) + 1];
+					if ((ay <= py && by > py) || (by <= py && ay > py))
+						xs.push_back(ax + (py - ay) * (bx - ax) / (by - ay));
+				}
 			}
 			std::sort(xs.begin(), xs.end());
 			for (size_t k = 0; k + 1 < xs.size(); k += 2) {
@@ -134,6 +140,11 @@ void Canvas::FillDevicePoly(const std::vector<float>& xy, const Paint& paint)
 		}
 		for (int x = x0; x < x1; x++) if (cov[x - x0]) Blend(x, y, PaintAt(paint, x, y), cov[x - x0]);
 	}
+}
+
+void Canvas::FillDevicePoly(const std::vector<float>& xy, const Paint& paint)
+{
+	FillDevicePolys(std::vector<std::vector<float> >(1, xy), paint);
 }
 
 void Canvas::FillPolygon(const float* xy, int n, Color c)
@@ -206,13 +217,46 @@ void Canvas::FillRect(FRect r, const Paint& p)
 		for (int x = d.x0; x < d.x1; x++) Blend(x, y, PaintAt(p, x, y), 255);
 }
 
-void Canvas::FillEllipse(FRect r, Color c)
+// An ellipse as a closed polyline in device space. (cx,cy) and radii are in layout units; grow widens both radii
+// (a stroke's half pen), so one function makes the outer and the inner outline of a ring.
+static void EllipsePath(std::vector<float>& p, float cx, float cy, float rx, float ry, double s, float grow)
+{
+	rx = std::max(rx + grow, 0.0f); ry = std::max(ry + grow, 0.0f);
+	int n = std::max(48, (int)(std::max(rx, ry) * s * 1.5));
+	for (int i = 0; i < n; i++) {
+		float a = 2 * (float)M_PI * i / n;
+		p.push_back((cx + cosf(a) * rx) * (float)s); p.push_back((cy + sinf(a) * ry) * (float)s);
+	}
+}
+
+void Canvas::FillEllipse(FRect r, Color c) { FillEllipse(r, Paint(c)); }
+void Canvas::FillEllipse(FRect r, const Paint& pt)
 {
 	std::vector<float> p;
-	float cx = (r.l + r.r + 1) * 0.5f * fScale, cy = (r.t + r.b + 1) * 0.5f * fScale;
-	float rx = (r.r - r.l + 1) * 0.5f * fScale, ry = (r.b - r.t + 1) * 0.5f * fScale;
-	for (int i = 0; i < 48; i++) { float a = 2 * (float)M_PI * i / 48; p.push_back(cx + cosf(a) * rx); p.push_back(cy + sinf(a) * ry); }
-	FillDevicePoly(p, c);
+	EllipsePath(p, (r.l + r.r + 1) * 0.5f, (r.t + r.b + 1) * 0.5f, (r.r - r.l + 1) * 0.5f, (r.b - r.t + 1) * 0.5f, fScale, 0);
+	FillDevicePoly(p, pt);
+}
+
+// BeOS strokes a shape with the pen centred on its outline, and an outline of BRect(l,t,r,b) runs through pixel
+// centres, so the path is the ellipse inscribed in [l+.5, r+.5] and the ring is half a pen either side of it.
+void Canvas::StrokeEllipse(FRect r, Color c, float pen)
+{
+	std::vector<std::vector<float> > loops(2);
+	float cx = (r.l + r.r + 1) * 0.5f, cy = (r.t + r.b + 1) * 0.5f, rx = (r.r - r.l) * 0.5f, ry = (r.b - r.t) * 0.5f, h = pen * 0.5f;
+	EllipsePath(loops[0], cx, cy, rx, ry, fScale, h);
+	EllipsePath(loops[1], cx, cy, rx, ry, fScale, -h);
+	FillDevicePolys(loops, Paint(c));
+}
+
+void Canvas::StrokeRoundRect(FRect r, float rx, float ry, Color c, float pen)
+{
+	std::vector<std::vector<float> > loops(2);
+	float h = pen * 0.5f;
+	// RoundRectPath takes an inclusive rect (outline at [l, r+1]); the pen path is [l+.5, r+.5], so shift by .5 and by h.
+	FRect o{r.l + .5f - h, r.t + .5f - h, r.r - .5f + h, r.b - .5f + h}, i{r.l + .5f + h, r.t + .5f + h, r.r - .5f - h, r.b - .5f - h};
+	RoundRectPath(loops[0], o, rx + h, ry + h, fScale);
+	RoundRectPath(loops[1], i, std::max(rx - h, 0.0f), std::max(ry - h, 0.0f), fScale);
+	FillDevicePolys(loops, Paint(c));
 }
 
 void Canvas::DrawGlyph(const text::GlyphBitmap& g, float penX, float penY, Color c)

@@ -25,6 +25,7 @@
 #include <Shape.h>
 #include <ServerProtocol.h>
 #include <Menu.h>
+#include <Accelerant.h>
 #include <Palette.h>
 #include <ServerProtocolStructs.h>
 #include <View.h>
@@ -314,6 +315,26 @@ void HandleFontOp(SApp* app, int32 code, LinkReceiver& link, PortLink& reply, bo
 			reply.StartMessage(B_OK);
 			reply.Attach<BRect>(BRect(0, 0, sw - 1, sh - 1));
 			reply.Flush();
+			return;
+		}
+		case AS_VALID_SCREEN_ID:
+		{
+			int32 id = -1; link.Read<int32>(&id);
+			reply.StartMessage(id == 0 ? B_OK : B_BAD_VALUE);	// one screen, id 0
+			reply.Flush();
+			return;
+		}
+		case AS_SCREEN_GET_MODE:
+		{
+			// One 32-bit screen the size of the output; no timings (there is no CRTC).
+			int32 id = -1; uint32 workspace; link.Read<int32>(&id); link.Read<uint32>(&workspace);
+			if (id != 0) { reply.StartMessage(B_BAD_VALUE); reply.Flush(); return; }
+			int sw = 1280, sh = 800;
+			if (gWl) au_wl_output_size(gWl, &sw, &sh);
+			display_mode m; memset(&m, 0, sizeof(m));
+			m.virtual_width = m.timing.h_display = sw; m.virtual_height = m.timing.v_display = sh;
+			m.space = B_RGB32;
+			reply.StartMessage(B_OK); reply.Attach(&m, sizeof(m)); reply.Flush();
 			return;
 		}
 		case AS_GET_SCREEN_ID_FROM_WINDOW:
@@ -1348,7 +1369,7 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			BRect wr = ToWindow(v, r);
 			FRect f{wr.left, wr.top, wr.right, wr.bottom};
 			if (code == AS_FILL_ROUNDRECT) w->canvas.FillRoundRect(f, rx, ry, DrawColor(v->st));
-			else w->canvas.StrokeRect(f, DrawColor(v->st), v->st.penSize * v->st.scale);	// gap: not rounded
+			else w->canvas.StrokeRoundRect(f, rx, ry, DrawColor(v->st), v->st.penSize * v->st.scale);
 			return;
 		}
 		case AS_FILL_RECT_GRADIENT: case AS_FILL_ROUNDRECT_GRADIENT:
@@ -1407,8 +1428,29 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			BRect r; if (link.Read<BRect>(&r) != B_OK) return;
 			SetupClip(w, v);
 			BRect wr = ToWindow(v, r);
-			if (code == AS_FILL_ELLIPSE) w->canvas.FillEllipse(FRect{wr.left, wr.top, wr.right, wr.bottom}, DrawColor(v->st));
-			return;	// gap: stroked ellipse not drawn
+			FRect f{wr.left, wr.top, wr.right, wr.bottom};
+			if (code == AS_FILL_ELLIPSE) w->canvas.FillEllipse(f, DrawColor(v->st));
+			else w->canvas.StrokeEllipse(f, DrawColor(v->st), v->st.penSize * v->st.scale);
+			return;
+		}
+		case AS_FILL_ELLIPSE_GRADIENT:
+		{
+			BRect r; link.Read<BRect>(&r);
+			Paint p;
+			if (!ReadPaint(v, link, &p)) { gUnhandled++; return; }
+			SetupClip(w, v);
+			BRect wr = ToWindow(v, r);
+			w->canvas.FillEllipse(FRect{wr.left, wr.top, wr.right, wr.bottom}, p);
+			return;
+		}
+		case AS_VIEW_SET_TRANSFORM:
+		{
+			// Only the identity is honoured (BTab sets and resets one around every label; nothing else here sets a real one).
+			double t[6];
+			if (link.Read(t, sizeof(t)) != B_OK) return;
+			bool identity = t[0] == 1 && t[1] == 0 && t[2] == 0 && t[3] == 1 && t[4] == 0 && t[5] == 0;
+			if (!identity) gUnhandled++;
+			return;
 		}
 		case AS_STROKE_SHAPE: case AS_FILL_SHAPE:
 		{

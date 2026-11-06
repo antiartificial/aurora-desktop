@@ -52,6 +52,9 @@ public:
 	void FillRoundRect(FRect r, float rx, float ry, Color c);
 	void FillRoundRect(FRect r, float rx, float ry, const Paint& p);
 	void FillEllipse(FRect r, Color c);
+	void FillEllipse(FRect r, const Paint& p);
+	void StrokeEllipse(FRect r, Color c, float pen);
+	void StrokeRoundRect(FRect r, float rx, float ry, Color c, float pen);
 	void FillPolygon(const float* xy, int n, Color c);	// layout units, pixel centres at +0.5
 	// glyph: pen is the baseline origin in layout units
 	void DrawGlyph(const text::GlyphBitmap& g, float penX, float penY, Color c);
@@ -59,6 +62,7 @@ public:
 
 private:
 	void FillDevicePoly(const std::vector<float>& xy, const Paint& p);
+	void FillDevicePolys(const std::vector<std::vector<float> >& loops, const Paint& p);
 	Color PaintAt(const Paint& p, int x, int y) const;
 	int fW, fH;
 	double fScale;
