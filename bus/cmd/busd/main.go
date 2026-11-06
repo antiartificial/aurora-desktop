@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/antiartificial/aurora/bus/server"
@@ -42,6 +43,9 @@ func main() {
 	data := fs.String("data-dir", defaultDataDir(), "log segment directory (env AURORA_BUS_DATA)")
 	segBytes := fs.Int64("segment-bytes", 0, "rotate log segments at this size (default 4 MiB)")
 	allowReplay := fs.Bool("allow-replay", false, "accept replayed messages' origin/cap_ids (for fresh daemons used with `bus replay`)")
+	legacy := fs.Bool("legacy-caps", false, "do NOT enforce the capability table: caps stay opaque, forgeable strings (old behaviour)")
+	var doms domFlags
+	fs.Var(&doms, "domain", "listen for a domain: IDENTITY=SOCKET (identity as printed by `domain exec-id`, socket by `domain sockpath`); repeatable")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: busd [flags]\n\nThe Aurora message bus daemon. Sender identity comes from SO_PEERCRED.")
 		fs.PrintDefaults()
@@ -51,11 +55,19 @@ func main() {
 	log.SetFlags(log.Ltime)
 	log.SetPrefix("busd: ")
 	srv, err := server.New(server.Config{
-		SocketPath: *sock, DataDir: *data, SegmentBytes: *segBytes, AllowReplay: *allowReplay,
+		SocketPath: *sock, DataDir: *data, SegmentBytes: *segBytes, AllowReplay: *allowReplay, EnforceCaps: !*legacy,
 		Logf: log.Printf,
 	})
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+	for _, d := range doms {
+		id, path, _ := strings.Cut(d, "=")
+		if err := srv.AddDomain(id, path); err != nil {
+			srv.Close()
+			log.Fatalf("--domain %s: %v", d, err)
+		}
+		log.Printf("domain socket %s -> %s", path, id)
 	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -71,4 +83,15 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Printf("stopped")
+}
+
+type domFlags []string
+
+func (d *domFlags) String() string { return strings.Join(*d, ",") }
+func (d *domFlags) Set(v string) error {
+	if !strings.Contains(v, "=") {
+		return fmt.Errorf("want IDENTITY=SOCKET, got %q", v)
+	}
+	*d = append(*d, v)
+	return nil
 }

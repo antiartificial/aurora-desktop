@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -31,11 +32,24 @@ func (s *Server) control(c *conn, e proto.Envelope, clientID string) {
 		out = s.inspect()
 	case "bus.log@v1":
 		out, err = s.ctlLog(e.Payload)
+	case "bus.mint@v1":
+		out, err = s.ctlMint(c, e.Payload)
+	case "bus.transfer@v1":
+		out, err = s.ctlTransfer(c, e.Payload)
+	case "bus.revoke@v1":
+		out, err = s.ctlRevoke(c, e.Payload)
+	case "bus.domain.add@v1", "bus.domain.remove@v1":
+		out, err = s.ctlDomain(c, e.Verb, e.Payload)
 	default:
 		err = fmt.Errorf("unknown control verb %q", e.Verb)
 	}
 	if err != nil {
-		s.sendError(c, clientID, "control_failed", err.Error())
+		code := "control_failed"
+		var ce *codedErr
+		if errors.As(err, &ce) {
+			code = ce.code
+		}
+		s.sendError(c, clientID, code, err.Error())
 		return
 	}
 	payload, _ := json.Marshal(out)
@@ -143,11 +157,14 @@ type InspectReply struct {
 	Clients       []InspectClient  `json:"clients"`
 	Services      []InspectService `json:"services"`
 	Subscriptions []InspectSub     `json:"subscriptions"`
+	Handles       []InspectHandle  `json:"handles"`
+	Domains       []InspectDomain  `json:"domains"`
 	Clock         string           `json:"clock"`
 }
 
 func (s *Server) inspect() InspectReply {
-	r := InspectReply{Clients: []InspectClient{}, Services: []InspectService{}, Subscriptions: []InspectSub{}, Clock: s.clock.Now().String()}
+	r := InspectReply{Clients: []InspectClient{}, Services: []InspectService{}, Subscriptions: []InspectSub{}, Clock: s.clock.Now().String(),
+		Handles: s.inspectHandles(), Domains: s.inspectDomains()}
 	for _, c := range s.conns {
 		cs, dropped := c.out.stats()
 		oq, ob, sent := c.out.segStats()
@@ -171,4 +188,21 @@ func (s *Server) inspect() InspectReply {
 		return a.Client < b.Client || (a.Client == b.Client && a.Topic < b.Topic)
 	})
 	return r
+}
+
+// ctlDomain registers or removes a per-domain socket. Only a client on the
+// session socket may: a domain must not be able to mint other domains.
+func (s *Server) ctlDomain(c *conn, verb string, raw json.RawMessage) (any, error) {
+	if c.viaDomain {
+		return nil, cerr("forbidden", "domain sockets are managed from the session socket only")
+	}
+	var p struct{ Identity, Path string }
+	if err := json.Unmarshal(raw, &p); err != nil || p.Identity == "" {
+		return nil, errors.New(`needs {"identity":"domain:<name>:<id>","path":"<socket>"}`)
+	}
+	if verb == "bus.domain.remove@v1" {
+		return map[string]string{"removed": p.Identity}, s.removeDomainLocked(p.Identity)
+	}
+	// AddDomain takes s.mu, which control's caller already holds.
+	return map[string]string{"added": p.Identity}, s.addDomainLocked(p.Identity, p.Path)
 }

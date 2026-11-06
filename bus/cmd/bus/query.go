@@ -131,6 +131,18 @@ func cmdInspect(args []string) int {
 	for _, s := range r.Subscriptions {
 		fmt.Printf("  %s  (client #%d, %s)\n", s.Topic, s.Client, s.Domain)
 	}
+	fmt.Printf("domain sockets (%d):\n", len(r.Domains))
+	for _, d := range r.Domains {
+		fmt.Printf("  %s  %s\n", d.Identity, d.Socket)
+	}
+	fmt.Printf("handles (%d outstanding):\n", len(r.Handles))
+	for _, h := range r.Handles {
+		exp := "never"
+		if h.Expires != nil {
+			exp = h.Expires.Format("15:04:05.000")
+		}
+		fmt.Printf("  %s  resource=%s  holder=%s  minter=%s  expires=%s\n", h.ID, h.Resource, h.Holder, h.Minter, exp)
+	}
 	return 0
 }
 

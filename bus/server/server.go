@@ -32,6 +32,10 @@ type Config struct {
 	// a recorded session can be re-delivered. Sender identity is STILL taken
 	// from peer credentials; origin is informational. For fresh daemons only.
 	AllowReplay bool
+	// EnforceCaps makes the daemon reject any message whose caps the sender's
+	// domain does not hold in the minting table. busd turns it on by default.
+	// Off, caps are the legacy opaque strings (kept for old tests/clients).
+	EnforceCaps bool
 	// Resolver maps peer credentials to a domain name (default DefaultDomain).
 	Resolver func(Cred) string
 	// MaxSegmentBytes caps one segment (default 256 MiB). The daemon hashes
@@ -41,14 +45,15 @@ type Config struct {
 }
 
 type conn struct {
-	id       int64
-	nc       net.Conn
-	cred     Cred
-	domain   string
-	since    time.Time
-	out      *outbox
-	subs     []string // guarded by Server.mu
-	services []string // guarded by Server.mu
+	id        int64
+	nc        net.Conn
+	cred      Cred
+	domain    string
+	viaDomain bool // arrived on a per-domain socket (identity from the socket)
+	since     time.Time
+	out       *outbox
+	subs      []string // guarded by Server.mu
+	services  []string // guarded by Server.mu
 
 	segsIn, segBytesIn int64 // accepted from this client; guarded by Server.mu
 }
@@ -73,6 +78,8 @@ type Server struct {
 	conns    map[int64]*conn
 	services map[string]*conn
 	pending  map[string]pendingReq
+	caps     map[string]*handle     // token -> authoritative row
+	doms     map[string]*domainSock // identity -> per-domain listener
 	nextConn int64
 	closed   bool
 	wg       sync.WaitGroup
@@ -100,6 +107,7 @@ func New(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, ln: ln, log: lg, clock: hlc.New(), nonce: hex.EncodeToString(nb[:]),
 		conns: map[int64]*conn{}, services: map[string]*conn{}, pending: map[string]pendingReq{},
+		caps: map[string]*handle{}, doms: map[string]*domainSock{},
 	}, nil
 }
 
@@ -127,35 +135,16 @@ func listen(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// Serve accepts clients until Close is called.
+// Serve accepts clients on the session socket until Close is called.
 func (s *Server) Serve() error {
-	for {
-		nc, err := s.ln.Accept()
-		if err != nil {
-			s.mu.Lock()
-			closed := s.closed
-			s.mu.Unlock()
-			if closed {
-				return nil
-			}
-			return err
-		}
-		cred, err := peerCred(nc)
-		if err != nil {
-			s.cfg.Logf("reject connection: %v", err)
-			nc.Close()
-			continue
-		}
-		s.mu.Lock()
-		s.nextConn++
-		c := &conn{id: s.nextConn, nc: nc, cred: cred, domain: s.cfg.Resolver(cred), since: time.Now(), out: newOutbox()}
-		s.conns[c.id] = c
-		s.wg.Add(2)
-		s.mu.Unlock()
-		s.cfg.Logf("client %d connected: %s (pid %d)", c.id, c.domain, cred.PID)
-		go s.writeLoop(c)
-		go s.readLoop(c)
+	err := s.acceptLoop(s.ln, "")
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil
 	}
+	return err
 }
 
 // Close stops the daemon, disconnects clients and removes the socket.
@@ -172,6 +161,7 @@ func (s *Server) Close() error {
 	}
 	s.mu.Unlock()
 	s.ln.Close()
+	s.closeDomains()
 	for _, c := range conns {
 		c.out.close()
 		c.nc.Close()
@@ -344,6 +334,15 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 	if err := e.Validate(); err != nil {
 		s.sendError(c, clientID, "bad_message", err.Error())
 		return
+	}
+
+	if s.cfg.EnforceCaps && !replay {
+		if err := s.checkCaps(c, e); err != nil {
+			var ce *codedErr
+			errors.As(err, &ce)
+			s.sendError(c, clientID, ce.code, ce.msg)
+			return
+		}
 	}
 
 	if e.Kind == proto.KindRequest && e.To == proto.BusTarget {

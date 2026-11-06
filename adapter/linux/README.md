@@ -48,7 +48,12 @@ into the domain at `/run/aurora`; the domain gets
 accepted on that listener comes from a process that was given that directory,
 i.e. from that domain; the bus labels it with `domain exec-id <name>`
 (`domain:<name>:<16-hex-id>`) and reads `SO_PEERCRED` for pid/uid as extra
-evidence (pid is translated into the bus's pid namespace). The test suite
+evidence (pid is translated into the bus's pid namespace). The bus side is
+implemented: `busd --domain "$(domain exec-id N)=$(domain sockpath N)"` (or the
+`bus.domain.add@v1` control verb, which the controller calls on create and
+`bus.domain.remove@v1` on destroy). `bus/demo-identity.sh` runs it end to end
+with two real domains; the bus README has the capability handles that hang
+off that identity. The test suite
 connects from inside a domain to a host-side listener on that socket.
 
 Weaknesses, stated plainly:

@@ -29,10 +29,8 @@ evolution rules.
 ```
 
 - `id`, `ts`, `from` are **always set by the daemon**. A client-supplied `from`
-  is overwritten. The sender's domain is read from `SO_PEERCRED` on the socket
-  (tested in `server/server_test.go`). The MVP domain string is
-  `uid<uid>:<process name>` (kernel-reported uid, `/proc/<pid>/comm`); Phase 2's
-  attested domain id replaces it via `Config.Resolver`.
+  is overwritten. See "Identity" below for what `from` means on each socket
+  (tested in `server/server_test.go` and `server/identity_test.go`).
 - `ts` is a hybrid logical clock: `<wall ns, 19 digits>-<counter, 20 digits>`,
   monotonic per daemon, and string order equals time order. The counter is
   a uint64 (20 digits), so it cannot wrap in practice while the wall clock is
@@ -40,8 +38,9 @@ evolution rules.
   stamps and produced a lexically smaller timestamp).
 - `verb` must carry its major version (`resize@v1`).
 - `qos` defaults to `user-initiated`.
-- `caps` are opaque handles. Recipients get them. **The log stores only
-  `cap_ids`** (`cap:` plus a truncated SHA-256), never the handle.
+- `caps` are capability handles minted by the daemon (see "Capabilities").
+  Recipients get them. **The log stores only `cap_ids`** (`cap:` plus a
+  truncated SHA-256), never the handle.
 - `ephemeral: true` messages are delivered but never logged.
 - `corr` ties a response or error to its request. On the requester's side it
   carries the `id` the requester sent. The log keeps the daemon's own ids.
@@ -58,7 +57,85 @@ Patterns:
   segment `**` matches any number of segments.
 - **Control verbs** go to the reserved target `bus`: `bus.ping@v1`,
   `bus.register@v1`, `bus.subscribe@v1`, `bus.unsubscribe@v1`,
-  `bus.inspect@v1`, `bus.log@v1`. They are not logged.
+  `bus.inspect@v1`, `bus.log@v1`, `bus.mint@v1`, `bus.transfer@v1`,
+  `bus.revoke@v1`, `bus.domain.add@v1`, `bus.domain.remove@v1`. They are not
+  logged.
+
+## Identity (`from`)
+
+busd listens on its session socket and, optionally, on one socket per domain.
+
+- **Session socket:** `from` = `uid<uid>:<comm>` (SO_PEERCRED uid, `/proc/<pid>/comm`;
+  override with `Config.Resolver`). Weak: same user plus same binary is one
+  identity, and a process can rename itself. Unchanged.
+- **Domain socket:** `from` = the identity registered for that socket, e.g.
+  `domain:alpha:3d7a6e38a013ffaa` (what `domain exec-id` prints). The daemon
+  decides it from *which listener accepted the connection*. Nothing the client
+  sends is read for it, and a client-supplied `from` is overwritten as before.
+  SO_PEERCRED is still read on every connection (uid/pid shown in `bus
+  inspect`). Two processes in one domain share one identity; two domains
+  never do (tested).
+- **Registration.** `busd --domain IDENTITY=SOCKET` (repeatable), the Go API
+  `Server.AddDomain/RemoveDomain`, or the control verbs `bus.domain.add@v1` /
+  `bus.domain.remove@v1` `{"identity","path"}`, which the controller calls over
+  the session socket (a domain connection is refused with `forbidden`, so a
+  domain cannot create domains). Chosen over watching the adapter's socket
+  directory because it is explicit, needs no inotify or scan races, and the
+  daemon never has to guess that a directory entry is a domain; the cost is
+  that the controller must call it when it creates or destroys a domain.
+  Identities must match `domain:<name>:<hex>`, which a session identity can
+  never match, and each identity and path can be registered once. Removing a
+  domain closes its socket, disconnects its clients and drops handles it holds.
+- **What this does NOT guarantee.** All domains run as the same host uid, so the
+  socket path IS the identity. Any same-uid host process that can open a
+  domain's socket (it is mode 0600 in a 0700 directory, both owned by that
+  uid) is that domain to the bus, and so is any other domain given that
+  directory. `demo-identity.sh` step 8 shows it happening. SO_PEERCRED cannot
+  help: it says the same uid for everyone. Fixes: per-domain uids (needs
+  root/subuid), or the kernel adapter attesting the connecting process's
+  domain (cgroup or native domain id) so the socket stops being the secret.
+  The pid in SO_PEERCRED is not mapped back to a domain either.
+
+## Capabilities
+
+The daemon holds the only authoritative table: token -> {resource, minter,
+holder, expiry, revoked}. A token is 256 random bits (`cap_` + 64 hex).
+
+- `bus.mint@v1 {"resource":"photo:42","ttl_ms":0}` returns `{handle, id,
+  resource, holder}`. The caller is minter and first holder.
+- A message may carry `caps` only if the sender's identity currently holds
+  each one. Otherwise it is rejected before routing and logging, with a
+  specific error: `cap_unknown` (forged or never minted), `cap_not_held`
+  (real handle, wrong domain: knowing the token is not enough), `cap_revoked`,
+  `cap_expired`. A delivered message's caps were therefore held by `from` when
+  it was sent.
+- `bus.transfer@v1 {"handle","to":"<identity>"}`: the holder gives it to a
+  domain that has a live connection. The holder row changes at once (the old
+  holder is rejected from then on) and the daemon pushes the token to the new
+  holder as a `bus.cap.granted` event (`caps:[token]`, payload `{id, resource,
+  from}`), delivered whether or not subscribed.
+- `bus.revoke@v1 {"handle"|"id"}`: only the minter, wherever the handle is now.
+- `bus inspect` lists outstanding handles (id, resource, holder, minter,
+  expiry). Never the token. `--json` has `handles` and `domains`.
+- `busd` enforces by default. `--legacy-caps` (`Config.EnforceCaps=false`,
+  the library default so old tests and clients still run) leaves caps as
+  opaque, forgeable strings.
+- Replay is untouched: replayed messages carry only `cap_ids`, the check
+  compares grants by identity (tested with a minted and transferred handle).
+
+**Minting policy (MVP):** any identity may mint a handle for any resource name
+it states. The properties provided are holder tracking, transfer, expiry and
+revocation. NOT provided: authorisation of minting. A domain can mint
+`file:/etc/shadow` and nothing in the bus knows what that name means, because
+the bus does not bind a handle to an object; a service that trusts a handle
+must itself decide who may mint which resource (e.g. only trust handles whose
+minter is the owning service, visible in `bus inspect`). Also not provided:
+a service cannot yet ask the daemon "who holds this handle" other than via
+the sender-held guarantee above; handles are not attenuable; handle state is in
+memory only, so a daemon restart invalidates every handle (the log has only
+hashes, by design); revoked and expired rows are kept for their specific
+errors and never pruned; holders keyed by session `uid:comm` inherit that
+identity's weakness.
 
 ## Segments: data off the bus (0001)
 
@@ -175,7 +252,7 @@ go build -o ./out/ ./cmd/busd ./cmd/bus      # or: go run ./cmd/busd
 
 `busd` flags: `--socket` (env `AURORA_BUS_SOCK`), `--data-dir` (env
 `AURORA_BUS_DATA`, default `~/.local/share/aurora/bus/log`), `--segment-bytes`,
-`--allow-replay`. It creates the socket directory (0700), refuses to start if
+`--allow-replay`, `--domain IDENTITY=SOCKET` (repeatable), `--legacy-caps`. It creates the socket directory (0700), refuses to start if
 another daemon owns the socket, removes a stale socket, and shuts down cleanly
 on SIGINT/SIGTERM. The `bus` CLI honours `--socket` / `AURORA_BUS_SOCK` too.
 
@@ -226,11 +303,17 @@ stderr and exit non-zero on failure. Flags may appear before or after
 positional arguments.
 
 The end-to-end demo, which leaves no process behind, is `./demo.sh`.
+`./demo-identity.sh` runs two real bwrap domains (needs `bwrap`, builds
+`adapter/linux`'s `domain`): distinct identities, mint, transfer, forgery
+rejected, and the same-uid impersonation weakness.
 
 ## Tests
 
 `go test ./...`. Covered: SO_PEERCRED identity beats a spoofed `from` (also in
-the log), request/response, typed errors, glob match and non-match, QoS
+the log); domain-socket identity beats a spoofed `from`, two domains differ and
+one domain is stable, registration rules; invented, held, not-held,
+transferred, revoked and expired handles, inspect, log holds only ids,
+minted handles pass the replay check; request/response, typed errors, glob match and non-match, QoS
 ordering (unit and under load), ephemeral delivered but not logged, log query
 by topic and time (with segment rotation), handles never appear in the log,
 replay invariant check passes on a recorded session and fails on tampered ones
@@ -250,21 +333,27 @@ Implemented: JSON envelope; peer-credential sender identity; request/response;
 pub/sub with globs; service registry; HLC; four-class QoS outboxes; segmented
 append-only log with time/topic queries; ephemeral skip; handle identity
 hashing in the log; `busd`; the `bus` CLI; invariant-based replay check;
-sealed memfd segments passed by SCM_RIGHTS, logged as descriptor plus hash.
+sealed memfd segments passed by SCM_RIGHTS, logged as descriptor plus hash;
+per-domain sockets with socket-derived identity; a daemon-held capability
+table with mint, holder checks, transfer, revoke and expiry.
 
 0001 specifies, but this MVP does **not** do:
 
 - **Cap'n Proto or any final IDL.** Open question 1 is untouched. There is no
   schema, no typed payload validation, no promise pipelining, no level-3
   handoff. "Typed" today means the verb is versioned and errors are typed.
-- **Real domain identity.** Phase 2 does not exist yet. `from` is
-  `uid:comm`, so two processes of one user running the same binary share a
-  domain, and a process can rename itself. Anything that needs real isolation
-  is not provided here.
-- **Capability semantics.** Handles are opaque strings that are passed along
-  and hashed for the log. There is no minting, unforgeability, transfer
-  control, revocation or check that a sender holds what it sends (open
-  question 3, Phase 2). A client can invent any handle string.
+- **Unforgeable identity on a single-uid host.** Domain identity is the
+  socket path (see "Identity"). Same-uid host processes, and any domain granted
+  another's socket directory, can impersonate a domain. Session-socket
+  identity is still `uid:comm`.
+- **Capability authorisation and durability.** Handles are unforgeable and
+  holder-checked, but minting is unauthorised (any identity, any resource
+  name), handles are not bound to real objects or attenuable, the table is
+  in memory (a restart invalidates all handles), tombstones are never pruned,
+  and with `--legacy-caps` or the library default, caps are plain strings.
+  A stolen token is useless without holding the row, but a holder
+  who passes the token out of band is not stopped from telling others the value
+  (they still cannot present it).
 - **dma-buf, and any fd other than a sealed memfd.** memfd segments with
   SCM_RIGHTS are implemented (see "Segments"). dma-buf handles (GPU buffers,
   no seals, different size and trust rules) are not. Nothing forces a client

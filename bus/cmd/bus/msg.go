@@ -24,6 +24,8 @@ func cmdSend(args []string) int {
 	full := fs.Bool("envelope", false, "print the whole reply envelope instead of the payload")
 	var segs segFlag
 	fs.Var(&segs, "segment", segHelp)
+	var caps segFlag
+	fs.Var(&caps, "cap", "present a capability handle (from bus.mint@v1 / bus.cap.granted); repeatable")
 	pos, code, done := parse(fs, args, 2, 3)
 	if done {
 		return code
@@ -43,7 +45,7 @@ func cmdSend(args []string) int {
 	defer c.Close()
 	ctx, cancel := timeoutCtx(*timeout)
 	defer cancel()
-	req := proto.Envelope{To: pos[0], Verb: pos[1], Payload: payload, QoS: q}
+	req := proto.Envelope{To: pos[0], Verb: pos[1], Payload: payload, QoS: q, Caps: caps}
 	if err := attachFiles(&req, segs); err != nil {
 		return fail("%v", err)
 	}
