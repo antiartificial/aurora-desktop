@@ -102,7 +102,7 @@ Areas do match 0008's memfd mapping, including sealing.
 - **No registrar.** There is no team registry, no `BRoster`, no single-launch, no `be_roster`. `BMessenger(signature)` finds the app by a port name derived from the signature (`A:` plus the FNV-1a hash in hex; Haiku port names are 31 characters, signatures are longer), via `find_port`. Consequences: the first matching live port wins, two instances of one signature are not prevented, and a port left by a crashed process is found until its slot is reused.
 - **No app_server.** `BApplication` opens no connection and creates no server-side app. Nothing draws; there are no windows, views, cursors, or `BBitmap`s.
 - **argv without a launcher.** Haiku delivers `B_ARGV_RECEIVED` from the registrar's launch message. Here `Run()` reads `/proc/self/cmdline` and posts it to itself if `argc > 1`, then posts `B_READY_TO_RUN`.
-- **Early messages.** The port exists from the constructor, so a peer may send before `Run()`. Such messages are dispatched before `ReadyToRun`. Wire handlers up in the constructor. (The demo hit this as an intermittent failure and now does so.)
+- **Lifecycle messages go to the application itself**, never the preferred handler (a bug found when the demo set one). **Early messages.** The port exists from the constructor, so a peer may send before `Run()`. Such messages are dispatched before `ReadyToRun`. Wire handlers up in the constructor. (The demo hit this as an intermittent failure and now does so.)
 
 ### Not implemented, versus real libbe
 
