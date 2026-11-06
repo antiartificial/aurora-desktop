@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The app's own ImageMagick policy. The host's /etc/IM-7 is not visible in
+     the domain, so without this file ImageMagick would run with its built-in
+     (empty) policy. This one is deny-by-default: only the raster formats the
+     manifest claims can be decoded or encoded, no delegates (so no
+     ghostscript, no shell-outs), no @file lists, no remote paths. -->
+<policymap>
+  <policy domain="resource" name="width" value="16KP"/>
+  <policy domain="resource" name="height" value="16KP"/>
+  <policy domain="resource" name="area" value="128MP"/>
+  <policy domain="resource" name="memory" value="512MiB"/>
+  <policy domain="resource" name="map" value="512MiB"/>
+  <policy domain="resource" name="disk" value="1GiB"/>
+  <policy domain="resource" name="time" value="60"/>
+  <policy domain="resource" name="list-length" value="32"/>
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read|write" pattern="{PNG,JPEG,JPG,GIF,WEBP,BMP}"/>
+  <policy domain="module" rights="none" pattern="*"/>
+  <policy domain="module" rights="read|write" pattern="{PNG,JPEG,GIF,WEBP,BMP}"/>
+  <policy domain="filter" rights="none" pattern="*"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="path" rights="none" pattern="|*"/>
+</policymap>

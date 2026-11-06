@@ -49,7 +49,9 @@ has "$VERBS" "DESTRUCTIVE" "and marks the destructive verb as such"
 step "run Lumen in a domain" "a real resize, inside a bwrap domain that has its own uid"
 "$ROOT/build/bin/genimage" "$WORK/photo.png"
 [ "$($PNG info "$WORK/photo.png")" = "1200 800" ] && ok "input photo.png is 1200x800" || fail "bad input image"
-OPEN=$(aurora open "$WORK/photo.png" --verb resize@v1 --arg width=300 </dev/null 2>&1); echo "$OPEN" | sed 's/^/   | /' | cut -c1-200
+# --app is required now that more than one installed app offers resize@v1
+# (org.aurora.lumen and org.aurora.magick); the launcher refuses to guess.
+OPEN=$(aurora open "$WORK/photo.png" --verb resize@v1 --app org.aurora.lumen --arg width=300 </dev/null 2>&1); echo "$OPEN" | sed 's/^/   | /' | cut -c1-200
 has "$OPEN" "isolated: true" "the controller reports the run was isolated"
 [ "$($PNG info "$WORK/photo.resize.png")" = "300 200" ] && ok "photo.resize.png exists and is 300x200 (aspect kept)" || fail "output is not a 300x200 PNG"
 

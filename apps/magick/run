@@ -1,0 +1,80 @@
+#!/bin/sh
+# Entrypoint for the controller: wraps the host's ImageMagick, which knows
+# nothing about Aurora. Protocol: run --verb NAME, request JSON on stdin
+#   {"input":F,"output":F,"args":{...}}
+# Result JSON on stdout, diagnostics on stderr, non-zero exit on failure.
+#
+# Inside the domain this script (and etc/policy.xml next to it) is the app
+# image under /domain/data/app. magick, jq and every shared library they load
+# come from the domain's read-only /usr, which is the host's /usr; closure.sh
+# proves that list. ImageMagick's own config dir (/etc/IM-7) is NOT visible in
+# the domain, so MAGICK_CONFIGURE_PATH points it at the policy shipped here.
+set -eu
+[ "${1:-}" = "--verb" ] || { echo "usage: run --verb NAME < request.json" >&2; exit 2; }
+verb=$2
+here=$(cd "$(dirname "$0")" && pwd)
+export MAGICK_CONFIGURE_PATH="$here/etc" MAGICK_TEMPORARY_PATH=/tmp
+command -v magick >/dev/null || { echo "magick: not found in the domain's /usr" >&2; exit 127; }
+command -v jq >/dev/null || { echo "jq: not found in the domain's /usr" >&2; exit 127; }
+
+req=$(cat)
+in=$(printf '%s' "$req" | jq -r '.input // empty')
+out=$(printf '%s' "$req" | jq -r '.output // empty')
+arg() { printf '%s' "$req" | jq -r --arg k "$1" '.args[$k] // empty'; }
+die() { echo "magick-app: $*" >&2; exit 1; }
+
+# Paths are absolute (the controller guarantees it); '[' would be read by
+# ImageMagick as a frame/crop selector, so refuse it rather than escape it.
+case $in$out in *\[*) die "path contains '['";; esac
+[ -n "$in" ] && [ -r "$in" ] || die "cannot read input '$in'"
+
+isint() { case $1 in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le "$2" ]; }
+# format name or extension -> ImageMagick coder, from the allow-list only
+coder() {
+  case $(printf '%s' "$1" | tr 'A-Z' 'a-z') in
+    png) echo PNG;; jpg|jpeg) echo JPEG;; gif) echo GIF;; webp) echo WEBP;; bmp) echo BMP;;
+    *) return 1;;
+  esac
+}
+# Re-describe the file we wrote, from its bytes, as the result.
+describe() { magick identify -format '{"ok":true,"format":"%m","width":%w,"height":%h}\n' "$1[0]" 2>/dev/null | head -1; }
+
+case $verb in
+  resize@v1)
+    w=$(arg width); h=$(arg height)
+    [ -n "$out" ] || die "resize@v1 needs an output"
+    fmt=$(coder "${out##*.}") || die "cannot tell the output format from '$out' (png, jpg, gif, webp, bmp)"
+    geom=
+    [ -n "$w" ] && { isint "$w" 16000 || die "width must be 1..16000"; }
+    [ -n "$h" ] && { isint "$h" 16000 || die "height must be 1..16000"; }
+    if [ -n "$w" ] && [ -n "$h" ]; then geom="${w}x${h}!"
+    elif [ -n "$w" ]; then geom="${w}x"
+    elif [ -n "$h" ]; then geom="x${h}"
+    else die "width or height required"; fi
+    magick "$in[0]" -resize "$geom" "$fmt:$out" || die "magick failed"
+    describe "$out" | jq -c --arg o "$out" '.output=$o'
+    ;;
+  convert@v1)
+    [ -n "$out" ] || die "convert@v1 needs an output"
+    fmt=$(coder "$(arg format)") || die "format must be one of png jpeg gif webp bmp"
+    q=$(arg quality); qarg=
+    [ -n "$q" ] && { isint "$q" 100 || die "quality must be 1..100"; qarg=$q; }
+    if [ -n "$qarg" ]; then magick "$in[0]" -quality "$qarg" "$fmt:$out" || die "magick failed"
+    else magick "$in[0]" "$fmt:$out" || die "magick failed"; fi
+    describe "$out" | jq -c --arg o "$out" '.output=$o'
+    ;;
+  grayscale@v1)
+    [ -n "$out" ] || die "grayscale@v1 needs an output"
+    fmt=$(coder "${out##*.}") || die "cannot tell the output format from '$out' (png, jpg, gif, webp, bmp)"
+    magick "$in[0]" -colorspace Gray -colorspace sRGB "$fmt:$out" || die "magick failed"
+    describe "$out" | jq -c --arg o "$out" '.output=$o'
+    ;;
+  identify@v1)
+    magick identify -format '%m %w %h %[colorspace] %z %n\n' "$in[0]" 2>/dev/null | head -1 |
+      { read -r f w h cs depth frames
+        [ -n "${f:-}" ] || die "not a recognised image"
+        jq -nc --arg f "$f" --arg cs "$cs" --argjson w "$w" --argjson h "$h" --argjson d "$depth" --argjson n "$frames" \
+          '{ok:true,format:$f,width:$w,height:$h,colorspace:$cs,depth:$d,frames:$n}'; }
+    ;;
+  *) echo "unknown verb $verb" >&2; exit 2;;
+esac

@@ -1,0 +1,61 @@
+# ImageMagick, wrapped. The tool is a real, pre-existing program that knows
+# nothing about Aurora; this manifest and `run` are the whole integration.
+# For a wrapped tool the manifest is not enforced by the registry (0002): it
+# is enforced by the domain, which grants exactly the input (ro) and the one
+# output file (rw), plus etc/policy.xml which limits ImageMagick itself to
+# the formats claimed below. Every format claimed here is exercised by
+# demo.sh; nothing is claimed that was not decoded back from real output.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
+
+[app]
+id = "org.aurora.magick"
+name = "ImageMagick"
+version = "0.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[runtime]]
+name = "imagemagick"
+version = "7.1.2"
+
+[capabilities]
+
+[[capabilities.paths]]
+path = "~/Pictures"
+access = "write"
+
+[types]
+opens = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+creates = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+
+[[verb]]
+name = "resize@v1"
+summary = "Resize an image; width alone keeps aspect, width and height together are exact"
+effect = "write"
+accepts = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+capabilities = ["path:~/Pictures"]
+input = { width = "int?", height = "int?" }
+output = { image = "image/*" }
+
+[[verb]]
+name = "convert@v1"
+summary = "Re-encode an image as png, jpeg, gif, webp or bmp"
+effect = "write"
+accepts = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+capabilities = ["path:~/Pictures"]
+input = { format = "string", quality = "int?" }
+output = { image = "image/*" }
+
+[[verb]]
+name = "grayscale@v1"
+summary = "Desaturate an image; the output format follows the output file's extension"
+effect = "write"
+accepts = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+capabilities = ["path:~/Pictures"]
+output = { image = "image/*" }
+
+[[verb]]
+name = "identify@v1"
+summary = "Report an image's format, size, colorspace, bit depth and frame count"
+effect = "read"
+accepts = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"]
+output = { format = "string", width = "int", height = "int", colorspace = "string", depth = "int", frames = "int" }

@@ -3,6 +3,7 @@ go 1.27.1
 use (
 	./adapter/linux
 	./apps/lumen
+	./apps/magick
 	./bus
 	./contracts/manifest
 	./controller
