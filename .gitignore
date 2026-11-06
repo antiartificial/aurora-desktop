@@ -37,3 +37,6 @@ OVMF_VARS*
 *.EFI
 
 # demos/ is tracked on purpose (phase recordings). Do not ignore it.
+
+# Go workspace sum file (local resolution state)
+go.work.sum

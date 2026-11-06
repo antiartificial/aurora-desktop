@@ -1,0 +1,7 @@
+go 1.27.1
+
+use (
+	./adapter/linux
+	./bus
+	./contracts/manifest
+)
