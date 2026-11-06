@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +38,7 @@ func main() {
 	keyPath := fs.String("powerbox-key", ticket.KeyPath(), "shared key file for powerbox tickets (env AURORA_POWERBOX_KEY), created 0600 if missing")
 	autoApprove := fs.Bool("auto-approve", false, "TEST AFFORDANCE, defeats approval: allow every destructive/external invoke on a non-ambient grant without asking anyone (logged loudly each time)")
 	compSock := fs.String("compositor-socket", config.TrustedSocket(), "compositor trusted-path socket (env AURORA_TRUSTED_SOCK): approvals are drawn by the compositor when it answers here, else they fall back to the bus route")
+	preflightBin := fs.String("preflight-bin", "", "aurora-preflight helper run inside the app's domain before a compositor prompt so the bus attests which domain asked (default: next to controllerd, or in PATH); none found means prompts show the domain as an unverified claim")
 	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
 	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
@@ -94,6 +97,14 @@ func main() {
 			log.Printf("approvals are drawn by the compositor via %s when it answers; otherwise the bus route", *compSock)
 		}
 	}
+	if approver.Compositor != nil {
+		if pb := locateHelper(*preflightBin, "aurora-preflight"); pb != "" {
+			approver.Preflight = &invoke.Preflight{Bin: pb}
+			log.Printf("approval pre-flight: %s runs inside the domain before each compositor prompt", pb)
+		} else {
+			log.Printf("WARNING: no aurora-preflight helper found: compositor prompts will show the domain as an unverified claim (build ./cmd/aurora-preflight, pass --preflight-bin)")
+		}
+	}
 	if *autoApprove {
 		log.Printf("WARNING: --auto-approve: destructive and external verbs on non-ambient grants will be APPROVED WITHOUT ASKING. This is a test affordance and defeats the point of approval.")
 	} else {
@@ -142,4 +153,21 @@ func main() {
 	case <-c.Done():
 		log.Fatalf("bus connection lost")
 	}
+}
+
+// locateHelper finds a helper binary: explicit path, next to this executable, then PATH.
+func locateHelper(explicit, name string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if exe, err := os.Executable(); err == nil {
+		c := filepath.Join(filepath.Dir(exe), name)
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return ""
 }

@@ -5,7 +5,9 @@
 //!            "effect":"destructive","grants":[{"path":"..","mode":"rw","source":"gesture"}],
 //!            "args":<any json>,"timeout_ms":60000}
 //! response: {"v":1,"request_id":"..","decision":"allow"|"deny","key":"a","reason":"key"|"timeout",
-//!            "domain_verified":"true"|"false"|"unknown","domain_verify_detail":".."}
+//!            "domain_verified":"true"|"false"|"unknown","domain_verify_detail":"..",
+//!            "domain_source":"bus"|"claim","domain_identity":"<the identity displayed>","domain_mismatch":"true"|"false"}
+//!           (source "bus": the domain came from an approval.preflight event busd stamped, see attest.rs)
 //!           or {"error":".."} when the peer or the request is refused.
 //!
 //! Who may connect is decided on the connection, from the kernel's
@@ -28,7 +30,7 @@ use smithay::reexports::calloop::{
     timer::{TimeoutAction, Timer},
 };
 
-use super::{Request, draw::clean, verify};
+use super::{Request, attest, draw::clean};
 use crate::Aurora;
 
 const MAX_LINE: usize = 64 * 1024;
@@ -239,7 +241,7 @@ fn accept(h: &LoopHandle<'static, Aurora>, state: &mut Aurora, s: UnixStream) {
         if gone2.get() {
             return;
         }
-        tracing::info!("trusted: request from uid {uid} pid {pid}; domain_verified={} ({})", req.verification.verdict.wire(), req.verification.detail);
+        tracing::info!("trusted: request from uid {uid} pid {pid}; domain_verified={} bus_attested={} mismatch={:?} shown={} ({})", req.verification.verdict.wire(), req.verification.bus_attested, req.verification.mismatch, req.domain_identity, req.verification.detail);
         id2.set(Some(state.trusted_enqueue(req, timeout, w)));
     });
     let mut buf: Vec<u8> = Vec::new();
@@ -265,9 +267,10 @@ fn accept(h: &LoopHandle<'static, Aurora>, state: &mut Aurora, s: UnixStream) {
                             Ok((mut req, timeout)) => {
                                 sent.set(true);
                                 let sock = state.trusted.bus_sock.clone();
+                                let used = state.trusted.used.clone();
                                 let tx = tx.clone();
                                 std::thread::spawn(move || {
-                                    req.verification = verify::check(sock.as_deref(), &req.domain, &req.domain_identity);
+                                    attest::resolve(sock.as_deref(), &mut req, &used);
                                     let _ = tx.send((req, timeout));
                                 });
                             }

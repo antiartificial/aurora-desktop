@@ -51,11 +51,23 @@ pub struct Verification {
     pub verdict: Verdict,
     /// Printable-ASCII reason, shown on the overlay and returned in the reply.
     pub detail: String,
+    /// True only when the domain shown was learned from an `approval.preflight`
+    /// event busd stamped (attest.rs), not from the requester's text.
+    pub bus_attested: bool,
+    /// Bus-attested but different from what the controller claimed: what it claimed.
+    pub mismatch: Option<String>,
 }
 
 impl Verification {
     fn new(verdict: Verdict, detail: impl Into<String>) -> Self {
-        Verification { verdict, detail: clean(&detail.into()) }
+        Verification { verdict, detail: clean(&detail.into()), bus_attested: false, mismatch: None }
+    }
+    pub(super) fn attested(detail: impl Into<String>, mismatch: Option<String>) -> Self {
+        Verification { bus_attested: true, mismatch: mismatch.map(|m| clean(&m)), ..Self::new(Verdict::Verified, detail) }
+    }
+    pub(super) fn claim_note(mut self, note: &str) -> Self {
+        self.detail = clean(&format!("{}; {note}", self.detail));
+        self
     }
     pub fn unchecked() -> Self {
         Self::new(Verdict::Unknown, "not checked")
@@ -80,12 +92,20 @@ pub fn check(bus_sock: Option<&Path>, name: &str, identity: &str) -> Verificatio
     }
 }
 
-fn inspect(sock: &Path) -> Result<Value, String> {
+pub(super) fn inspect(sock: &Path) -> Result<Value, String> {
+    call(sock, "bus.inspect@v1", None)
+}
+
+/// One control request on the session socket; the reply payload.
+pub(super) fn call(sock: &Path, verb: &str, payload: Option<Value>) -> Result<Value, String> {
     let start = Instant::now();
     let s = UnixStream::connect(sock).map_err(|e| format!("connect {}: {e}", sock.display()))?;
     s.set_write_timeout(Some(DEADLINE)).ok();
     let id = "v1";
-    let req = serde_json::json!({"id": id, "kind": "request", "to": "bus", "verb": "bus.inspect@v1"});
+    let mut req = serde_json::json!({"id": id, "kind": "request", "to": "bus", "verb": verb});
+    if let Some(p) = payload {
+        req["payload"] = p;
+    }
     (&s).write_all(format!("{req}\n").as_bytes()).map_err(|e| format!("write: {e}"))?;
     let mut rd = BufReader::new((&s).take(MAX_REPLY));
     loop {
@@ -101,7 +121,7 @@ fn inspect(sock: &Path) -> Result<Value, String> {
         }
         return match env["kind"].as_str() {
             Some("response") => Ok(env["payload"].clone()),
-            _ => Err(format!("bus refused bus.inspect@v1: {}", env["payload"])),
+            _ => Err(format!("bus refused {verb}: {}", env["payload"])),
         };
     }
 }

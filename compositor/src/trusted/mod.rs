@@ -6,6 +6,7 @@
 //! protocol object for any of it, and the capture path runs before the overlay
 //! is drawn so it cannot read it. See README.md, "Trusted path".
 
+pub mod attest;
 pub mod draw;
 pub mod dump;
 mod font;
@@ -63,6 +64,8 @@ pub struct Trusted {
     pub allow: socket::Allowlist,
     /// Bus session socket for domain verification; None means every claim is `unknown`.
     pub bus_sock: Option<PathBuf>,
+    /// Request ids that already attested a prompt from a bus event.
+    pub used: attest::Used,
     /// Keys pressed while an overlay was up. Their releases are swallowed
     /// too, even after the overlay is gone, so a client never sees half a keystroke.
     swallowed: std::collections::HashSet<u32>,
@@ -89,6 +92,8 @@ fn reply(mut out: &UnixStream, req: &Request, allow: bool, key: &str, reason: &s
     let body = serde_json::json!({
         "v": 1, "request_id": req.request_id,
         "domain_verified": req.verification.verdict.wire(), "domain_verify_detail": req.verification.detail,
+        "domain_source": if req.verification.bus_attested { "bus" } else { "claim" },
+        "domain_identity": req.domain_identity, "domain_mismatch": req.verification.mismatch.is_some().to_string(),
         "decision": if allow { "allow" } else { "deny" }, "key": key, "reason": reason,
     });
     let _ = writeln!(out, "{body}");

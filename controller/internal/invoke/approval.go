@@ -58,6 +58,9 @@ type Approver struct {
 	// Compositor, if set, is tried first: the compositor draws the prompt.
 	// When it cannot be reached or refuses us, the bus route below is used.
 	Compositor *CompositorPrompt
+	// Preflight, if set (and Compositor is), runs a helper inside the app's
+	// domain before the prompt so the bus attests which domain asked.
+	Preflight *Preflight
 
 	mu      sync.Mutex
 	pending map[string]chan verdict
@@ -147,6 +150,13 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	}
 	dname := DomainName(app.ID())
 	req := ApprovalRequest{App: app.ID(), DomainName: dname, Verb: name, Effect: verb.Effect, Grants: grants, Args: argsJSON}
+	if ap.Preflight != nil && ap.Compositor != nil && !ap.AutoApprove && iv.Runner.Available() == nil {
+		// The helper runs in the domain, so the domain must exist (and be
+		// registered with busd, below) before the prompt rather than at execute.
+		if err := iv.Runner.Ensure(dname); err != nil {
+			iv.logf("WARNING: cannot create domain %s for the approval pre-flight: %v", dname, err)
+		}
+	}
 	if id, _, err := iv.Runner.Identity(dname); err == nil {
 		req.Domain = id
 		// The domain exists, so make sure busd has it registered: the
@@ -163,6 +173,15 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	wait := ap.timeout()
 	if ap.Compositor != nil {
 		req.RequestID, req.TimeoutSeconds = newID(), int(wait.Round(time.Second)/time.Second)
+		if ap.Preflight != nil && req.Domain != "" && req.DomainAttested {
+			if took, err := ap.Preflight.run(ctx, iv.Runner, dname, req); err != nil {
+				iv.logf("WARNING: approval pre-flight in %s failed (%v); the compositor will show the domain as an unverified claim", dname, err)
+			} else {
+				iv.logf("approval %s: pre-flight published from inside %s in %s", req.RequestID, dname, took.Round(time.Millisecond))
+			}
+		} else if ap.Preflight != nil {
+			iv.logf("WARNING: approval pre-flight skipped (domain has no attested bus identity); the compositor will show the domain as an unverified claim")
+		}
 		iv.logf("approval requested %s on the compositor: %s verb %s of %s on %v; waiting up to %s", req.RequestID, verb.Effect, name, app.ID(), grants, wait)
 		ans, err := ap.Compositor.Ask(ctx, req, wait)
 		switch {
@@ -182,7 +201,7 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 			return nil, fail("approval_denied", "%s was denied by the compositor prompt (key %q)", "request "+req.RequestID+"; nothing was run", name, ans.Key)
 		default:
 			iv.publishDecided(req.RequestID, verdict{Allow, "compositor"}, "", prov.RouteCompositor)
-			iv.logf("approval %s: allowed at the compositor prompt (key %q; domain_verified=%s: %s)", req.RequestID, ans.Key, ans.DomainVerified, ans.DomainVerifyDetail)
+			iv.logf("approval %s: allowed at the compositor prompt (key %q; domain_verified=%s source=%s shown=%s mismatch=%s: %s)", req.RequestID, ans.Key, ans.DomainVerified, ans.DomainSource, ans.DomainIdentity, ans.DomainMismatch, ans.DomainVerifyDetail)
 			return compositorApproval(req.RequestID, ans, now()), nil
 		}
 	}

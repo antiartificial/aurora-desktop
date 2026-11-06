@@ -61,3 +61,9 @@ func (f *Fake) Run(_ context.Context, n string, argv []string, stdin []byte) (Re
 	}
 	return Result{}, nil
 }
+
+// InstallHelper records the call and returns a fixed in-domain path.
+func (f *Fake) InstallHelper(n, src string) (string, error) {
+	f.rec("helper %s", n)
+	return "/domain/data/helpers/" + filepath.Base(src), nil
+}

@@ -26,6 +26,12 @@ const OK: [u8; 4] = [90, 220, 120, 255];
 pub const BANNER: [u8; 4] = [255, 200, 0, 255];
 /// Text colour of a verified domain line; no other element uses it.
 pub const VERIFIED: [u8; 4] = [80, 200, 255, 255];
+/// Band behind a domain mismatch; no other element uses it.
+pub const MISMATCH: [u8; 4] = [255, 40, 40, 255];
+/// Text colour of a bus-attested domain line; no other element uses it.
+pub const ATTESTED: [u8; 4] = [120, 255, 160, 255];
+/// Text colour of the note that a domain is only the controller's word; no other element uses it.
+pub const CLAIM: [u8; 4] = [235, 160, 255, 255];
 const BANNER_H: usize = 22;
 
 pub struct Canvas {
@@ -110,14 +116,22 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     let r = &p.req;
     let mut rows: Vec<(String, String, [u8; 4], bool)> = Vec::new(); // label, value, colour, keep_tail
     rows.push(("App".into(), r.app.clone(), TEXT, false));
-    let verified = r.verification.verdict == Verdict::Verified;
-    if verified {
+    let v = &r.verification;
+    let verified = v.verdict == Verdict::Verified;
+    if v.bus_attested {
         rows.push(("Domain".into(), r.domain.clone(), TEXT, false));
-        rows.push(("".into(), format!("VERIFIED: {}", r.verification.detail), VERIFIED, false));
-        rows.push(("".into(), "Proves the domain exists, not that this request runs in it.".into(), DIM, false));
+        rows.push(("".into(), "BUS-ATTESTED: this request came from inside it.".into(), ATTESTED, false));
+        rows.push(("".into(), "busd stamped the sender; verb and grants text are the controller's.".into(), DIM, false));
+        if let Some(m) = &v.mismatch {
+            rows.push(("Claimed".into(), format!("{m} by the controller (REJECTED)"), WARN, false));
+        }
+    } else if verified {
+        rows.push(("Domain".into(), r.domain.clone(), TEXT, false));
+        rows.push(("".into(), format!("VERIFIED: {}", v.detail), VERIFIED, false));
+        rows.push(("".into(), "CONTROLLER'S CLAIM: nothing from inside it confirms this request.".into(), CLAIM, false));
     } else {
         rows.push(("Domain".into(), format!("CLAIMED \"{}\" (NOT VERIFIED)", r.domain), WARN, false));
-        rows.push(("".into(), format!("busd: {}", r.verification.detail), WARN, false));
+        rows.push(("".into(), format!("busd: {}", v.detail), WARN, false));
     }
     if !r.domain_identity.is_empty() {
         rows.push(("Ident".into(), r.domain_identity.clone(), DIM, true));
@@ -136,7 +150,7 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     for (i, l) in wrap(&r.args, vcols, 3).into_iter().enumerate() {
         rows.push((if i == 0 { "Args" } else { "" }.into(), l, TEXT, false));
     }
-    let banner = if verified { 0 } else { BANNER_H + 8 };
+    let banner = if verified && v.mismatch.is_none() { 0 } else { BANNER_H + 8 };
     let h = banner + 32 + 8 + 16 + 14 + rows.len() * (GLYPH_H + 2) + 14 + 32 + 10 + 16 + 30;
     let mut c = Canvas::new(w, h, PANEL);
     c.rect(0, 0, w, 6, BORDER);
@@ -148,13 +162,14 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize) -> Canvas
     y += 32 + 6;
     c.text(20, y, &fit("Drawn by the compositor itself, not by an app.", cols, false), 1, DIM);
     y += GLYPH_H + 14;
-    if !verified {
-        c.rect(14, y - 2, w - 28, BANNER_H, BANNER);
-        let msg = match r.verification.verdict {
-            Verdict::Unknown => "UNVERIFIED DOMAIN: busd could not be asked. The name is a claim.",
-            _ => "UNVERIFIED DOMAIN: busd does not vouch for it. The name is a claim.",
+    if !verified || v.mismatch.is_some() {
+        let (band, msg) = match (&v.mismatch, v.verdict) {
+            (Some(_), _) => (MISMATCH, "DOMAIN MISMATCH: the controller named another domain. Showing the bus's.".to_string()),
+            (_, Verdict::Unknown) => (BANNER, "UNVERIFIED DOMAIN: busd could not be asked. The name is a claim.".to_string()),
+            _ => (BANNER, "UNVERIFIED DOMAIN: busd does not vouch for it. The name is a claim.".to_string()),
         };
-        c.text(20, y + 3, &fit(msg, cols, false), 1, [20, 20, 20, 255]);
+        c.rect(14, y - 2, w - 28, BANNER_H, band);
+        c.text(20, y + 3, &fit(&msg, cols, false), 1, [20, 20, 20, 255]);
         y += BANNER_H + 8;
     }
     for (label, value, colour, tail) in rows {

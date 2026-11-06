@@ -48,7 +48,15 @@ type CompositorAnswer struct {
 	// that predates the check, which is recorded as unknown).
 	DomainVerified     string `json:"domain_verified"`
 	DomainVerifyDetail string `json:"domain_verify_detail"`
-	Error              string `json:"error"`
+	// DomainSource: "bus" when the compositor learned the domain from an
+	// approval.preflight event busd stamped (not from our request), "claim"
+	// when it shows our word. DomainIdentity is the identity it displayed.
+	// DomainMismatch is "true" when the bus's domain differs from the one we
+	// claimed; the compositor shows the bus's.
+	DomainSource   string `json:"domain_source"`
+	DomainIdentity string `json:"domain_identity"`
+	DomainMismatch string `json:"domain_mismatch"`
+	Error          string `json:"error"`
 }
 
 type wireGrant struct {
@@ -148,6 +156,10 @@ func compositorApproval(id string, a *CompositorAnswer, at string) *prov.Approva
 	if v != "true" && v != "false" {
 		v = "unknown"
 	}
+	src := a.DomainSource
+	if src != "bus" {
+		src = "claim"
+	}
 	return &prov.Approval{Required: true, Route: prov.RouteCompositor, Decision: Allow, RequestID: id, By: "compositor", Key: a.Key, At: at,
-		DomainVerified: v, DomainVerifyDetail: a.DomainVerifyDetail}
+		DomainVerified: v, DomainVerifyDetail: a.DomainVerifyDetail, DomainSource: src, DomainShown: a.DomainIdentity, DomainMismatch: a.DomainMismatch == "true"}
 }

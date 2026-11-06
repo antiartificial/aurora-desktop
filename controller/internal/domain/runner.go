@@ -205,3 +205,18 @@ func (c CLI) InstallImage(name, srcDir, exe string) (string, error) {
 	}
 	return "/domain/data/app/" + base, nil
 }
+
+// InstallHelper copies the helper binary src into <domain>/data/helpers and
+// returns its path inside the domain. It is not an app grant: it is code the
+// controller runs in the domain to publish on the domain's own bus socket.
+func (c CLI) InstallHelper(name, src string) (string, error) {
+	dst := filepath.Join(Root(), name, "data", "helpers")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return "", err
+	}
+	base := filepath.Base(src)
+	if err := copyFile(src, filepath.Join(dst, base), 0o755); err != nil {
+		return "", err
+	}
+	return "/domain/data/helpers/" + base, nil
+}

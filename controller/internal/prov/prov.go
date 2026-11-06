@@ -67,6 +67,16 @@ type Approval struct {
 	// exists and is attested. It does NOT prove this invoke ran in it.
 	DomainVerified     string `json:"domain_verified,omitempty"`
 	DomainVerifyDetail string `json:"domain_verify_detail,omitempty"`
+	// DomainSource, route compositor only: "bus" when the domain the user was
+	// shown came from an event busd stamped from inside that domain (the
+	// requester did not choose it), "claim" when it was only the controller's
+	// word. DomainShown is the identity displayed. DomainMismatch is true when
+	// the controller claimed a different domain than the bus attested (the
+	// compositor displayed the bus's). A same-uid process with its own domain
+	// socket access, or one that joined the domain, can still publish as it.
+	DomainSource   string `json:"domain_source,omitempty"`
+	DomainShown    string `json:"domain_shown,omitempty"`
+	DomainMismatch bool   `json:"domain_mismatch,omitempty"`
 }
 
 // Grant is one filesystem grant given to the app's domain for one invoke.

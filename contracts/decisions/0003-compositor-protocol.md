@@ -61,7 +61,7 @@ The reservation above is now implemented for one use, approval prompts. The comp
 
 ## Amendment: domain verification and compositor authentication
 
-0003 requires an approval that says truthfully **which domain** asked. That has two halves, and only one is met.
+0003 requires an approval that says truthfully **which domain** asked. That has two halves; the first is met, the second partly (see "Amendment: bus-attested domain" below, which supersedes the "Not met" paragraph here).
 
 **Met: the named domain is real.** The compositor no longer displays a domain name on the caller's say-so alone. It takes the domain's bus identity from the request, asks busd itself (`bus.inspect@v1` on the session socket, `compositor/src/trusted/verify.rs`) and draws the result: `VERIFIED` when busd has that identity registered with a cgroup it attests, otherwise (busd does not vouch, or cannot be asked) a banner `UNVERIFIED DOMAIN` with the name shown as a claim. An unverified claim is displayed, never refused, since refusing would let an attacker suppress approvals. The result goes back in the reply (`domain_verified: true|false|unknown`) and into provenance. Inventing a domain name or identity busd has never registered is now visible to the user.
 
@@ -80,3 +80,20 @@ The parameter set Phase 8's theme engine will consume is checked in at `contract
 **Shape (version 1).** `[theme] name, version`; `[glass] enabled, blur_radius` (dual-Kawase tap-offset multiplier), `blur_passes` (1 to 6), `corner_radius` (px); `[glass.tint] oklab = [L, a, b], strength` (0 to 1); `[glass.edge] oklab, width` (px), `strength`; `[switcher] layout = "grid" | "flip", backdrop_dim, flip_angle_deg, accent` (Oklab). Colours are Oklab tokens, converted to gamma-encoded sRGB when loaded; blending itself is not done in Oklab or in linear light. Unknown keys are ignored and missing keys take the defaults written in the file, so a later version can add keys without breaking v1 readers. Values are clamped on load.
 
 **Not in the file yet:** spacing and font tokens, window frames, cursors, sounds, the manifest and the topic allowlist (Phase 8), per-window glass opt-out, switcher animation timing. Shader uniform names are part of the contract between a shader and the compositor (listed in `fx/mod.rs`, `uniform_names`); renaming one is a breaking change.
+
+## Amendment: bus-attested domain
+
+Closes the second half of "which domain asked", up to a stated ceiling. Before each compositor prompt the controller runs a tiny helper, `controller/cmd/aurora-preflight`, inside the app's domain. The helper publishes `approval.preflight` (request id, app, verb, effect, grants) on the domain's own bus socket, so busd stamps `from` from the accepting socket and the connector's cgroup. The compositor reads that event from the bus log by request id (`compositor/src/trusted/attest.rs`) and displays the **bus's** identity. If the controller named a different domain, the overlay shows the bus's, a red `DOMAIN MISMATCH` banner and the controller's claim as rejected. Provenance records `domain_source` (`bus` or `claim`), `domain_shown` and `domain_mismatch`.
+
+**Rules the compositor applies.** The event must come from a `domain:<name>:<id>` sender, repeat the prompt's app, verb, effect and grants, be at most 60 s old, name a domain busd still has registered with a cgroup, and be used once per request id; two domains publishing for one id attest nothing. No usable event (helper missing, failed, slow, or never run) falls back to the previous display, now marked `CONTROLLER'S CLAIM`, and the prompt is always shown.
+
+**Now met.** A request whose domain the compositor shows as `BUS-ATTESTED` was published, over that domain's own socket, by a process busd attested as inside it. The controller's text no longer decides the identity, and a process that cannot run code in the domain it names cannot get it shown as attested (a same-uid process on the trusted socket naming a real domain, with no event, is shown as a claim). Measured: 11 ms per pre-flight against a 10 to 11 ms bare sandbox start.
+
+**Still not met, and who can lie.**
+- A same-uid host process that can `domain run` into any domain, or take over a domain with the setns attack (`bus/README.md`, 8g), can publish the event with a request id and content it chooses, and get that domain attested. `demo-attested.sh` step 3 does this with an ordinary `domain run`. The ceiling is therefore the adapter's: inside the same user, "can run in the domain" is not a privilege.
+- The bus attests where the helper ran, not where the payload runs. The controller chooses both and could run them in different domains; it is still in the trusted base for that link. Verb, grants and args are the controller's text; the compositor cross-checks them against the event but both come from the controller.
+- The domain is cgroup-attested only (the controller does not request namespace or uid attestation), so busd's caveats for that mode apply. The compositor trusts busd, its log and its `bus.inspect@v1` reply over the session socket, as same-uid.
+- A malicious app inside the domain can publish its own `approval.preflight` events but cannot make a different domain look like the sender; at worst it causes a conflict and a fall back to the claim.
+- The bus route (no compositor) has no pre-flight. Secure attention and a user-held secret remain open.
+
+Tests: `compositor/tests/attest.rs`, `compositor/src/trusted/attest.rs`, `controller/internal/invoke/preflight_test.go`. End to end with real busd, controllerd, headless compositor, bwrap domains and the real helper: `controller/demo-attested.sh`.
