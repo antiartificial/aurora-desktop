@@ -17,6 +17,14 @@ var extMIME = map[string]string{
 	".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
 	".txt": "text/plain", ".md": "text/markdown", ".json": "application/json",
 	".pdf": "application/pdf", ".svg": "image/svg+xml",
+	// Audio and video, for apps/ffmpeg's verbs. http.DetectContentType
+	// already knows most of these from their magic bytes, so the entries
+	// here only matter when sniffing comes back generic -- except FLAC,
+	// which Go does not sniff at all and which reaches a verb only by
+	// extension. The spellings match what the manifests accept.
+	".wav": "audio/wave", ".mp3": "audio/mpeg", ".flac": "audio/flac",
+	".ogg": "audio/ogg", ".oga": "audio/ogg",
+	".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
 }
 
 // DetectMIME sniffs the first 512 bytes with http.DetectContentType. That
