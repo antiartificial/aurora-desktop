@@ -1,10 +1,10 @@
 # Roadmap
 
 What is built, what is next, and what is deliberately not being built. Each item says how you
-would check it yourself, because a roadmap that cannot be audited is a wish list.
+would check it yourself, so none of it has to be taken on trust.
 
-Dates are absent on purpose. This is one person and a set of agents working evenings; the order
-is real, the schedule is not.
+Dates are absent on purpose. This is one person and a set of agents working evenings, so the
+order below is deliberate and the timing is not predictable.
 
 ---
 
@@ -88,19 +88,17 @@ This is the item that most changes what Aurora is, and it is gated on one sessio
 
 ## Not being built, and why
 
-Saying no is part of a roadmap.
-
-- **A display proxy to hold client connections across a compositor crash.** The other half of
+- **A display proxy to hold client connections across a compositor crash:** the other half of
   crash survival. Window layout comes back as a placement memory instead; the `wl_display`
   socket dies with the compositor, so clients exit. Deliberate: the proxy is a large piece of
   machinery for a case a supervised restart already handles adequately.
-- **Security against a same-uid attacker.** Domains, bus, controller and compositor all run as
+- **Security against a same-uid attacker:** domains, bus, controller and compositor all run as
   you. The isolation story holds against *confined apps*, not against the person running them.
   A user namespace even grants its owner `CAP_SYS_PTRACE` inside it, so a sandboxed process is
   *easier* to inject into than an ordinary one. Reproducible: `demos/ptrace-ancestry/run.sh`.
-- **A tamper-proof log.** It is tamper-*evident*: the hash chain is unkeyed, so whoever can
-  write the directory can rewrite history and its anchor together.
-- **Mapping a sandboxed app's paths back to host paths on drag-out.** Possible in principle,
+- **A tamper-proof log:** the log is tamper-*evident* only, because the hash chain is unkeyed,
+  so whoever can write the directory can rewrite history and its anchor together.
+- **Mapping a sandboxed app's paths back to host paths on drag-out:** possible in principle,
   since the controller knows both. Not done, because it would quietly undo the boundary the
   rest of the system maintains. A confined app's file drag out fails loudly instead.
-- **An app store, and generations.** Not in scope.
+- **An app store, and generations:** not in scope.

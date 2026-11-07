@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurora</title>
+<meta name="description" content="A desktop where every action is a typed verb, every program runs in a sandbox built for that one action, and every file remembers who made it.">
+<link rel="icon" href="images/aurora-icon-64.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* One measured column. The palette is the compositor's own wallpaper and bloom tokens
+   (contracts/theme/aurora-glass.toml), so the site and the system agree. */
+:root {
+  --ink:#171320; --ink-soft:#595269; --ink-faint:#8a839b;
+  --paper:#faf8fb; --raise:#fff; --rule:#e3dfe9;
+  --accent:#6d3f99; --accent-dim:#efe6f7; --code-bg:#f2eff5;
+  --shot-mat:#1a1527;
+  --serif:"IBM Plex Serif",Georgia,serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --measure:72ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink:#e9e4f2; --ink-soft:#a79fba; --ink-faint:#776e8c;
+    --paper:#0f0b17; --raise:#17121f; --rule:#2b2338;
+    --accent:#c08ae8; --accent-dim:#241a33; --code-bg:#1a1424;
+    --shot-mat:#1a1527;
+    color-scheme: dark;
+  }
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.62;margin:0}
+.wrap{max-width:980px;margin:0 auto;
+  padding-left:max(20px,env(safe-area-inset-left,0px));
+  padding-right:max(20px,env(safe-area-inset-right,0px));
+  padding-block:0 80px}
+.col{max-width:var(--measure)}
+
+/* ---- masthead ---- */
+header.top{display:flex;align-items:center;gap:18px;padding-block:44px 0}
+header.top img{width:76px;height:76px;flex:none;border-radius:17px}
+header.top h1{font-family:var(--serif);font-size:44px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1}
+header.top .tag{color:var(--ink-faint);font-size:13px;letter-spacing:.07em;text-transform:uppercase;margin:7px 0 0}
+.pitch{font-family:var(--serif);font-size:clamp(21px,3.4vw,27px);line-height:1.34;font-weight:500;
+  text-wrap:balance;margin:30px 0 18px;max-width:22ch;max-width:var(--measure)}
+.sub{color:var(--ink-soft);margin:0 0 26px;max-width:var(--measure)}
+.links{display:flex;flex-wrap:wrap;gap:9px;margin:0 0 10px}
+.links a{display:inline-block;padding:7px 14px;border:1px solid var(--rule);border-radius:999px;
+  color:var(--ink-soft);text-decoration:none;font-size:14px;background:var(--raise)}
+.links a:hover{border-color:var(--accent);color:var(--accent)}
+.links a.key{background:var(--accent);border-color:var(--accent);color:#fff}
+.links a.key:hover{opacity:.9;color:#fff}
+
+/* ---- sections ---- */
+h2{font-family:var(--serif);font-size:27px;font-weight:600;margin:66px 0 6px;letter-spacing:-.01em;
+  padding-top:24px;border-top:1px solid var(--rule);max-width:var(--measure);text-wrap:balance}
+h2 + .lede{color:var(--ink-soft);margin:0 0 22px;max-width:var(--measure)}
+h3{font-size:17px;font-weight:600;margin:34px 0 6px;max-width:var(--measure)}
+p{margin:0 0 15px;max-width:var(--measure)}
+a{color:var(--accent);text-underline-offset:2px}
+code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);padding:.12em .36em;border-radius:3px}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;padding:15px 17px;
+  overflow-x:auto;margin:0 0 18px;max-width:var(--measure);line-height:1.5}
+pre code{background:none;padding:0;font-size:13.5px}
+ul{margin:0 0 16px;padding-left:1.25em;max-width:var(--measure)}
+li{margin-bottom:7px}
+li::marker{color:var(--ink-faint)}
+
+/* ---- screenshots ----
+   Every shot is a dark compositor frame, so each sits on a dark mat with a rule around it.
+   Without that, a dark PNG dropped straight onto the light scheme reads as a hole in the page. */
+figure{margin:0 0 26px}
+figure.wide{max-width:none}
+figure .mat{background:var(--shot-mat);border:1px solid var(--rule);border-radius:10px;padding:10px;overflow:hidden}
+figure img{display:block;width:100%;height:auto;border-radius:5px}
+figcaption{color:var(--ink-faint);font-size:13.5px;margin-top:10px;max-width:var(--measure)}
+figcaption b{color:var(--ink-soft);font-weight:600}
+.pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:22px;margin:0 0 26px}
+.pair figure{margin:0}
+
+/* ---- claim table ---- */
+table{border-collapse:collapse;width:100%;font-size:14.5px;margin:0 0 22px;background:var(--raise)}
+.tw{overflow-x:auto;max-width:none}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);vertical-align:top}
+thead th{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);
+  font-weight:600;border-bottom:1px solid var(--ink-faint);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+td code{white-space:nowrap;font-size:12.5px}
+
+.note{border-left:2px solid var(--accent);padding:2px 0 2px 16px;color:var(--ink-soft);margin:0 0 20px;max-width:var(--measure)}
+footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--rule);color:var(--ink-faint);font-size:14px}
+footer a{color:var(--ink-soft)}
+@media (max-width:620px){header.top img{width:58px;height:58px}header.top h1{font-size:34px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <img src="images/aurora-icon-256.png" alt="">
+  <div>
+    <h1>Aurora</h1>
+    <p class="tag">A toy desktop OS</p>
+  </div>
+</header>
+
+<p class="pitch">Every action is a typed verb. Every program runs in a sandbox built for that one
+action. Every file remembers who made it.</p>
+
+<p class="sub">It runs nested inside another compositor. It does not boot. Both are on purpose,
+for now — the limits are listed with everything else.</p>
+
+<div class="links">
+  <a class="key" href="https://github.com/antiartificial/aurora-desktop">Source</a>
+  <a href="overview.html">Illustrated overview</a>
+  <a href="https://github.com/antiartificial/aurora-desktop/blob/main/ROADMAP.md">Roadmap</a>
+  <a href="atlas-design.html">Atlas design spec</a>
+  <a href="performance-architecture.html">Performance architecture</a>
+  <a href="visual-system.html">Visual system</a>
+</div>
+
+<figure class="wide" style="margin-top:34px">
+  <div class="mat"><img src="images/desktop-hero.png" alt="The Aurora desktop: the Atlas file manager showing a folder of files with per-type icons and Japanese, Chinese and Korean filenames; the Haiku Kitchen Sink application with tabs, checkboxes and radio buttons; a Deskbar listing two applications; and a dock."></div>
+  <figcaption>The desktop. Atlas on the left, Haiku's real Interface Kit on the right, the Deskbar
+  listing what is open, the dock below. The Kitchen Sink window carries a yellow badge naming the
+  domain it runs in, and the indicator at the top right names the capability it holds.</figcaption>
+</figure>
+
+<h2>What this does for you</h2>
+<p class="lede">Most desktops answer “can this program open that file?” with a yes or no about
+<em>you</em>. Aurora answers it about <em>this one action</em>.</p>
+
+<h3>Open a photo in an editor, and the editor gets the photo</h3>
+<p>Not your home directory, not your SSH keys, not the rest of the folder. A bubblewrap sandbox
+with its own subordinate uid, granted exactly one input file and one output file, destroyed when
+the verb ends.</p>
+<pre><code>aurora open /tmp/photo.png --verb resize@v1 --app org.aurora.lumen --arg width=300</code></pre>
+
+<h3>Then ask the file who made it, and check the answer</h3>
+<pre><code>$ controller provenance /tmp/photo.resize.png --verify
+app     org.aurora.lumen
+verb    resize@v1
+grants  ro /tmp/photo.png, rw /tmp/photo.resize.png
+chain   verified (event 4812, anchor ok)</code></pre>
+<p>That is not a log line someone wrote. It is a file attribute plus an event in a hash-chained
+log, and <code>--verify</code> recomputes the chain.</p>
+
+<h3>Hand the same system to an agent and nothing changes</h3>
+<p>The MCP tools the gateway exposes are generated from the same manifests apps use, so an agent
+gets exactly the verbs a person gets, with the same grants, the same provenance, and destructive
+calls stopping at a human.</p>
+
+<h3>Give a program a file by picking it, not by configuring it</h3>
+<p>The powerbox draws the chooser outside the asking program. The program never sees a path it was
+not given, and a confirm is drawn by the compositor itself, so a client can neither read it nor
+forge it.</p>
+
+<h2>The prompt a program cannot see</h2>
+<p class="lede">Both halves below were captured at the same moment. On the left is what a screen
+capture by any client returns. On the right is the frame the compositor actually drew.</p>
+<figure class="wide">
+  <div class="mat"><img src="images/approval-prompt-client-vs-compositor.png" alt="Two frames of the same desktop side by side. The left, labelled what any client can capture, shows the desktop with no approval prompt. The right, labelled what the compositor draws, shows the same desktop with a red-bordered APPROVAL REQUIRED panel naming the app, domain, verb, destructive effect and the exact file grants."></div>
+  <figcaption>A real <code>delete@v1</code> asking to be approved. The panel names the app, the
+  domain, the verb, the <b>destructive</b> effect, and the exact paths it would read and write. It
+  is marked <b>bus-attested</b>, meaning busd stamped the sender from kernel facts rather than
+  taking the client's word. A client has no protocol object for any of it, and the capture path
+  runs before the overlay is drawn, so it cannot be read, screenshotted or forged.</figcaption>
+</figure>
+
+<h2>Haiku's real Interface Kit, compiled in place</h2>
+<p class="lede">Not a reimplementation and not a port. Haiku's unmodified Interface Kit source,
+built against Aurora's own app_server, running as Wayland clients.</p>
+<div class="pair">
+  <figure>
+    <div class="mat"><img src="images/haiku-interface-kit-tabs.png" alt="A Haiku application window with a tab bar, checkboxes, radio buttons, a text field and a list view."></div>
+    <figcaption>BTabView, BCheckBox, BRadioButton, BTextControl and BListView, all from Haiku's
+    own source.</figcaption>
+  </figure>
+  <figure>
+    <div class="mat"><img src="images/haiku-interface-kit-buttons.png" alt="A close view of Haiku buttons, a checkbox group and a radio group rendered by Aurora."></div>
+    <figcaption>The widgets draw through Aurora's software canvas, not Haiku's app_server.</figcaption>
+  </figure>
+</div>
+
+<h2>The toolkit, as a reference rather than a drawing</h2>
+<p class="lede">These sheets are rendered by the toolkit itself, so they stay true as it changes.
+They are the check for a rule this codebase has broken four times: two different states must never
+draw alike.</p>
+<div class="pair">
+  <figure>
+    <div class="mat"><img src="images/specimen-row-states.png" alt="A specimen sheet showing nine file-list rows in different states: at rest, hovered, selected with the pane focused, keyboard-driven with a focus halo, selected with the pane unfocused, cursor only focused and unfocused, hovered and selected, and a three-row drag selection."></div>
+    <figcaption>Six states that must never coincide, and three compounds of them.</figcaption>
+  </figure>
+  <figure>
+    <div class="mat"><img src="images/specimen-icons.png" alt="A specimen sheet of the file manager's procedural icon family, showing each kind with its mark and badge variants."></div>
+    <figcaption>The procedural icon family: nine kinds, with marks for special folders and badges
+    for links and broken links.</figcaption>
+  </figure>
+</div>
+
+<h2>Show, don't tell</h2>
+<p class="lede">Every claim here has a demo that starts a real stack, asserts on decoded output,
+and exits non-zero when it is wrong. They are the regression suite.</p>
+<pre><code>make demos          # all 21
+demos/full-stack/run.sh</code></pre>
+<div class="tw">
+<table>
+<thead><tr><th>Run this</th><th>And you will see</th></tr></thead>
+<tbody>
+<tr><td><code>demos/full-stack</code></td><td>a verb invoked, a domain built and destroyed, the output decoded and its provenance verified</td></tr>
+<tr><td><code>demos/kitchen-sink</code></td><td>Haiku's unmodified Interface Kit driven through real widgets</td></tr>
+<tr><td><code>demos/drag-drop</code></td><td>files and rich text crossing in and out of Aurora, and a sandboxed app's paths withheld from the host</td></tr>
+<tr><td><code>demos/ptrace-ancestry</code></td><td>the system demonstrating its own weakness: why a sandboxed process is easier to inject into than an ordinary one</td></tr>
+<tr><td><code>demos/crash-survival</code></td><td>the compositor killed with <code>-9</code> and coming back with its scale, background, dock and font</td></tr>
+<tr><td><code>demos/buffer-pool</code></td><td>a client's buffer pool refusing to show a frame the app never drew</td></tr>
+<tr><td><code>demos/resize-storm</code></td><td>a drag costing 2 window reallocations instead of 43</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Windows you can act on</h2>
+<div class="pair">
+  <figure>
+    <div class="mat"><img src="images/deskbar-context-menu.png" alt="The Deskbar with a context menu open on a window row, offering Bring to Front, Close and Show Desktop."></div>
+    <figcaption>A secondary click on a Deskbar row acts on that window.</figcaption>
+  </figure>
+  <figure>
+    <div class="mat"><img src="images/capability-indicator-panel.png" alt="The capability indicator panel expanded, naming an application and the capability it currently holds."></div>
+    <figcaption>The indicator names what is held, and by whom, while it is held.</figcaption>
+  </figure>
+</div>
+
+<h2>What it does not do</h2>
+<p class="lede">Stated here for the same reason they are stated in the code.</p>
+<ul>
+  <li><b>It has never booted.</b> There is a DRM/KMS backend and it has read this machine's
+  connectors for real, but the modeset, scanout, hardware cursor and real input have never run.</li>
+  <li><b>One uid owns everything.</b> The security story holds against confined apps, not against
+  the person running them.</li>
+  <li><b>A domain is easier to hijack than an unsandboxed process.</b> A user namespace grants its
+  owner <code>CAP_SYS_PTRACE</code> inside it. There is a demo that proves it.</li>
+  <li><b>The log is tamper-evident, not tamper-proof.</b> The hash chain is unkeyed.</li>
+  <li><b>The compositor survives a crash; its clients do not.</b> Window layout returns as a
+  placement memory only.</li>
+</ul>
+<p class="note">A research prototype that demonstrates mechanisms and measures their limits. It is
+not a security boundary against a same-user attacker, and it does not boot.</p>
+
+<footer>
+  <p><a href="https://github.com/antiartificial/aurora-desktop">github.com/antiartificial/aurora-desktop</a>
+  · <a href="https://github.com/antiartificial/aurora-desktop/tree/main/contracts/decisions">24 decision records</a>,
+  each saying what it left undecided.</p>
+</footer>
+
+</div>
+</body>
+</html>

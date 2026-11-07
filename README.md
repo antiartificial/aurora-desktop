@@ -202,7 +202,7 @@ docs/         the design specs, and the site
 
 Go workspace (13 modules), Rust for the compositor, CMake + Ninja for the kits.
 `./aurora-up` builds everything. The Haiku kits compile Haiku's source **in
-place** — nothing is vendored — so `kits/CMakeLists.txt` wants `HAIKU_SRC`
+place**, with nothing vendored, so `kits/CMakeLists.txt` wants `HAIKU_SRC`
 pointing at a Haiku or [VitruvianOS](https://github.com/VitruvianOS/Vitruvian)
 checkout. Without it the rest still builds and the Haiku targets are skipped.
 
