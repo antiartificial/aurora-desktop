@@ -11,10 +11,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Bumped when the shared layout changes: kport and karea grew a team_start field. An older
+/* Bumped when the shared layout changes: kport and karea grew a team_start field, and then
+ * K_MAX_PORTS went from 128 to 512, which moves everything after the ports array. An older
  * build and this one must never read each other's region, and the bump also means the first
  * process of the new build reinitialises a stale one rather than inheriting its slots. */
-#define K_MAGIC 0x41555232u
+#define K_MAGIC 0x41555233u
 kshm *K;
 char *K_rings;
 static pthread_once_t once = PTHREAD_ONCE_INIT;

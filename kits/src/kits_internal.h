@@ -5,7 +5,18 @@
 #include <OS.h>
 
 /* Cross-process state: one file in /dev/shm per namespace. */
-#define K_MAX_PORTS 128
+/* Ports are per-BWindow and per-looper, and a BApplication with a menu takes about ten, so 128
+ * was a ceiling of TWELVE apps open at once. The thirteenth did not fail politely: Haiku's own
+ * Window.cpp calls debugger() when it cannot make a port, so it aborted with a core dump and a
+ * message about BWindow that says nothing about ports. Twelve is an ordinary number of windows
+ * to have open.
+ *
+ * Raising it is nearly free. The region is ftruncate'd and mmap'd, so the rings are sparse and
+ * cost real memory only where they are touched: measured at 152 KB for one app and +92 KB for
+ * each one after, against an apparent size of 33 MB. At 512 the apparent size is 134 MB of
+ * mostly-untouched address space, the physical cost per app is unchanged, and the ceiling is
+ * about 51 apps. */
+#define K_MAX_PORTS 512
 #define K_MAX_AREAS 512
 #define K_RING (256 * 1024) /* per-port byte ring; bounds one message */
 

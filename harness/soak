@@ -44,9 +44,9 @@ echo "compositor pid $CP on $SOCK, $CYCLES cycles of 3 clients"
 ports() { python3 -I -c '
 import os, struct
 p = "/dev/shm/aurora-kits-%d-%s" % (os.getuid(), os.environ["AURORA_KITS_NS"])
-try: d = open(p, "rb").read(56 + 128*168)
+try: d = open(p, "rb").read(56 + 512*168)
 except OSError: print(0); raise SystemExit
-print(sum(1 for i in range(128) if struct.unpack_from("<i", d, 56 + i*168)[0] != 0))'; }
+print(sum(1 for i in range(512) if struct.unpack_from("<i", d, 56 + i*168)[0] != 0))'; }
 
 nwin() { python3 -I -c '
 import socket, sys, json
@@ -81,6 +81,6 @@ echo "compositor alive: $(kill -0 $CP 2>/dev/null && echo yes || echo NO)"
 echo "of the ${#KIDS[@]} clients started, still running: $alive  (any but 0 is a client that outlived its window)"
 echo
 echo "Reading it: fds and threads should be FLAT. RSS climbs while caches warm and then"
-echo "plateaus. Ports fill to 128 and stay: slots are reclaimed lazily, when a creation finds"
+echo "plateaus. Ports fill toward 512 and stay: slots are reclaimed lazily, when a creation finds"
 echo "none free, so a saturated table is normal and not a leak. The 'up in' time should not"
 echo "grow with the port count; if it does, the reap scan has become the cost of launching."

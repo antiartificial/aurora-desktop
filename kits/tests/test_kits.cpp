@@ -367,7 +367,7 @@ static void test_a_reused_pid_does_not_hold_a_slot_forever()
 	/* Fill the table so create_port's second pass reaps. With the token left behind, `moved`
 	 * looks owned by a live pid whose start time does not match, so it is reclaimed and the
 	 * team that was just given it loses it. */
-	enum { kSlots = 128 };   /* K_MAX_PORTS, not included here: see the extern "C" note above */
+	enum { kSlots = 512 };   /* K_MAX_PORTS, not included here: see the extern "C" note above */
 	port_id filler[kSlots];
 	int nf = 0;
 	while (nf < kSlots) {
