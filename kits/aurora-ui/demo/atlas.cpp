@@ -42,6 +42,7 @@ namespace {
 struct Entry {
     std::string name;
     bool dir = false;
+    bool hidden = false;
     // Filled by the worker. `stated` is the only cross-thread flag and is the reason Cell() can
     // read without a lock: it is written after the fields it guards.
     std::atomic<bool> stated{false};
@@ -90,6 +91,9 @@ public:
             en->name = de->d_name;
             // d_type is free when the filesystem gives it; it is NOT a stat.
             en->dir = de->d_type == DT_DIR;
+            en->hidden = de->d_name[0] == '.';
+            // Read ALWAYS, filtered on display. Hiding at readdir would mean re-reading the
+            // directory every time the toggle flips, and re-reading is the expensive part.
             fresh.push_back(std::move(en));
         }
         closedir(d);
@@ -98,6 +102,11 @@ public:
             std::lock_guard<std::mutex> g(mu_);
             e_ = std::move(fresh);
             path_ = path;
+            // The view indexes into e_, so a new directory means a new view. Before the hidden
+            // rule existed, an empty filter meant the view was unused and this did not matter;
+            // now the view is in use whenever dotfiles are off, which is the default, and
+            // leaving it stale made every directory open EMPTY.
+            rebuild_view_locked();
         }
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
             .count();
@@ -112,9 +121,20 @@ public:
         rebuild_view_locked();
     }
 
+    /// Show dotfiles, or not. Ctrl+H, as in every file manager.
+    void SetShowHidden(bool on) {
+        std::lock_guard<std::mutex> g(mu_);
+        show_hidden_ = on;
+        rebuild_view_locked();
+    }
+    bool ShowHidden() const {
+        std::lock_guard<std::mutex> g(mu_);
+        return show_hidden_;
+    }
+
     int Count() const override {
         std::lock_guard<std::mutex> g(mu_);
-        return filter_.empty() ? (int)e_.size() : (int)view_.size();
+        return (filter_.empty() && show_hidden_) ? (int)e_.size() : (int)view_.size();
     }
     int Columns() const override { return 3; }
     float ColumnWidth(int c) const override { return c == 0 ? 320 : (c == 1 ? 110 : 160); }
@@ -150,7 +170,7 @@ public:
 
     // Row index to entry index. Called with the lock held.
     int map(int row) const {
-        if (filter_.empty()) return (row >= 0 && row < (int)e_.size()) ? row : -1;
+        if (filter_.empty() && show_hidden_) return (row >= 0 && row < (int)e_.size()) ? row : -1;
         if (row < 0 || row >= (int)view_.size()) return -1;
         return view_[row];
     }
@@ -267,15 +287,21 @@ private:
     int want_first_ = 0, want_last_ = 0, generation_ = 0, stated_ = 0;
     int sort_col_ = 0;
     bool sort_asc_ = true;
+    bool show_hidden_ = false;
 
     // The filter is a VIEW over the entries, so it has to be rebuilt whenever their order
     // changes -- a sort that left view_ pointing at the old positions would show the right rows
     // in the wrong places, which looks like corruption rather than like a sort.
     void rebuild_view_locked() {
         view_.clear();
-        if (filter_.empty()) return;
-        for (size_t i = 0; i < e_.size(); i++)
-            if (strcasestr(e_[i]->name.c_str(), filter_.c_str())) view_.push_back((int)i);
+        // The view is on whenever EITHER a text filter or the hidden rule excludes something,
+        // so the two cannot disagree about which rows exist.
+        if (filter_.empty() && show_hidden_) return;
+        for (size_t i = 0; i < e_.size(); i++) {
+            if (!show_hidden_ && e_[i]->hidden) continue;
+            if (!filter_.empty() && !strcasestr(e_[i]->name.c_str(), filter_.c_str())) continue;
+            view_.push_back((int)i);
+        }
     }
 
     void sort_into(std::vector<std::unique_ptr<Entry>>& v) {
@@ -428,8 +454,13 @@ int main() {
     // leaves for somewhere else -- and a single box that did both would have to guess which.
     State<std::string> path_text("");
     State<bool> path_edit(false);
+    // Dotfiles. Off by default, as every file manager has it, and remembered only for the
+    // session: a hidden-files toggle that persisted would surprise someone who turned it on to
+    // look at one thing.
+    State<bool> show_hidden(false);
     path_text.bind(&w);
     path_edit.bind(&w);
+    show_hidden.bind(&w);
     status.bind(&w);
     filter.bind(&w);
     filter_open.bind(&w);
@@ -521,6 +552,16 @@ int main() {
     // reason. The verbs come from registry.plumb@v1, so what the menu offers is what an
     // installed app's manifest actually claims -- Atlas does not know what a PNG can have done
     // to it, and should not.
+    // Re-apply the dotfile rule and tell everything that counts rows. Selection is dropped
+    // rather than remapped: the row a person had selected may not be in the list any more, and
+    // keeping an index that now names a different file is how a Delete goes to the wrong place.
+    auto apply_hidden = [&] {
+        rows.SetShowHidden(show_hidden.get());
+        selected = -1;
+        status.set(std::to_string(rows.Count()) + " items");
+        w.Invalidate();
+    };
+
     // Back and forward are a pair of stacks and nothing cleverer: going back pushes where you
     // were onto forward, going forward pushes it onto back. Neither records a new destination,
     // which is what stops walking back and forth from filling the history with itself.
@@ -970,6 +1011,9 @@ int main() {
                         w.Invalidate();
                         w.FocusNamed(list_view.get() ? "files" : "icons");
                     }),
+                    // The toolkit's own checkbox rather than another button: a toggle that
+                    // looks like a push button cannot show which way it is set.
+                    padding(Checkbox("Hidden", &show_hidden, [&](bool) { apply_hidden(); }), 0.4f),
                 }),
                 0.75f),
         // NO weight: this is inside a VStack, so a weight would make the breadcrumb take a share
@@ -1081,19 +1125,31 @@ int main() {
         if (alt && k.raw_char == 0x1c) { go_back(); return true; }        // Alt+Left
         if (alt && k.raw_char == 0x1d) { go_forward(); return true; }     // Alt+Right
         if (alt && k.raw_char == 0x1e) { go(parent_of(path.get()), true); return true; }  // Alt+Up
-        if (k.raw_char == 0x08) { go(parent_of(path.get()), true); return true; }         // Backspace
+        // Backspace, and only when Ctrl is NOT held: Ctrl+H types 0x08 on every layout, and a
+        // "go up" that fired on the hidden-files shortcut would be baffling.
+        if (!ctrl && k.raw_char == 0x08) { go(parent_of(path.get()), true); return true; }
         if (k.evdev == 63) {                                             // F5
             go(path.get(), false);
             last_action.set("refreshed");
             return true;
         }
-        if (ctrl && (k.utf8[0] == 'l' || k.utf8[0] == 'L')) {            // Ctrl+L: the location
+        // A Ctrl shortcut is matched on raw_char, NOT on utf8. utf8 is what the key TYPES with
+        // the modifiers applied, so Ctrl+H is 0x08 and Ctrl+A is 0x01; raw_char is the symbol
+        // at level 0 of the layout, which is the letter. Matching utf8 means none of these ever
+        // fire, which is exactly what happened.
+        const uint32_t rc = k.raw_char | 0x20;                           // fold case
+        if (ctrl && rc == 'l') {                                         // Ctrl+L: the location
             open_path_bar();
             return true;
         }
-        if (ctrl && (k.utf8[0] == 'f' || k.utf8[0] == 'F')) {            // Ctrl+F: the filter
+        if (ctrl && rc == 'f') {                                         // Ctrl+F: the filter
             filter_open.set(true);
             w.FocusNamed("filter");
+            return true;
+        }
+        if (ctrl && rc == 'h') {                                         // Ctrl+H: dotfiles
+            show_hidden.set(!show_hidden.get());
+            apply_hidden();
             return true;
         }
         return false;

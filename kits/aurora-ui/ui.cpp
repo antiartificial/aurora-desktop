@@ -982,7 +982,9 @@ public:
         }
         // Ctrl+A is the one shortcut a list owes a keyboard user, and it is checked before the
         // arrows because 'a' is also a type-ahead character.
-        if ((k.mods & AU_MOD_CTRL) && (k.utf8[0] == 'a' || k.utf8[0] == 'A' || k.raw_char == 1)) {
+        // raw_char, not utf8: utf8 carries the modifiers, so Ctrl+A types 0x01 and never
+        // compares equal to 'a'. raw_char is the layout's level-0 symbol, which is the letter.
+        if ((k.mods & AU_MOD_CTRL) && (k.raw_char | 0x20) == 'a') {
             select_all();
             return true;
         }
@@ -1607,7 +1609,9 @@ public:
         if (n == 0) return false;
         // Before the switch: the switch's default returns, so anything checked after it is
         // never reached. Ctrl+A is a letter, and a letter is exactly what that default catches.
-        if ((k.mods & AU_MOD_CTRL) && (k.utf8[0] == 'a' || k.utf8[0] == 'A' || k.raw_char == 1)) {
+        // raw_char, not utf8: utf8 carries the modifiers, so Ctrl+A types 0x01 and never
+        // compares equal to 'a'. raw_char is the layout's level-0 symbol, which is the letter.
+        if ((k.mods & AU_MOD_CTRL) && (k.raw_char | 0x20) == 'a') {
             select_all();
             return true;
         }

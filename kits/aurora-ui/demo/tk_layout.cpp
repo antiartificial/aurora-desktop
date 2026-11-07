@@ -613,7 +613,11 @@ int main() {
         eq("to where the cursor now is", selected == 3 && ListSelection(list)[0] == 3);
 
         // Ctrl+A takes everything.
-        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.utf8[0] = 'a';
+        // A REAL Ctrl+A as present_wl delivers it: raw_char is the layout's letter, utf8 is
+        // what the key types with Ctrl applied, which is 0x01. The first version of this test
+        // set utf8 to 'a' -- the same wrong assumption the code had -- so it passed while the
+        // shortcut did nothing in the running app.
+        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.raw_char = 'a'; ctrl_a.utf8[0] = 0x01;
         list->OnKey(ctrl_a);
         eq("ctrl+A selects every row", (int)ListSelection(list).size() == src.Count());
     }
@@ -696,7 +700,11 @@ int main() {
            three.size() == 3 && three[1] == three[0] + 1 && three[2] == three[1] + 1);
         eq("and the app heard", last.size() == 3);
 
-        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.utf8[0] = 'a';
+        // A REAL Ctrl+A as present_wl delivers it: raw_char is the layout's letter, utf8 is
+        // what the key types with Ctrl applied, which is 0x01. The first version of this test
+        // set utf8 to 'a' -- the same wrong assumption the code had -- so it passed while the
+        // shortcut did nothing in the running app.
+        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.raw_char = 'a'; ctrl_a.utf8[0] = 0x01;
         grid->OnKey(ctrl_a);
         eq("ctrl+A takes the whole grid", (int)IconsSelection(grid).size() == src.Count());
 
