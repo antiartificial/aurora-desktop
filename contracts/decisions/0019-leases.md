@@ -115,15 +115,28 @@ a file. The two are not substitutes.
 
 ## What follows
 
-1. Tier 1 in busd, beside derive: a handle minted for the duration of one
-   request, rights dropped at reply, refused thereafter. Same file as `0018`'s
-   derivation tree, and ordered after it, because a lease is a derived handle
-   with a short life and should not be a second mechanism.
+1. **Done.** `bus.lease@v1` is a short-lived derived handle that binds to one
+   service request, ends at the reply with rights dropped to none, emits
+   `bus.cap.ended`, and is refused afterwards. A lease over anything not mediated
+   is refused outright rather than issued with a caveat, so "a lease is
+   enforceable" is true of every lease that exists.
+
+   **But this record was missing something, found while building it.** Above it
+   says rights are "checked per request against the daemon's table". There is no
+   way for a callee to ask. The callee receives the lease token without being its
+   holder, so it cannot present it, and nothing in busd checks what a lease
+   *permits* -- only who may start one and when it ends. A verb along the lines of
+   `bus.lease.check@v1` ("does this lease permit `read` on `session:clipboard`
+   right now?") is required before the clipboard case can work, and it is the next
+   piece of tier 1 rather than a detail of it.
 2. The clipboard as the first tier-1 lease, once the compositor's clipboard work
    is settled.
-3. The provenance and `bus inspect` distinction between leased and mounted. This
-   is the one item that is not optional: until it lands, the log overstates what
-   revocation achieved.
+3. **Done, with different vocabulary than this record proposed.** Not
+   `leased` versus `mounted`, but an `access` label of `mounted` | `mediated` |
+   `unclassified` with a separate `lease` flag. The reason: a long-lived mediated
+   handle over `session:clipboard` is enforceable and is *not* a lease, so
+   `leased` would have mislabelled it. The label says where the object lives,
+   which is what the guarantee actually depends on.
 4. Tier 2 stays unbuilt until something needs it badly enough to pay the
    latency and the liveness coupling. Revisit if a file grant to an untrusted app
    ever becomes the common case rather than the exception.
