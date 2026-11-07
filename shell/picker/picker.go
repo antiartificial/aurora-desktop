@@ -137,15 +137,27 @@ func list(dir string) ([]entry, error) {
 
 const maxShown = 200
 
-// Run drives the picker on in/out until the user confirms or quits.
+// Run drives the picker on in/out until the user confirms or quits, then
+// mints. Powerbox.Grant uses Choose instead, so that something else gets to
+// say yes between the choice and the ticket.
 func Run(o Options, in *bufio.Reader, out io.Writer) (Result, error) {
+	path, err := Choose(o, in, out)
+	if err != nil {
+		return Result{}, err
+	}
+	return Mint(o, path)
+}
+
+// Choose drives the terminal picker until the user confirms a path or quits.
+// It returns the path the user confirmed, unresolved, and mints nothing.
+func Choose(o Options, in *bufio.Reader, out io.Writer) (string, error) {
 	cur := o.Start
 	if cur == "" {
 		cur, _ = os.Getwd()
 	}
 	cur, err := filepath.Abs(cur)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
 	access := map[string]string{"ro": "read-only", "rw": "read-write"}[o.Mode]
 	fmt.Fprintf(out, "\n== Powerbox: choose %s for %s (verb %s), %s ==\n", map[string]string{KindFile: "a file", KindDir: "a folder", KindSave: "where to save"}[o.Kind], o.App, o.Verb, access)
@@ -172,18 +184,18 @@ func Run(o Options, in *bufio.Reader, out io.Writer) (Result, error) {
 		line, err := in.ReadString('\n')
 		line = strings.TrimSpace(line)
 		if err != nil && line == "" {
-			return Result{}, ErrCancelled
+			return "", ErrCancelled
 		}
 		next, chosen := step(o, cur, es, line)
 		switch {
 		case line == "q":
-			return Result{}, ErrCancelled
+			return "", ErrCancelled
 		case chosen != "":
 			ok, err := confirm(o, chosen, access, in, out)
 			if err != nil {
 				fmt.Fprintf(out, "  %v\n", err)
 			} else if ok {
-				return Mint(o, chosen)
+				return chosen, nil
 			} else {
 				fmt.Fprintln(out, "  not granted")
 			}
