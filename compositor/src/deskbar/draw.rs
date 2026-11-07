@@ -277,7 +277,8 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                 let tc = crate::shell::tile_colour(&g.label);
                 let tile = d(TILE);
                 c.round_rect(d(pad_x), top + d(10.0), tile, tile, tile as f32 * 0.28, [tc[0], tc[1], tc[2], 255]);
-                let initial: String = g.label.chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
+                // The last dotted part of an id: "org.demo.alpha" is an A, not an O like every other org.* app.
+                let initial: String = g.label.rsplit('.').find(|s| !s.is_empty()).and_then(|s| s.chars().next()).map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
                 let tspec = FontSpec::new(st.font * 1.1).bold();
                 let (iw, tm) = (t.string_width(&initial, &tspec, st.scale), t.metrics(&tspec));
                 t.draw(&mut c, pad_x + (TILE - iw) / 2.0, y + 10.0 + (TILE - (tm.ascent + tm.descent)) / 2.0, &initial, &tspec, [255, 255, 255, 255], st.scale);
@@ -412,7 +413,7 @@ mod tests {
     fn a_row_not_in_a_domain_draws_no_digit_in_its_meta_and_a_domain_one_draws_only_what_exists() {
         let cfg = theme::Deskbar::default();
         let mut t = TextSystem::new("", "");
-        let dom = Dom::In { name: "d1".into(), cgroup: "/x/aurora-domains/d1".into() };
+        let dom = Dom::In { name: "d1".into() };
         let g = vec![grp("a", "Plain", Dom::None, &[("1", "w", false)]), grp("b", "Boxed", dom, &[("2", "w", false)])];
         let mut figs = HashMap::new();
         figs.insert("d1".to_string(), Figures { cpu: Some(2.5), mem: None, procs: Some(3) });
@@ -464,7 +465,7 @@ mod tests {
     fn a_domain_with_no_hosts_says_why_by_what_is_known_about_the_bus() {
         let cfg = theme::Deskbar::default();
         let mut t = TextSystem::new("", "");
-        let dom = Dom::In { name: "d1".into(), cgroup: "/x/aurora-domains/d1".into() };
+        let dom = Dom::In { name: "d1".into() };
         let g = vec![grp("b", "Boxed", dom, &[("2", "w", false)])];
         let figs = HashMap::new();
         let note = |watching: bool, up: bool| {
@@ -482,7 +483,7 @@ mod tests {
     fn refused_hosts_sort_first_and_carry_the_word() {
         let cfg = theme::Deskbar::default();
         let mut t = TextSystem::new("", "");
-        let dom = Dom::In { name: "d1".into(), cgroup: "/x/aurora-domains/d1".into() };
+        let dom = Dom::In { name: "d1".into() };
         let g = vec![grp("b", "Boxed", dom, &[("2", "w", false)])];
         let mut net = Net { up: true, ..Default::default() };
         net.domains.insert("d1".into(), model::DomainNet { hosts: vec![

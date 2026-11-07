@@ -9,10 +9,10 @@ use serde_json::Value;
 /// Where a window's client process runs, as far as the kernel told us.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Dom {
-    /// Placed, and not in a domain: it shares the session's cgroup, so it has no figures of its own.
+    /// The kernel placed the client outside every domain: it shares the session's cgroup, so it has no figures of its own.
     None,
-    In { name: String, cgroup: String },
-    /// Could not be placed (an X11 window's pid is Xwayland's, a cgroup file would not read, ...).
+    In { name: String },
+    /// Cannot be placed (an X11 window's client is Xwayland, whose cgroup says nothing about the app).
     /// Said as such: "not in a domain" would be a claim about a process we could not look at.
     Unknown(&'static str),
 }
@@ -292,7 +292,7 @@ mod tests {
         m.iter().map(|l| l.iter().map(|s| s.0.as_str()).collect::<Vec<_>>().join(" | ")).collect::<Vec<_>>().join(" / ")
     }
     fn in_dom() -> Dom {
-        Dom::In { name: "d".into(), cgroup: "/x/aurora-domains/d".into() }
+        Dom::In { name: "d".into() }
     }
 
     #[test]

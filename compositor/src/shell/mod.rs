@@ -121,6 +121,8 @@ pub struct DeskbarSlot {
 pub struct Shell {
     pub text: TextSystem,
     pub deskbar: DeskbarSlot,
+    /// `[deskbar] enabled`, for the desktop menu's "Hide Deskbar" / "Show Deskbar".
+    pub deskbar_enabled: bool,
     pub scale: f64,
     start: Instant,
     dock: Dock,
@@ -167,6 +169,7 @@ impl Shell {
         Shell {
             text,
             deskbar: DeskbarSlot::default(),
+            deskbar_enabled: true,
             scale: 1.0,
             start: Instant::now(),
             dock: Dock::default(),
@@ -240,6 +243,7 @@ impl Shell {
             self.seen = (self.registry.generation, self.scale.to_bits());
             changed = true;
         }
+        self.deskbar_enabled = theme.deskbar.enabled;
         if self.settings.is_some() {
             self.snap = theme.clone();
         }

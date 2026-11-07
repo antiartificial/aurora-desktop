@@ -14,7 +14,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::unix::{net::{UnixListener, UnixStream}, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -598,5 +598,43 @@ impl FakeBus {
     }
 }
 
-#[allow(dead_code)]
-fn unused(_: &Child, _: &Stdio) {}
+// ---- cost -------------------------------------------------------------------------------------------------------
+
+/// What the Deskbar costs a frame, measured, not gated (the numbers depend on a GPU others share): the same
+/// 1920x1200 desktop, six clients in three applications, the Deskbar off, on, and on with two applications open
+/// (the open box is taller, so it blurs and composites more pixels). Run with `--ignored --nocapture`.
+fn cost_run(deskbar: bool, expand: bool, n: usize) -> String {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("stats.csv");
+    let t = Theme::new();
+    t.append(&format!("[deskbar]\nenabled = {deskbar}\n"));
+    let mut c = Comp::start_shell(&["--headless=1920x1200", "--scale", "1", "--frame-stats", path.to_str().unwrap(), "--theme", t.path()]);
+    for (i, app) in ["org.test.a", "org.test.a", "org.test.b", "org.test.b", "org.test.c", "org.test.c"].iter().take(n).enumerate() {
+        c.client_args(&["--size", "400x300", "--app-id", app, "--title", &format!("window {i}")]);
+        c.inject(&format!("move {i} {} {}", 40 + i * 90, 60 + i * 70));
+    }
+    if deskbar && expand && n >= 3 {
+        let b = settled(&c);
+        click(&c, b.app("org.test.a").rect, b.scale);
+        std::thread::sleep(Duration::from_millis(500));
+        let b = bar(&c).unwrap();
+        click(&c, b.app("org.test.b").rect, b.scale);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+    c.step_frames(40);
+    c.step_frames(300);
+    c.stats(300)
+}
+
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture"]
+fn deskbar_frame_cost_report() {
+    for n in [1usize, 6] {
+      for (name, on, expand) in [("off     ", false, false), ("on      ", true, false), ("on, open", true, true)] {
+        for _ in 0..2 {
+            let s = cost_run(on, expand, n);
+            println!("COST {n} window(s), deskbar {name}: {}", s.split(" | ").find(|g| g.trim_start().starts_with("total")).unwrap_or(&s));
+        }
+      }
+    }
+}

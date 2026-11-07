@@ -20,7 +20,7 @@ use std::{
     time::Instant,
 };
 
-use super::model::{Dom, Figures, SysFigures};
+use super::model::{Figures, SysFigures};
 
 /// The component of a cgroup path under which every domain's cgroup is created (adapter cgroup.go).
 pub const DOMAINS: &str = "aurora-domains";
@@ -37,23 +37,17 @@ impl Default for Roots {
     }
 }
 
-/// Which domain a process is in, from the text of its `/proc/<pid>/cgroup`.
+/// The cgroup path (as `/proc/<pid>/cgroup` spells it) of the domain `name`, from the text of a client's
+/// cgroup file: everything up to and including the domain's own component. `None` when that file does not
+/// say the process is in a domain of that name, so a pid that has since moved, or been reused, reads nothing.
 ///
-/// `None` (not in one) is only said when the file was read and had a cgroup-v2 line with no
-/// `aurora-domains` component. A file that is not cgroup v2, or a name that is not one the adapter
-/// would have made, is `Unknown`: the Deskbar must not claim "not in a domain" for a process it
-/// could not place.
-pub fn parse_domain(cgroup_file: &str) -> Dom {
-    let Some(path) = cgroup_file.lines().find_map(|l| l.strip_prefix("0::")) else {
-        return Dom::Unknown("cgroup v2 not in use");
-    };
+/// Which domain a window belongs to is NOT decided here: that is `crate::peer`'s, read once at connect and
+/// the same fact the window's title-bar badge shows. This only turns that name into a directory to read.
+pub fn domain_cgroup(cgroup_file: &str, name: &str) -> Option<String> {
+    let path = cgroup_file.lines().find_map(|l| l.strip_prefix("0::"))?;
     let comps: Vec<&str> = path.trim().split('/').filter(|c| !c.is_empty()).collect();
-    let Some(i) = comps.iter().position(|c| *c == DOMAINS) else { return Dom::None };
-    let Some(name) = comps.get(i + 1) else { return Dom::Unknown("a cgroup with no domain name") };
-    if matches!(*name, "." | "..") || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
-        return Dom::Unknown("an unexpected domain name");
-    }
-    Dom::In { name: (*name).to_string(), cgroup: format!("/{}", comps[..=i + 1].join("/")) }
+    let i = comps.iter().position(|c| *c == DOMAINS)?;
+    (comps.get(i + 1) == Some(&name)).then(|| format!("/{}", comps[..=i + 1].join("/")))
 }
 
 fn read(p: &Path) -> Option<String> {
@@ -171,22 +165,18 @@ mod tests {
     const BASE: &str = "/user.slice/user-1000.slice/user@1000.service/aurora-domains";
 
     #[test]
-    fn a_domain_is_named_by_the_component_after_aurora_domains() {
-        let d = parse_domain(&format!("0::{BASE}/app-demo\n"));
-        assert_eq!(d, Dom::In { name: "app-demo".into(), cgroup: format!("{BASE}/app-demo") });
-        // a process in a sub-cgroup of the domain is still that domain, and the figures are the domain's
-        let d = parse_domain(&format!("0::{BASE}/app-demo/inner/leaf\n"));
-        assert_eq!(d, Dom::In { name: "app-demo".into(), cgroup: format!("{BASE}/app-demo") });
+    fn the_cgroup_of_a_domain_is_the_path_through_its_own_component() {
+        assert_eq!(domain_cgroup(&format!("0::{BASE}/app-demo\n"), "app-demo"), Some(format!("{BASE}/app-demo")));
+        // a process in a sub-cgroup of the domain: the figures are the domain's, not the leaf's
+        assert_eq!(domain_cgroup(&format!("0::{BASE}/app-demo/inner/leaf\n"), "app-demo"), Some(format!("{BASE}/app-demo")));
     }
 
     #[test]
-    fn not_in_a_domain_is_only_said_of_a_process_that_was_placed() {
-        assert_eq!(parse_domain("0::/user.slice/user-1000.slice/session-2.scope\n"), Dom::None);
-        assert!(matches!(parse_domain("12:cpu:/foo\n"), Dom::Unknown(_)), "cgroup v1 only: placed nowhere");
-        assert!(matches!(parse_domain(""), Dom::Unknown(_)));
-        assert!(matches!(parse_domain(&format!("0::{BASE}\n")), Dom::Unknown(_)), "the parent itself is no domain");
-        assert!(matches!(parse_domain(&format!("0::{BASE}/a b\n")), Dom::Unknown(_)));
-        assert!(matches!(parse_domain(&format!("0::{BASE}/..\n")), Dom::Unknown(_)), "a name that walks out of the tree");
+    fn a_pid_that_is_no_longer_in_that_domain_reads_nothing() {
+        assert_eq!(domain_cgroup(&format!("0::{BASE}/other\n"), "app-demo"), None, "a different domain");
+        assert_eq!(domain_cgroup("0::/user.slice/session-2.scope\n", "app-demo"), None, "no domain at all");
+        assert_eq!(domain_cgroup("12:cpu:/foo\n", "app-demo"), None, "cgroup v1 only");
+        assert_eq!(domain_cgroup(&format!("0::{BASE}\n"), "app-demo"), None);
     }
 
     #[test]

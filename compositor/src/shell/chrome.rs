@@ -132,6 +132,8 @@ impl Shell {
         e.push(Entry::item(&format!("Move Dock to {name}"), Action::Edit(vec![Edit::s("dock", "edge", next)])));
         let on = self.dock.enabled;
         e.push(Entry::item(if on { "Hide Dock" } else { "Show Dock" }, Action::Edit(vec![Edit::new("dock", "enabled", Val::Bool(!on))])));
+        // The Deskbar floats over windows, so a way to put it away has to be one right-click from the desktop.
+        e.push(Entry::item(if self.deskbar_enabled { "Hide Deskbar" } else { "Show Deskbar" }, Action::Edit(vec![Edit::new("deskbar", "enabled", Val::Bool(!self.deskbar_enabled))])));
         let mut m = Menu::new(e);
         let s = self.scale as f32;
         let font = self.font.size;

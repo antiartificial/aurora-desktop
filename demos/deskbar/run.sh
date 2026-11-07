@@ -134,7 +134,7 @@ inp "pointer 600 700"; sleep 0.5; cap "$WORK/rest.png"
 C=$(lq "[(r['rect'][0]+r['rect'][2]//2, r['rect'][1]+r['rect'][3]//2) for r in d['rows'] if r['kind']=='app'][0]"); C=${C//[(),]/}
 inp "pointer $C"; sleep 0.6; cap "$WORK/hover.png"
 BX=$(lq "d['box'][0]"); BY=$(lq "d['box'][1]"); BW=$(lq "d['box'][2]"); BHH=$(lq "d['box'][3]")
-OUT=$($PNG diffbox "$WORK/rest.png" "$WORK/hover.png" "$BX" "$BY" "$BW" "$BHH")
+OUT=$($PNG diffrect "$WORK/rest.png" "$WORK/hover.png" "$BX" "$BY" "$BW" "$BHH")
 set -- $OUT
 [ "$1" -gt 50 ] && ok "hovering a row changed $1 pixels inside the box (the wash)" || fail "hover changed only $1 pixels in the box"
 eq "$2" "0" "and $2 pixels outside it: no title bar, no wallpaper, nothing a client can see restyled"

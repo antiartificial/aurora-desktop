@@ -27,7 +27,7 @@ use std::{
 
 use smithay::{
     desktop::Window,
-    reexports::wayland_server::{Resource, backend::ClientId},
+    reexports::wayland_server::Resource,
     wayland::{seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
 
@@ -41,8 +41,6 @@ use model::{Dom, Figures, Group, Net, SysFigures, Win};
 
 /// How often the cgroup and /proc figures are read. A rate over less than this is mostly noise.
 const SAMPLE_EVERY: Duration = Duration::from_secs(1);
-/// How long a window's domain is trusted before it is looked up again.
-const DOMAIN_TTL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct Deskbar {
@@ -56,7 +54,8 @@ pub struct Deskbar {
     last_sample: Option<Instant>,
     /// Shown now. Sampling stops when it is not: nothing is read for a box nobody can see.
     shown: bool,
-    doms: HashMap<ClientId, (Dom, Instant)>,
+    /// The pid that connected for each domain on screen, so its cgroup can be found at the next reading.
+    pids: HashMap<String, i32>,
     gseq: HashMap<String, u64>,
     wseq: HashMap<String, u64>,
     next_seq: u64,
@@ -82,7 +81,7 @@ impl Aurora {
     fn deskbar_seen(&mut self) -> (Vec<Seen>, bool) {
         let wins: Vec<Window> = self.space.elements().cloned().collect();
         let (mut out, mut fullscreen) = (vec![], false);
-        let mut live: HashSet<ClientId> = HashSet::new();
+        let mut pids: HashMap<String, i32> = HashMap::new();
         for w in &wins {
             let Some(id) = win_key(w) else { continue };
             if let Some(x) = w.x11_surface() {
@@ -102,33 +101,29 @@ impl Aurora {
                 let d = s.data_map.get::<XdgToplevelSurfaceData>().and_then(|d| d.lock().ok());
                 d.map(|d| (d.app_id.clone().unwrap_or_default(), d.title.clone().unwrap_or_default())).unwrap_or_default()
             });
-            let dom = self.deskbar_domain(w, &mut live);
+            let dom = match self.deskbar_peer(w) {
+                Some(p) => {
+                    pids.insert(p.name.clone(), p.pid);
+                    Dom::In { name: p.name }
+                }
+                None => Dom::None,
+            };
             out.push(Seen { id, app_id, title, focused: self.is_focused(w), dom });
         }
-        self.deskbar.doms.retain(|k, _| live.contains(k));
+        self.deskbar.pids = pids;
         (out, fullscreen)
     }
 
-    /// Which domain a window's client runs in: the kernel's own record (SO_PEERCRED's pid, then that
-    /// process's cgroup), never anything the client says. Cached per client for a couple of seconds.
-    fn deskbar_domain(&mut self, w: &Window, live: &mut HashSet<ClientId>) -> Dom {
-        let Some(client) = w.wl_surface().and_then(|s| s.client()) else { return Dom::Unknown("client gone") };
-        let id = client.id();
-        live.insert(id.clone());
-        if let Some((d, at)) = self.deskbar.doms.get(&id) {
-            if at.elapsed() < DOMAIN_TTL {
-                return d.clone();
-            }
-        }
-        let dom = match client.get_credentials(&self.display_handle) {
-            Ok(c) => match std::fs::read_to_string(self.deskbar.sampler.roots.proc.join(c.pid.to_string()).join("cgroup")) {
-                Ok(t) => sample::parse_domain(&t),
-                Err(_) => Dom::Unknown("cgroup unreadable"),
-            },
-            Err(_) => Dom::Unknown("pid unreadable"),
-        };
-        self.deskbar.doms.insert(id, (dom.clone(), Instant::now()));
-        dom
+    /// Which domain a Wayland window's client is in: the kernel's own record, read once at connect by
+    /// `crate::peer` (the same fact the title bar's badge shows, so the two can never disagree), never
+    /// anything the client says. `None` for a client the kernel placed outside every domain.
+    ///
+    /// `peer` reads `None` both for "placed outside every domain" and for "its cgroup could not be read"
+    /// (a process that exited between accept and the read); the second is rare enough, and fails in the
+    /// direction of "not in a domain", which is the row without figures. Decision 0021 records it.
+    fn deskbar_peer(&self, w: &Window) -> Option<crate::peer::PeerDomain> {
+        let client = w.wl_surface()?.client()?;
+        client.get_data::<crate::state::ClientState>()?.domain.clone()
     }
 
     /// Per frame, before the scene is composed: decide whether the box is shown and, if what it would
@@ -228,12 +223,13 @@ impl Aurora {
         }
         let now = Instant::now();
         self.deskbar.last_sample = Some(now);
+        // Each domain's directory comes from where its client's pid is NOW: a pid that has left the domain
+        // (or been reused) names nothing, and the domain simply has no figures this second.
         let mut doms: Vec<(String, String)> = vec![];
-        for (d, _) in self.deskbar.doms.values() {
-            if let Dom::In { name, cgroup } = d {
-                if !doms.iter().any(|(n, _)| n == name) && doms.len() < 32 {
-                    doms.push((name.clone(), cgroup.clone()));
-                }
+        for (name, pid) in self.deskbar.pids.iter().take(32) {
+            let file = self.deskbar.sampler.roots.proc.join(pid.to_string()).join("cgroup");
+            if let Some(cg) = std::fs::read_to_string(file).ok().and_then(|t| sample::domain_cgroup(&t, name)) {
+                doms.push((name.clone(), cg));
             }
         }
         self.deskbar.figures = self.deskbar.sampler.domains(&doms, now);
