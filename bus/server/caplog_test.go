@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/antiartificial/aurora/bus/buslog"
@@ -54,5 +55,45 @@ func TestClientCannotForgeBusTopics(t *testing.T) {
 	msgs, _ := buslog.ReadFile(dataDir)
 	if len(msgs) != 1 || msgs[0].Kind != proto.KindEvent || msgs[0].Topic != "after.forgery" {
 		t.Fatalf("log = %+v", msgs)
+	}
+}
+
+// The daemon's resource charset must admit every name the object namespace can
+// build (contracts/object). It is widened to include '@' and '#' for exactly
+// two forms: a verb object, "service:files/open@v1", and a name too long or
+// too strange to spell literally, "file:#<sha256>". Without them those objects
+// cannot be minted, so a capability over them cannot exist.
+//
+// This lives here rather than only in contracts/object because that package
+// can only mirror the regex as a literal; this mints against the real daemon.
+func TestResourceCharsetAdmitsTheObjectNamespace(t *testing.T) {
+	sock, _, _ := start(t)
+	c := dial(t, sock)
+	ok := []string{
+		"file:/etc/hosts",
+		"file:#" + strings.Repeat("ab", 32),
+		"device:gpu",
+		"host:example.com.443",
+		"service:org.aurora.files",
+		"service:org.aurora.files/open@v1",
+		"session:clipboard",
+	}
+	for _, res := range ok {
+		if _, err := c.Control(ctx(t), "bus.mint@v1", map[string]any{"resource": res}); err != nil {
+			t.Errorf("mint %q: %v", res, err)
+		}
+	}
+	// Still bounded: the charset is not a free-for-all, and the limit holds.
+	bad := []string{
+		"file:/path with spaces",
+		"file:/Ümlaut",
+		"service:a;rm -rf /",
+		"file:/" + strings.Repeat("a", 200),
+		"",
+	}
+	for _, res := range bad {
+		if _, err := c.Control(ctx(t), "bus.mint@v1", map[string]any{"resource": res}); err == nil {
+			t.Errorf("mint %q was accepted", res)
+		}
 	}
 }

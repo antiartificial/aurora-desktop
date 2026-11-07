@@ -14,7 +14,15 @@ import (
 	"github.com/antiartificial/aurora/bus/proto"
 )
 
-var resourceRE = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,128}$`)
+// resourceRE is the charset a handle's resource name may use. The daemon does
+// not parse the name -- contracts/object owns the grammar -- but it does bound
+// it, so a name is always loggable, greppable and of fixed maximum width.
+//
+// '@' and '#' are here because the object namespace needs them: a verb is
+// spelled "service:files/open@v1", and a name too long or too strange to spell
+// literally is carried as "file:#<sha256>". Without them those objects could
+// not be minted at all.
+var resourceRE = regexp.MustCompile(`^[A-Za-z0-9_.:/@#-]{1,128}$`)
 
 // handle is one row of the daemon's authoritative capability table. The
 // token is the unguessable value; holder is the domain identity that may

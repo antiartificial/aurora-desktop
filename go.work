@@ -7,10 +7,11 @@ use (
 	./apps/magick
 	./bus
 	./contracts/manifest
+	./contracts/object
 	./contracts/plumb
+	./controller
 	./gateway
 	./index
-	./controller
 	./shell
 	./supervisor
 )
