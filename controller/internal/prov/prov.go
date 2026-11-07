@@ -104,6 +104,50 @@ type Grant struct {
 	// Cap is the id (cap:...) of the daemon-minted handle that named this
 	// grant for this invoke; empty when none was issued (see Record.CapNote).
 	Cap string `json:"cap,omitempty"`
+	// Access is what revoking Cap can withdraw (decision 0019): AccessMounted
+	// for everything the controller composes into a namespace. It is recorded
+	// with the grant, and not left to be inferred from Path, because a reader
+	// of this record is a verifier asking "is there still access", and the
+	// answer for a mounted grant is not the one a revoked handle suggests.
+	// Empty on records written before 0019, which say nothing either way.
+	Access string `json:"access,omitempty"`
+}
+
+// What revoking a grant's handle can take back (decision 0019). The names say
+// where the object lives, which is the fact the guarantee follows from.
+// "leased" is deliberately absent: a lease is a handle that ends at a reply
+// (busd's bus.lease@v1), and nothing the controller composes into a domain is
+// one. A grant must not be describable by a word that promises it.
+const (
+	// AccessMounted: the object is in the domain's namespace (a bind mount or
+	// device node) for the life of the domain. The handle's expiry and
+	// revocation are bookkeeping; a holder's open fd survives both.
+	AccessMounted = "mounted"
+	// AccessUnclassified: the controller does not claim either way.
+	AccessUnclassified = "unclassified"
+)
+
+// AccessKind is the label this grant is recorded with. Files and devices are
+// mounted. A ui grant is a statement in the bus's own table for the tree
+// service to find, not a mount, but nothing has measured whether revoking it
+// is enforced, so it claims nothing.
+func (g Grant) AccessKind() string {
+	if g.UI != "" {
+		return AccessUnclassified
+	}
+	return AccessMounted
+}
+
+// AccessNote says in words what an Access label means for revocation, for
+// output a person reads. A label alone is easy to skim past.
+func AccessNote(access string) string {
+	switch access {
+	case AccessMounted:
+		return "mounted: revoking the handle does not withdraw access the app already holds (decision 0019)"
+	case "":
+		return "access kind not recorded (written before decision 0019): revocation may not have withdrawn access"
+	}
+	return access + ": revocation is not claimed to withdraw access already held"
 }
 
 // Record says where a file came from.

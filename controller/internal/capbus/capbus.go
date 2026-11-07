@@ -50,8 +50,15 @@ func (b *Client) control(verb string, payload any) (json.RawMessage, error) {
 }
 
 // Mint asks the daemon for a handle naming resource. ttl 0 means no expiry.
-func (b *Client) Mint(resource string, ttl time.Duration) (Handle, error) {
-	raw, err := b.control("bus.mint@v1", map[string]any{"resource": resource, "ttl_ms": ttl.Milliseconds()})
+// access is the label the caller claims for the grant ("mounted"; "" lets the
+// daemon classify). It sends no rights: 0018 item 5 says to add them in the
+// change that first enforces rights at a use site, and nothing here does.
+func (b *Client) Mint(resource string, ttl time.Duration, access string) (Handle, error) {
+	req := map[string]any{"resource": resource, "ttl_ms": ttl.Milliseconds()}
+	if access != "" {
+		req["access"] = access
+	}
+	raw, err := b.control("bus.mint@v1", req)
 	if err != nil {
 		return Handle{}, err
 	}
@@ -106,7 +113,7 @@ func (b *Client) Epoch() (string, error) {
 	if id != "" {
 		return id, nil
 	}
-	h, err := b.Mint(EpochResource, 0)
+	h, err := b.Mint(EpochResource, 0, "")
 	if err != nil {
 		return "", err
 	}

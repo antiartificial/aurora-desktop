@@ -46,6 +46,74 @@ type handle struct {
 	// revocation walks the table, and there is no second structure to keep in
 	// step with it.
 	parent string
+	// access is what revoking this handle can actually withdraw (decision
+	// 0019). It is the daemon's own label, decided at mint from the object's
+	// class and inherited by every derivation, so no holder can raise it.
+	access Access
+	// lease marks a handle minted by bus.lease@v1. leaseReq is the daemon id of
+	// the one request it was presented on ("" until then); ended is set when
+	// that request's reply passes, and is terminal.
+	lease    bool
+	leaseReq string
+	ended    bool
+}
+
+// Access says what ending a handle does to the access its holder already has.
+// It is the tier of decision 0019, named for the mechanism and not for the
+// outcome: "mounted" and "mediated" say where the object lives, which is the
+// fact the guarantee follows from. "leased" was the record's wording for the
+// enforceable side and is not used, because a mediated handle that is not
+// ended at reply is not a lease, and a label that promised one would be wrong
+// for every long-lived handle over a service. Whether a handle IS a lease is a
+// separate fact (handle.lease), which is only ever true of a mediated one.
+type Access string
+
+const (
+	// AccessMounted: the holder has the object in its own namespace (a bind
+	// mount, a device node) and keeps it past revocation: an open fd cannot be
+	// taken back, and it reads bytes written after the revoke. Revoking
+	// removes the daemon's row and nothing else.
+	AccessMounted Access = "mounted"
+	// AccessMediated: the holder has a connection, not the object, and
+	// something it does not control checks the daemon's table per request.
+	// Revocation is enforced.
+	AccessMediated Access = "mediated"
+	// AccessUnclassified: the daemon cannot say. Reported as such rather than
+	// guessed, because a guess in the strong direction is the failure 0019
+	// exists to prevent, and a guess in the weak direction would mislabel
+	// things nobody has examined.
+	AccessUnclassified Access = "unclassified"
+)
+
+// classifyAccess decides a handle's Access from its resource and what the
+// minter claimed. The class decides: a minter may weaken the label (say
+// "mounted" of anything) but cannot strengthen it, so the only way to hold a
+// "mediated" handle is to name a service or session object. The daemon does
+// not otherwise parse resource names; this reads only the class prefix, and a
+// legacy spelling that does not parse is unclassified, not mounted-by-default,
+// since "ui:" and "host:" are neither.
+func classifyAccess(resource, claimed string) (Access, error) {
+	byClass := AccessUnclassified
+	if ref, err := object.Parse(resource); err == nil {
+		switch ref.Class {
+		case object.File, object.Device:
+			byClass = AccessMounted
+		case object.Service, object.Session:
+			byClass = AccessMediated
+		}
+	}
+	switch Access(claimed) {
+	case "":
+		return byClass, nil
+	case AccessMounted:
+		return AccessMounted, nil
+	case AccessMediated:
+		if byClass != AccessMediated {
+			return "", cerr("access_not_mediated", "%q is not a service or session object: access to it is %s, and a minter cannot declare it enforceable", resource, byClass)
+		}
+		return AccessMediated, nil
+	}
+	return "", cerr("bad_access", `access must be "mounted" or "mediated"`)
 }
 
 // codedErr is an error with a typed code for the client.
@@ -76,6 +144,8 @@ func (s *Server) check(domain, token string) (*handle, error) {
 		return nil, cerr("cap_not_held", "handle %s is not held by %s", h.id, domain)
 	case h.revoked:
 		return nil, cerr("cap_revoked", "handle %s was revoked", h.id)
+	case h.ended:
+		return nil, cerr("cap_ended", "lease %s ended with its request's reply", h.id)
 	case !h.expires.IsZero() && !time.Now().Before(h.expires):
 		return nil, cerr("cap_expired", "handle %s expired", h.id)
 	}
@@ -100,11 +170,15 @@ const (
 	TopicCapMinted      = "bus.cap.minted"
 	TopicCapTransferred = "bus.cap.transferred"
 	TopicCapRevoked     = "bus.cap.revoked"
+	TopicCapEnded       = "bus.cap.ended"
 )
 
 // emitCap records and delivers one lifecycle event. Callers hold s.mu.
 func (s *Server) emitCap(topic string, by string, h *handle, extra map[string]any) {
-	m := map[string]any{"id": h.id, "resource": h.resource, "by": by, "minter": h.minter, "rights": h.rights.String()}
+	m := map[string]any{"id": h.id, "resource": h.resource, "by": by, "minter": h.minter, "rights": h.rights.String(), "access": string(h.access)}
+	if h.lease {
+		m["lease"] = true
+	}
 	if h.parent != "" {
 		m["parent"] = h.parent
 	}
@@ -123,6 +197,7 @@ func (s *Server) ctlMint(c *conn, raw json.RawMessage) (any, error) {
 		Resource string `json:"resource"`
 		TTLMS    int64  `json:"ttl_ms"`
 		Rights   string `json:"rights"`
+		Access   string `json:"access"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || !resourceRE.MatchString(p.Resource) || p.TTLMS < 0 {
 		return nil, errors.New(`mint needs {"resource":"name","ttl_ms":optional>=0,"rights":"read,write"}`)
@@ -138,7 +213,11 @@ func (s *Server) ctlMint(c *conn, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, cerr("bad_rights", "%v", err)
 	}
-	h := &handle{token: newToken(), resource: p.Resource, minter: c.domain, holder: c.domain, rights: rights}
+	access, err := classifyAccess(p.Resource, p.Access)
+	if err != nil {
+		return nil, err
+	}
+	h := &handle{token: newToken(), resource: p.Resource, minter: c.domain, holder: c.domain, rights: rights, access: access}
 	h.id = buslog.CapID(h.token)
 	if p.TTLMS > 0 {
 		h.expires = time.Now().Add(time.Duration(p.TTLMS) * time.Millisecond)
@@ -149,7 +228,7 @@ func (s *Server) ctlMint(c *conn, raw json.RawMessage) (any, error) {
 		ex["expires"] = h.expires
 	}
 	s.emitCap(TopicCapMinted, c.domain, h, ex)
-	out := map[string]any{"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder, "rights": h.rights.String()}
+	out := map[string]any{"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder, "rights": h.rights.String(), "access": string(h.access)}
 	if !h.expires.IsZero() {
 		out["expires"] = h.expires
 	}
@@ -177,6 +256,9 @@ func (s *Server) ctlDerive(c *conn, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if parent.lease {
+		return nil, cerr("cap_is_lease", "lease %s cannot be derived from: a child would outlive the request it was lent for", parent.id)
+	}
 	want, err := object.ParseRights(p.Rights)
 	if err != nil {
 		return nil, cerr("bad_rights", "%v", err)
@@ -192,7 +274,7 @@ func (s *Server) ctlDerive(c *conn, raw json.RawMessage) (any, error) {
 	}
 	h := &handle{
 		token: newToken(), resource: parent.resource, minter: c.domain, holder: c.domain,
-		expires: parent.expires, rights: got, parent: parent.id,
+		expires: parent.expires, rights: got, parent: parent.id, access: parent.access,
 	}
 	h.id = buslog.CapID(h.token)
 	s.caps[h.token] = h
@@ -201,7 +283,7 @@ func (s *Server) ctlDerive(c *conn, raw json.RawMessage) (any, error) {
 		ex["expires"] = h.expires
 	}
 	s.emitCap(TopicCapMinted, c.domain, h, ex)
-	out := map[string]any{"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder, "rights": h.rights.String(), "parent": h.parent}
+	out := map[string]any{"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder, "rights": h.rights.String(), "access": string(h.access), "parent": h.parent}
 	if !h.expires.IsZero() {
 		out["expires"] = h.expires
 	}
@@ -219,6 +301,9 @@ func (s *Server) ctlTransfer(c *conn, raw json.RawMessage) (any, error) {
 	h, err := s.check(c.domain, p.Handle)
 	if err != nil {
 		return nil, err
+	}
+	if h.lease {
+		return nil, cerr("cap_is_lease", "lease %s is lent to its holder for one request and cannot be transferred", h.id)
 	}
 	var targets []*conn
 	for _, t := range s.conns {
@@ -321,23 +406,28 @@ func (s *Server) descendants(h *handle) []*handle {
 
 // InspectHandle is an outstanding handle in bus.inspect@v1. Never the token.
 type InspectHandle struct {
-	ID       string     `json:"id"`
-	Resource string     `json:"resource"`
-	Minter   string     `json:"minter"`
-	Holder   string     `json:"holder"`
-	Rights   string     `json:"rights"`
-	Parent   string     `json:"parent,omitempty"`
-	Expires  *time.Time `json:"expires,omitempty"`
+	ID       string `json:"id"`
+	Resource string `json:"resource"`
+	Minter   string `json:"minter"`
+	Holder   string `json:"holder"`
+	Rights   string `json:"rights"`
+	// Access is what revoking the handle can withdraw: "mounted" (nothing: the
+	// holder keeps the object), "mediated" (everything) or "unclassified".
+	// Lease is true only for a handle that ends at its request's reply.
+	Access  string     `json:"access"`
+	Lease   bool       `json:"lease,omitempty"`
+	Parent  string     `json:"parent,omitempty"`
+	Expires *time.Time `json:"expires,omitempty"`
 }
 
 func (s *Server) inspectHandles() []InspectHandle {
 	out := []InspectHandle{}
 	now := time.Now()
 	for _, h := range s.caps {
-		if h.revoked || (!h.expires.IsZero() && !now.Before(h.expires)) {
+		if h.revoked || h.ended || (!h.expires.IsZero() && !now.Before(h.expires)) {
 			continue
 		}
-		ih := InspectHandle{ID: h.id, Resource: h.resource, Minter: h.minter, Holder: h.holder, Rights: h.rights.String(), Parent: h.parent}
+		ih := InspectHandle{ID: h.id, Resource: h.resource, Minter: h.minter, Holder: h.holder, Rights: h.rights.String(), Access: string(h.access), Lease: h.lease, Parent: h.parent}
 		if !h.expires.IsZero() {
 			x := h.expires
 			ih.Expires = &x
@@ -346,4 +436,129 @@ func (s *Server) inspectHandles() []InspectHandle {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// Bounds on a lease's own lifetime. A lease normally ends at the reply, but a
+// lease that is never presented, or whose request is never answered by a
+// service that stays connected, would otherwise live to its parent's expiry,
+// which may be never. The bound is what makes "short-lived" true of every
+// lease and not only of well-behaved ones.
+const (
+	defaultLeaseTTL = 30 * time.Second
+	maxLeaseTTL     = 5 * time.Minute
+)
+
+// ctlLease derives a handle for one request, beside ctlDerive and under the
+// same rules, because a lease is a derived handle with a short life and a
+// second mechanism would be a second place for those rules to drift.
+//
+// It is refused, not minted with a warning label, over anything that is not
+// mediated. Hubris's lease is a promise that the callee cannot keep the thing;
+// for a bind-mounted file that promise is false (0019, finding 4), and a
+// handle that is called a lease and then says "not enforceable" in a field
+// somebody has to read is the exact artifact that record exists to prevent:
+// the word gets copied and the field does not. Refusing makes the sentence "a
+// lease is enforceable" true of every lease that exists, with no field to
+// consult. The caller who wants a plain short-lived handle over a file has
+// bus.derive@v1, which is labelled mounted and never claims to end anything.
+func (s *Server) ctlLease(c *conn, raw json.RawMessage) (any, error) {
+	var p struct {
+		Handle, Rights string
+		TTLMS          int64 `json:"ttl_ms"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil || p.Handle == "" || p.Rights == "" || p.TTLMS < 0 {
+		return nil, errors.New(`lease needs {"handle":"...","rights":"read","ttl_ms":optional>=0}`)
+	}
+	parent, err := s.check(c.domain, p.Handle)
+	if err != nil {
+		return nil, err
+	}
+	if parent.lease {
+		return nil, cerr("cap_is_lease", "lease %s cannot be leased from", parent.id)
+	}
+	if parent.access != AccessMediated {
+		return nil, cerr("lease_not_enforceable", "handle %s is %s: ending a lease over it would not take back what the holder already has (decision 0019), so none is issued", parent.id, parent.access)
+	}
+	want, err := object.ParseRights(p.Rights)
+	if err != nil {
+		return nil, cerr("bad_rights", "%v", err)
+	}
+	// A lease cannot be derived from, so grant on it would be a right nobody
+	// can exercise; refusing says so instead of recording a dead right.
+	if want.Has(object.Grant) {
+		return nil, cerr("lease_no_grant", "a lease cannot carry the grant right: it cannot be derived from")
+	}
+	if !parent.rights.Has(object.Grant) {
+		return nil, cerr("cap_no_grant", "handle %s does not carry the grant right", parent.id)
+	}
+	got, err := parent.rights.Reduce(want)
+	if err != nil {
+		return nil, cerr("rights_exceed_parent", "%v", err)
+	}
+	ttl := defaultLeaseTTL
+	if p.TTLMS > 0 {
+		ttl = min(time.Duration(p.TTLMS)*time.Millisecond, maxLeaseTTL)
+	}
+	exp := time.Now().Add(ttl)
+	if !parent.expires.IsZero() && parent.expires.Before(exp) {
+		exp = parent.expires
+	}
+	h := &handle{
+		token: newToken(), resource: parent.resource, minter: c.domain, holder: c.domain,
+		expires: exp, rights: got, parent: parent.id, access: parent.access, lease: true,
+	}
+	h.id = buslog.CapID(h.token)
+	s.caps[h.token] = h
+	s.emitCap(TopicCapMinted, c.domain, h, map[string]any{"holder": h.holder, "expires": h.expires})
+	return map[string]any{
+		"handle": h.token, "id": h.id, "resource": h.resource, "holder": h.holder, "rights": h.rights.String(),
+		"access": string(h.access), "lease": true, "parent": h.parent, "expires": h.expires,
+	}, nil
+}
+
+// checkLeases applies what makes a lease a lease to the handles a message
+// presents. It runs beside checkCaps, which already refuses a revoked,
+// expired or ended one. A lease is for one request to a service: presented on
+// an event or a control verb it would not be bounded by any reply, and
+// presented on a second request it would be a retained handle.
+func (s *Server) checkLeases(e proto.Envelope) error {
+	for _, t := range e.Caps {
+		h := s.caps[t]
+		if h == nil || !h.lease {
+			continue
+		}
+		if e.Kind != proto.KindRequest || e.To == proto.BusTarget {
+			return cerr("lease_request_only", "lease %s may be presented only on a request to a service", h.id)
+		}
+		if h.leaseReq != "" {
+			return cerr("cap_lease_bound", "lease %s is already lent to a request", h.id)
+		}
+	}
+	return nil
+}
+
+// bindLeases ties each lease on a delivered request to it. Callers hold s.mu.
+func (s *Server) bindLeases(e proto.Envelope) {
+	for _, t := range e.Caps {
+		if h := s.caps[t]; h != nil && h.lease {
+			h.leaseReq = e.ID
+		}
+	}
+}
+
+// endLeases ends every lease bound to request id and drops its rights to none.
+// The rights are zeroed as well as the state set so the row, and the event,
+// say what Hubris says: at reply the lease holds nothing. Callers hold s.mu.
+func (s *Server) endLeases(reqID, cause string) {
+	var done []*handle
+	for _, h := range s.caps {
+		if h.lease && h.leaseReq == reqID && !h.ended {
+			done = append(done, h)
+		}
+	}
+	sort.Slice(done, func(i, j int) bool { return done[i].id < done[j].id })
+	for _, h := range done {
+		h.ended, h.rights = true, 0
+		s.emitCap(TopicCapEnded, h.holder, h, map[string]any{"holder": h.holder, "cause": cause, "request": reqID})
+	}
 }

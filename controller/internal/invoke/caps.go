@@ -14,7 +14,7 @@ import (
 // internal/capbus). nil on an Invoker means no handles are issued and the
 // record says so. Capability bookkeeping never fails an invoke.
 type CapBus interface {
-	Mint(resource string, ttl time.Duration) (capbus.Handle, error)
+	Mint(resource string, ttl time.Duration, access string) (capbus.Handle, error)
 	Revoke(id string) error
 	Present(tokens []string) error
 	Publish(topic string, payload []byte, tokens []string) error
@@ -58,7 +58,18 @@ func (iv *Invoker) mintCapsTTL(grants []prov.Grant, ttl time.Duration) *capSet {
 	}
 	var errs []error
 	for i := range grants {
-		h, err := iv.Caps.Mint(grants[i].Resource(), ttl)
+		// Labelled before the mint and whether or not it succeeds: the grant is
+		// composed into the domain either way, and a record that said nothing
+		// about a grant whose handle failed would read as "no access" too.
+		grants[i].Access = grants[i].AccessKind()
+		// Only a claim the daemon accepts is sent: it takes "mounted" and
+		// otherwise classifies for itself, so an unclassified grant is sent
+		// with no claim and the daemon's own answer stands.
+		claim := ""
+		if grants[i].Access == prov.AccessMounted {
+			claim = prov.AccessMounted
+		}
+		h, err := iv.Caps.Mint(grants[i].Resource(), ttl, claim)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s (%s): %w", grants[i].Path, grants[i].Mode, err))
 			continue

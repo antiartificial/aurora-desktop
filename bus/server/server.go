@@ -278,8 +278,10 @@ func (s *Server) drop(c *conn) {
 		switch {
 		case p.requester == c:
 			delete(s.pending, id)
+			s.endLeases(id, "requester_gone")
 		case p.service == c:
 			delete(s.pending, id)
+			s.endLeases(id, "service_gone")
 			s.sendError(p.requester, p.clientID, "service_gone", "service disconnected before replying")
 		}
 	}
@@ -367,6 +369,12 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 			s.sendError(c, clientID, ce.code, ce.msg)
 			return
 		}
+		if err := s.checkLeases(e); err != nil {
+			var ce *codedErr
+			errors.As(err, &ce)
+			s.sendError(c, clientID, ce.code, ce.msg)
+			return
+		}
 	}
 
 	if e.Kind == proto.KindRequest && e.To == proto.BusTarget {
@@ -391,6 +399,9 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 		s.record(e)
 		if !replay {
 			s.pending[e.ID] = pendingReq{requester: c, clientID: clientID, service: svc}
+			if s.cfg.EnforceCaps {
+				s.bindLeases(e)
+			}
 		}
 		s.enqueue(svc, e)
 	case proto.KindResponse, proto.KindError:
@@ -404,6 +415,7 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 			return
 		}
 		delete(s.pending, e.Corr)
+		s.endLeases(e.Corr, "reply")
 		e.To = p.requester.domain
 		s.record(e) // the log keeps the daemon's ids
 		e.Corr = p.clientID

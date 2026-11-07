@@ -17,9 +17,15 @@ const (
 
 // CapVerdict is the outcome for one grant's handle.
 type CapVerdict struct {
-	Path   string `json:"path"`
-	Mode   string `json:"mode"`
-	Cap    string `json:"cap"`
+	Path string `json:"path"`
+	Mode string `json:"mode"`
+	Cap  string `json:"cap"`
+	// Access is the grant's recorded label (see Grant.Access) and Effect says
+	// what that means for revocation. A verified status is about the handle;
+	// these are about the access, and a reader must not take the one for the
+	// other.
+	Access string `json:"access,omitempty"`
+	Effect string `json:"effect"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
 }

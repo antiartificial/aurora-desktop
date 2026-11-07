@@ -44,6 +44,8 @@ func (s *Server) control(c *conn, e proto.Envelope, clientID string) {
 		out, err = s.ctlTransfer(c, e.Payload)
 	case "bus.derive@v1":
 		out, err = s.ctlDerive(c, e.Payload)
+	case "bus.lease@v1":
+		out, err = s.ctlLease(c, e.Payload)
 	case "bus.revoke@v1":
 		out, err = s.ctlRevoke(c, e.Payload)
 	case "bus.domain.add@v1", "bus.domain.remove@v1":

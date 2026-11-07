@@ -14,11 +14,13 @@ const (
 	topicMinted      = "bus.cap.minted"
 	topicTransferred = "bus.cap.transferred"
 	topicRevoked     = "bus.cap.revoked"
+	topicEnded       = "bus.cap.ended"
 )
 
 type capState struct {
 	minter, holder string
 	revoked        bool
+	ended          bool // a lease whose request was answered
 	uses           int
 }
 
@@ -46,7 +48,7 @@ func capLifecycle(orig []proto.Envelope) CheckResult {
 	}
 	events, minted, revoked, transfers := 0, 0, 0, 0
 	for _, e := range orig {
-		if e.Kind == proto.KindEvent && (e.Topic == topicMinted || e.Topic == topicTransferred || e.Topic == topicRevoked) {
+		if e.Kind == proto.KindEvent && (e.Topic == topicMinted || e.Topic == topicTransferred || e.Topic == topicRevoked || e.Topic == topicEnded) {
 			events++
 			var p struct{ ID, By, Minter, Holder, From, To string }
 			if e.From != proto.BusTarget {
@@ -81,6 +83,15 @@ func capLifecycle(orig []proto.Envelope) CheckResult {
 				default:
 					c.holder = p.To
 				}
+			case topicEnded:
+				switch {
+				case c == nil:
+					bad(e, "end of lease %s that was never minted", p.ID)
+				case c.ended:
+					bad(e, "lease %s ended twice", p.ID)
+				default:
+					c.ended = true
+				}
 			case topicRevoked:
 				revoked++
 				switch {
@@ -106,6 +117,8 @@ func capLifecycle(orig []proto.Envelope) CheckResult {
 				bad(e, "presents handle %s that was never minted", id)
 			case c.revoked:
 				bad(e, "%s presents handle %s after it was revoked", e.From, id)
+			case c.ended:
+				bad(e, "%s presents lease %s after its request was answered", e.From, id)
 			case e.From != c.holder:
 				bad(e, "%s presents handle %s held by %s", e.From, id, c.holder)
 			default:
