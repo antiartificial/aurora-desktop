@@ -30,6 +30,9 @@ pub fn render_and_capture(
 ) {
     let frame_start = Instant::now();
     let mut sample = Sample::default();
+    // Start this frame's fence-wait count from zero whether or not stats are on,
+    // so turning them on does not report another frame's waits.
+    let _ = crate::stats::take_waits();
     state.fx.poll(renderer);
     state.sync_scale(output);
     state.shell.sync(&state.fx.theme);
@@ -85,8 +88,16 @@ pub fn render_and_capture(
     // The indicator goes on after the overlay: the scrim must not dim the evidence. Also after the capture.
     draw_indicator(state, renderer, framebuffer, output, size);
     if state.stats.is_some() {
+        // `total_ms` must include the GPU work, not just its submission. With
+        // per-phase fences the phases already did that; with `AURORA_STATS_FENCE=frame`
+        // nothing has blocked yet, so block here, once, exactly where the winit
+        // backend already does (`gl.Finish()` before it presents).
         sample.overlay = ms(overlay_start.elapsed());
+        if !crate::stats::phase_fence() {
+            let _ = renderer.with_context(|gl| unsafe { gl.Finish() });
+        }
         sample.total = ms(frame_start.elapsed());
+        sample.waits = crate::stats::take_waits();
         let frame = state.frame;
         if let Some(st) = state.stats.as_mut() {
             st.push(frame, sample);

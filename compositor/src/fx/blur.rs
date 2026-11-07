@@ -33,7 +33,7 @@ use smithay::{
     utils::{Buffer as BufferCoords, Physical, Rectangle, Size, Transform},
 };
 
-use super::{Res, wait};
+use super::Res;
 use crate::stats::{Phase, Phases};
 
 /// The two glass materials, which differ in where their chain starts.
@@ -127,9 +127,12 @@ fn pass(r: &mut GlesRenderer, prog: &GlesTexProgram, src: &GlesTexture, dst: &mu
     let srcr = Rectangle::<f64, BufferCoords>::from_size((ss.w as f64, ss.h as f64).into());
     f.render_texture_from_to(src, srcr, full, &[full], &[], Transform::Normal, 1.0, Some(prog), &u)?;
     let sy = f.finish()?;
-    let last = sy.clone();
-    wait(r, sy)?;
-    Ok(last)
+    // No wait here. Every pass reads the texture the previous pass wrote, on the
+    // SAME GL context, and GL orders those for us; the fence-and-wait per pass
+    // bought nothing and cost an eglCreateSync, an eglWaitSync and two
+    // eglMakeCurrent calls each time, once per pass -- and a one-window scene
+    // runs twenty of them. See the module docs in `fx/mod.rs`.
+    Ok(sy)
 }
 
 /// Downsample the scene into `half`, and `half` into `quarter`.

@@ -194,6 +194,14 @@ fn shown(c: &Comp) -> Ind {
 
 /// The compositor's own final frame: where the indicator is, and everything under it.
 fn frame(c: &Comp, name: &str) -> Img {
+    // Not politeness: a window ARRIVES over ~170 ms, fading in, and `dump` is
+    // answered by the very next frame. Land inside the fade and the client's
+    // own colour comes back blended with the backdrop -- 10,199,60 where it
+    // painted 10,200,60 -- and `count(GREEN)` is then zero over a frame that
+    // looks right. `Comp::capture` has waited for this since it was written;
+    // this path did not, and only got away with it while frames were slow
+    // enough that the fade was always over by the time one was dumped.
+    c.settle();
     let p = c.dir.path().join(name);
     let _ = std::fs::remove_file(&p);
     c.inject(&format!("dump {}", p.display()));

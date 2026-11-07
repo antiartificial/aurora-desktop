@@ -10,15 +10,22 @@
 //! it is p50 / p95 / p99 / max, the standard deviation, and the worst frame
 //! relative to the median.
 //!
+//! Which fence, and why it matters. `AURORA_STATS_FENCE=frame` blocks the CPU
+//! exactly once, after the frame's last draw -- where the winit backend already
+//! does (`gl.Finish()` before it presents) -- instead of at every phase end.
+//! `total_ms` is then the honest cost of the frame and the phase columns are
+//! submission time only. The default, per-phase fencing, is the opposite trade:
+//! the breakdown is real but every column, and the total, is an upper bound.
+//!
 //! What is measured, and what is not. Wall clock around the real work. The
-//! effects pipeline waits for its own passes with an EGL *server-side* wait
-//! (`Renderer::wait`), which does not block the CPU, so on its own the wall
-//! clock would measure command submission and not the GPU. With stats enabled
-//! the pipeline therefore ALSO blocks the CPU on the fence at the end of each
-//! phase (`Phases::lap`). That serialises CPU and GPU at phase boundaries,
-//! which the production path does not do: a stats run costs a little more than
-//! a normal one, and the numbers are GPU-inclusive. `GL_EXT_disjoint_timer_query`
-//! is not used.
+//! effects pipeline submits its passes and does not wait on them (one fence a
+//! frame; see `fx`), so on its own the wall clock would measure command
+//! submission and not the GPU. With stats enabled the pipeline therefore ALSO
+//! blocks the CPU on the fence at the end of each phase (`Phases::lap`). That
+//! serialises CPU and GPU at phase boundaries, which the production path does
+//! not do: a stats run costs more than a normal one, and the numbers are
+//! GPU-inclusive. `AURORA_STATS_FENCE=frame` is the other trade, above.
+//! `GL_EXT_disjoint_timer_query` is not used.
 
 use std::{
     fs::File,
@@ -72,11 +79,17 @@ impl Phases {
 
     /// End a phase: block the CPU until the GPU work behind `sync` is done, then
     /// attribute the time since the last lap to `p`.
+    ///
+    /// With `AURORA_STATS_FENCE=frame` the per-phase CPU block is skipped, so the
+    /// phase columns become submission time only and `total_ms` (fenced once, at
+    /// the end of the frame, by `render.rs`) is the honest per-frame cost.
     pub fn lap(&mut self, p: Phase, sync: &SyncPoint) {
         if !self.enabled {
             return;
         }
-        let _ = sync.wait();
+        if phase_fence() {
+            let _ = sync.wait();
+        }
         self.lap_cpu(p);
     }
 
@@ -92,6 +105,41 @@ impl Phases {
     pub fn ms(&self, p: Phase) -> f64 {
         self.acc[p as usize]
     }
+}
+
+/// CPU-visible GPU fence waits since the last frame.
+///
+/// Why this is counted and not just timed. The effects pass used to end every
+/// blur pass and every composite round trip with `Renderer::wait`, which costs
+/// an `eglCreateSync`, an `eglWaitSync` and two `eglMakeCurrent` calls. Those
+/// waits bought nothing -- the next pass reads what the last one wrote, on the
+/// SAME GL context, and GL orders that for us -- and they dominated the frame:
+/// removing them took a still 1856x1160 scale-1.45 frame from 47-55 ms to
+/// 5.2 ms on this machine. A COUNT survives a loaded GPU in a way a millisecond
+/// threshold does not, so `waits` is the number a regression test should read.
+static WAITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// One CPU-visible fence wait happened (called by `fx::wait`).
+pub fn note_wait() {
+    WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many have happened since the last call, and start counting again.
+pub fn take_waits() -> u32 {
+    WAITS.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Where `--frame-stats` blocks the CPU on the GPU.
+///
+/// `phase` (the default) fences at every phase end: the phase columns are
+/// GPU-inclusive, and the serialisation makes every column, and the total, an
+/// UPPER BOUND on a normal run. `frame` fences exactly once, after the last
+/// draw of the frame, which is what the winit backend already does before it
+/// presents: `total_ms` is then the honest cost of the frame and the phase
+/// columns are submission time only.
+pub fn phase_fence() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| !matches!(std::env::var("AURORA_STATS_FENCE").as_deref(), Ok("frame")))
 }
 
 /// One rendered frame.
@@ -110,9 +158,11 @@ pub struct Sample {
     pub prepasses: u32,
     /// Whether the effects pipeline (not the flat renderer) drew this frame.
     pub fx: bool,
+    /// CPU-visible GPU fence waits this frame (see `WAITS`).
+    pub waits: u32,
 }
 
-const COLUMNS: &str = "frame,total_ms,effects_ms,scene_ms,prepass_ms,chain_ms,composite_ms,switcher_ms,blit_ms,overlay_ms,surfaces,prepasses,fx";
+const COLUMNS: &str = "frame,total_ms,effects_ms,scene_ms,prepass_ms,chain_ms,composite_ms,switcher_ms,blit_ms,overlay_ms,surfaces,prepasses,fx,waits";
 
 /// Samples kept in memory for the summary (the file keeps every frame).
 const KEEP: usize = 200_000;
@@ -126,7 +176,12 @@ pub struct Stats {
 impl Stats {
     pub fn create(path: &Path) -> std::io::Result<Stats> {
         let mut file = File::create(path)?;
-        writeln!(file, "# aurora-compositor frame-stats v1; times in ms, GPU-inclusive (the CPU blocks on a fence at each phase end while this is on)")?;
+        let fence = if phase_fence() {
+            "the CPU blocks on a fence at each phase end, so every column is GPU-inclusive and an upper bound"
+        } else {
+            "AURORA_STATS_FENCE=frame: one fence, after the frame's last draw, so total_ms is the honest frame cost and the phase columns are submission only"
+        };
+        writeln!(file, "# aurora-compositor frame-stats v1; times in ms; {fence}")?;
         writeln!(file, "{COLUMNS}")?;
         Ok(Stats { file, samples: vec![], next_log: 300 })
     }
@@ -135,8 +190,8 @@ impl Stats {
         // One unbuffered write per frame: a killed compositor loses nothing.
         let _ = writeln!(
             self.file,
-            "{frame},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{}",
-            s.total, s.effects, s.scene, s.prepass, s.chain, s.composite, s.switcher, s.blit, s.overlay, s.surfaces, s.prepasses, s.fx as u8
+            "{frame},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{}",
+            s.total, s.effects, s.scene, s.prepass, s.chain, s.composite, s.switcher, s.blit, s.overlay, s.surfaces, s.prepasses, s.fx as u8, s.waits
         );
         if self.samples.len() >= KEEP {
             self.samples.drain(..KEEP / 2);
@@ -156,8 +211,9 @@ impl Stats {
         let pick = |v: &[&Sample], f: fn(&Sample) -> f64| -> Dist { Dist::of(v.iter().map(|s| f(s)).collect()) };
         let every: Vec<&Sample> = all.iter().collect();
         format!(
-            "frames={} fx_frames={} | total {} | effects {} | prepass {} | chain {} | composite {}",
-            all.len(), fx.len(), pick(&every, |s| s.total), pick(&fx, |s| s.effects), pick(&fx, |s| s.prepass), pick(&fx, |s| s.chain), pick(&fx, |s| s.composite)
+            "frames={} fx_frames={} | total {} | effects {} | prepass {} | chain {} | composite {} | waits {} | surfaces {}",
+            all.len(), fx.len(), pick(&every, |s| s.total), pick(&fx, |s| s.effects), pick(&fx, |s| s.prepass), pick(&fx, |s| s.chain), pick(&fx, |s| s.composite),
+            pick(&every, |s| s.waits as f64), pick(&fx, |s| s.surfaces as f64)
         )
     }
 }

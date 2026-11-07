@@ -8,6 +8,21 @@
 //! finished scene is blitted into the output
 //! framebuffer. `render.rs` serves captures from that framebuffer afterwards
 //! and draws the trusted overlay after that, so ordering is unchanged.
+//!
+//! **One fence a frame.** Every step here renders into a texture a later step
+//! reads, and every one of them is on the SAME GL context, which orders them
+//! for us. So no step waits on its own fence: a composed frame does ONE, on
+//! the blit into the output framebuffer, which is what hands the result to the
+//! capture path, the trusted overlay and (on winit) the window's context. (The
+//! snapshot taken of a window on its way out does one more, because a read-back
+//! may follow it; that is once per close, not once per frame.)
+//!
+//! Each wait that was there before cost an `eglCreateSync`, an `eglWaitSync`
+//! and two `eglMakeCurrent` calls -- 28 of them a frame for a one-window scene
+//! and 56 for four -- and that, not fill rate, was what a frame cost: a still
+//! 1856x1160 scale-1.45 frame measured 47-55 ms with them and 3-5 ms without,
+//! on a GPU busy with other work in both cases. `stats::note_wait` counts them
+//! and `tests/budget.rs` asserts the count, which a loaded GPU cannot make flap.
 
 pub mod blur;
 pub mod edit;
@@ -223,7 +238,7 @@ impl Fx {
             let mut f = r.render(&mut t, size, Transform::Normal)?;
             f.clear(Color32F::new(crate::render::CLEAR[0], crate::render::CLEAR[1], crate::render::CLEAR[2], 1.0), &[full])?;
             shell.draw_background(&mut f, bg_p, size)?;
-            let sy = f.finish()?; self.phases.lap(Phase::Scene, &sy); wait(r, sy)?;
+            let sy = f.finish()?; self.phases.lap(Phase::Scene, &sy);
         }
         s.reset();
         // Where this output sits in the global space, in device pixels. Every rectangle below
@@ -268,7 +283,7 @@ impl Fx {
                 let mut f = r.render(&mut t, size, Transform::Normal)?;
                 if glass.enabled { draw_glass(&mut f, glass_p, &s.window.up[0], geo, size, &glass, 0.0, linear)?; self.phases.surfaces += 1; }
                 if !split { draw_elements_scaled(&mut f, &els, scale, k, Some(geo_full))?; }
-                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy);
             }
             if let Some((tex, dst)) = bar {
                 s.mark_dirty(rect_of(geo));
@@ -289,7 +304,7 @@ impl Fx {
                     crate::shell::draw_tex_alpha(&mut f, tex,
                         crate::shell::layout::Rect { x: bg.loc.x, y: bg.loc.y, w: bg.size.w, h: bg.size.h }, alpha)?;
                     draw_elements_scaled(&mut f, &els, scale, k, Some(geo_full))?;
-                    let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+                    let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy);
                 }
                 touched = union(touched, rect_of(bg));
             }
@@ -407,7 +422,6 @@ impl Fx {
                 f.finish()?
             };
             self.phases.lap(Phase::Composite, &sy);
-            wait(r, sy)?;
             for (g, _, _) in &leaving {
                 s.mark_dirty(rect_of(*g));
             }
@@ -430,7 +444,7 @@ impl Fx {
                     self.phases.surfaces += 1;
                 }
                 crate::shell::draw_tex(&mut f, tex, panel)?;
-                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy);
             }
             s.mark_dirty(rect_of(geo));
         }
@@ -453,7 +467,7 @@ impl Fx {
                     self.phases.surfaces += 1;
                 }
                 crate::shell::draw_tex_alpha(&mut f, p.tex, p.dst, p.alpha)?;
-                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
+                let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy);
             }
             s.mark_dirty(rect_of(geo));
         }
@@ -523,7 +537,14 @@ pub fn make_tex_fmt(r: &mut GlesRenderer, f: Fourcc, w: i32, h: i32) -> Res<Gles
     Ok(tex)
 }
 
+/// Block this context on `sync` before it goes on.
+///
+/// Rarely what you want INSIDE the pipeline: consecutive passes and composite
+/// steps run on one GL context, which orders them for us, and each of these
+/// costs an `eglCreateSync`, an `eglWaitSync` and two `eglMakeCurrent` calls.
+/// Counted (`stats::note_wait`) so a test can assert how many a frame does.
 pub fn wait(r: &mut GlesRenderer, sync: smithay::backend::renderer::sync::SyncPoint) -> Res<()> {
+    crate::stats::note_wait();
     r.wait(&sync)?;
     Ok(())
 }
