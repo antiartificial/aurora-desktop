@@ -142,12 +142,17 @@ pub struct Shell {
     /// effects pipeline. Absent means "fully here", which is what almost every window is almost
     /// all of the time, so the common path is one hash lookup that misses.
     pub appearing: std::collections::HashMap<String, motion::Appear>,
+    /// Dock items that are still arriving, keyed by item id. A dock that pops a new app into
+    /// existence at full size is the single most noticeable place a desktop feels cheap.
+    item_appear: std::collections::HashMap<String, motion::Appear>,
     decos: deco::DecoStore,
     pub registry: apps::Registry,
     items: Vec<Item>,
     widths: Vec<i32>,
     seen: (u64, u64),
     rev: u64,
+    /// Item ids the dock has shown before, so a rebuild does not re-announce them all.
+    known: std::collections::HashSet<String>,
     pub hover: Option<usize>,
     /// What the host (or `--scale`) says the scale is; the theme's `[output] scale` may override it.
     pub host_scale: f64,
@@ -188,12 +193,14 @@ impl Shell {
             aurora_bin: "aurora".into(),
             deco: Decoration::default(),
             appearing: Default::default(),
+            item_appear: Default::default(),
             decos: Default::default(),
             registry: apps::Registry::new(None),
             items: vec![],
             widths: vec![],
             seen: (u64::MAX, 0),
             rev: 0,
+            known: Default::default(),
             hover: None,
             host_scale: 1.0,
             snap: Theme::default(),
@@ -284,6 +291,25 @@ impl Shell {
         let spec = FontSpec::new(self.font.size);
         let scale = self.scale;
         self.widths = self.items.iter().map(|i| (self.text.string_width(&i.label, &spec, scale) as f64 * scale).ceil() as i32 + 2).collect();
+        // Anything newly in the dock ARRIVES. Anything gone stops arriving -- an app that
+        // launched and quit inside 150 ms would otherwise leave an entry animating a slot that
+        // no longer exists.
+        let live: std::collections::HashSet<&str> = self.items.iter().map(|i| i.id.as_str()).collect();
+        self.item_appear.retain(|k, _| live.contains(k.as_str()));
+        // Everything new to the dock arrives, INCLUDING the first set the app registry answers
+        // with. That is not an oversight: the registry is asked over the bus and replies a
+        // moment after the compositor is up, so the dock genuinely does fill in, and watching it
+        // fill is better than watching it blink from empty to full. The very first rebuild runs
+        // before any reply and has nothing in it, which is why the guard is on rev rather than
+        // on the item list being empty.
+        if self.rev > 0 {
+            for it in &self.items {
+                if !self.item_appear.contains_key(&it.id) && !self.known.contains(&it.id) {
+                    self.item_appear.insert(it.id.clone(), motion::Appear::new(motion::DOCK_ITEM_MS));
+                }
+            }
+        }
+        self.known = self.items.iter().map(|i| i.id.clone()).collect();
         self.hover = None;
     }
 
@@ -306,7 +332,42 @@ impl Shell {
         if !self.dock.enabled {
             return Layout::default();
         }
-        layout::compute(w, h, &self.params(), &self.widths)
+        layout::compute(w, h, &self.params(), &self.anim_widths())
+    }
+
+    /// Label widths with arriving items narrowed, so a new item's pill GROWS and the ones beside
+    /// it slide over to make room. The alternative -- full width from frame one, fading in -- is
+    /// what a dock does when nobody thought about it: the neighbours teleport.
+    fn anim_widths(&self) -> Vec<i32> {
+        if self.item_appear.is_empty() {
+            return self.widths.clone();
+        }
+        self.widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let Some(it) = self.items.get(i) else { return w };
+                match self.item_arrival(&it.id) {
+                    Some(t) => ((w as f32) * t).round() as i32,
+                    None => w,
+                }
+            })
+            .collect()
+    }
+
+    /// How far along a dock item's arrival is, or `None` if it is not arriving.
+    ///
+    /// Unlike a window's, this does NOT retire the entry: it is read several times per frame --
+    /// once for the layout and once per draw -- and a read that retired would give different
+    /// answers within one frame, which is how an item ends up laid out at one width and drawn at
+    /// another. `tick` retires them.
+    pub fn item_arrival(&self, id: &str) -> Option<f32> {
+        let a = self.item_appear.get(id)?;
+        let e = a.elapsed_ms();
+        if e >= motion::DOCK_ITEM_MS as f32 {
+            return None;
+        }
+        Some(motion::ease_out_cubic(e / motion::DOCK_ITEM_MS as f32))
     }
 
     /// The area windows may occupy: the output minus the dock's reserved strip.
@@ -345,6 +406,12 @@ impl Shell {
 
 
     pub fn tick(&mut self) {
+        // Retire finished dock arrivals here, once per frame, rather than on read: item_arrival
+        // is consulted several times within a frame and must answer the same way each time.
+        if !self.item_appear.is_empty() {
+            let ms = motion::DOCK_ITEM_MS as f32;
+            self.item_appear.retain(|_, a| a.elapsed_ms() < ms);
+        }
         self.registry.tick();
     }
 
@@ -616,7 +683,16 @@ impl Shell {
             return Ok(());
         }
         let l = self.layout(size.w, size.h);
-        let key = format!("{}x{}|{:?}|{}|{}|{}", l.panel.w, l.panel.h, self.hover, self.rev, self.glass_on, self.scale);
+        // While anything is arriving the key carries its progress, so the dock is redrawn each
+        // frame of the animation and settles back to a cached texture the moment it is over. The
+        // canvas is a few thousand pixels; at 150 ms this is a handful of redraws.
+        let arriving: String = self
+            .items
+            .iter()
+            .filter_map(|i| self.item_arrival(&i.id).map(|t| format!("{}:{:.2}", i.id, t)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let key = format!("{}x{}|{:?}|{}|{}|{}|{}", l.panel.w, l.panel.h, self.hover, self.rev, self.glass_on, self.scale, arriving);
         if self.dock_tex.as_ref().is_some_and(|(k, _)| *k == key) {
             return Ok(());
         }
@@ -649,24 +725,28 @@ impl Shell {
         for (i, r) in l.items.iter().enumerate() {
             let Some(item) = self.items.get(i) else { break };
             let (lx, ly) = (r.x - l.panel.x, r.y - l.panel.y);
+            // An arriving item's pill is still growing, so its contents fade in rather than
+            // being drawn full-strength into a slot too narrow to hold them.
+            let t = self.item_arrival(&item.id).unwrap_or(1.0);
+            let fade = |a: u8| ((a as f32) * t) as u8;
             let dim = !item.clickable || !item.problem.is_empty();
             if self.hover == Some(i) && !dim {
                 c.round_rect(lx, ly, r.w, r.h, item_h as f32 * 0.3, [hov[0], hov[1], hov[2], (self.dock.hover_strength * 255.0) as u8]);
             }
             if dim {
                 let y = ((ly as f32 + r.h as f32 / 2.0) / s as f32) - (met.ascent + met.descent) / 2.0;
-                self.text.draw(&mut c, (lx + m) as f32 / s as f32, y, &item.label, &spec, [text[0], text[1], text[2], 150], s);
+                self.text.draw(&mut c, (lx + m) as f32 / s as f32, y, &item.label, &spec, [text[0], text[1], text[2], fade(150)], s);
                 continue;
             }
             let tc = tile_colour(&item.id);
-            c.round_rect(lx + m, ly + m, tile, tile, tile as f32 * 0.28, [tc[0], tc[1], tc[2], 255]);
+            c.round_rect(lx + m, ly + m, tile, tile, tile as f32 * 0.28, [tc[0], tc[1], tc[2], fade(255)]);
             let initial: String = item.label.chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
             let iw = self.text.string_width(&initial, &tile_spec, s);
             let tx = (lx + m) as f32 / s as f32 + (tile as f32 / s as f32 - iw) / 2.0;
             let ty = ((ly + m) as f32 + tile as f32 / 2.0) / s as f32 - (tmet.ascent + tmet.descent) / 2.0;
-            self.text.draw(&mut c, tx, ty, &initial, &tile_spec, [255, 255, 255, 255], s);
+            self.text.draw(&mut c, tx, ty, &initial, &tile_spec, [255, 255, 255, fade(255)], s);
             let y = (ly as f32 + r.h as f32 / 2.0) / s as f32 - (met.ascent + met.descent) / 2.0;
-            self.text.draw(&mut c, (lx + m + tile + m) as f32 / s as f32, y, &item.label, &spec, [text[0], text[1], text[2], 255], s);
+            self.text.draw(&mut c, (lx + m + tile + m) as f32 / s as f32, y, &item.label, &spec, [text[0], text[1], text[2], fade(255)], s);
         }
         c
     }

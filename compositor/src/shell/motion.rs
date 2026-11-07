@@ -22,6 +22,10 @@ pub const START_SCALE: f32 = 0.94;
 /// stops reading as "arriving" and starts reading as "the machine is busy".
 pub const WINDOW_MS: u64 = 170;
 
+/// A dock item arriving. Shorter than a window: it is small, close, and there may be several at
+/// once when a session restores.
+pub const DOCK_ITEM_MS: u64 = 150;
+
 /// Where an opening WINDOW starts. Nearer its final size than chrome does, because a window is
 /// large: the same 0.94 on a 1200 px window is a 72 px leap, which reads as a lurch rather than
 /// as an arrival.
@@ -201,6 +205,14 @@ mod arrival_tests {
         // window forever, for every window ever opened, with nothing on screen looking wrong.
         assert!(window_arrival(WINDOW_MS as f32).is_none(), "done exactly at the end");
         assert!(window_arrival(WINDOW_MS as f32 * 4.0).is_none(), "and stays done");
+    }
+
+    #[test]
+    fn a_dock_item_arrives_faster_than_a_window() {
+        // It is small, close, and several may arrive at once when a session restores. A window's
+        // timing on a dock pill would read as the dock being slow to agree that an app started.
+        assert!(DOCK_ITEM_MS < WINDOW_MS);
+        assert!(DOCK_ITEM_MS >= MENU_MS, "and not so fast it is a flicker");
     }
 
     #[test]
