@@ -16,9 +16,20 @@ session and seat, whether seatd is running, the DRM devices, group membership, t
 and whether another compositor still holds the display -- and refuses to launch while any of
 those is wrong, naming the fix.
 
-Run from inside a graphical session on 2026-11-07 it correctly refused, and found two things
-worth knowing in advance: **this machine's user is not in the `video` group**, and seatd is
-already running alongside logind.
+Run from inside a graphical session on 2026-11-07 it correctly refused, and found the thing
+most likely to have wasted the trip:
+
+**`getent group seat` lists this user; `id -nG` does not.** Group membership is read at login,
+so a session started before the change stays outside the group — and seatd answers only
+"Permission denied", with no hint which of the two it meant. A fresh login at the VT re-reads
+the groups, so this particular problem fixes itself the moment you reach a text login. The
+pre-flight reports it rather than treating it as fatal, for exactly that reason.
+
+Two smaller findings: seatd is running alongside logind here (forcing `LIBSEAT_BACKEND=seatd`
+changes the error from logind's "Function not implemented" to seatd's "Permission denied",
+which is how you tell which manager is in play), and the `video` group is **not** required when
+a seat manager opens the devices — an earlier version of this script called that a problem and
+would have sent someone chasing a group they do not need.
 
 The log lands in `harness/bare-metal-out/drm.log` whether the run succeeds or not. That file is
 what turns "it did not work" into a bug list.

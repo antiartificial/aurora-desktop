@@ -77,8 +77,38 @@ else
   say "drm devices" "NONE at /dev/dri"
   note "No DRM device. A GPU driver has not loaded, or this is a container without /dev/dri."
 fi
-say "groups" "$(id -nG)"
-id -nG | tr ' ' '\n' | grep -qx video || note "You are not in the 'video' group. Some setups need it for /dev/dri."
+say "groups (live)" "$(id -nG)"
+
+# The seat group is what seatd checks, and it is the one that bites: a user added to it stays
+# OUT of it until they log in again, because group membership is read at login. From inside a
+# desktop session started before the change, `getent group seat` lists you and `id -nG` does
+# not -- and seatd answers "Permission denied" with no hint which of the two it meant.
+#
+# A fresh login at the VT re-reads the groups, so this is usually a problem that fixes ITSELF
+# the moment you get to a text login. It is reported rather than treated as fatal for exactly
+# that reason.
+SEAT_ETC="$(getent group seat 2>/dev/null | cut -d: -f4 | tr ',' ' ')"
+SEAT_LIVE="$(id -nG | tr ' ' '\n' | grep -cx seat || true)"
+if [ -n "$SEAT_ETC" ] && echo " $SEAT_ETC " | grep -q " $USER "; then
+  if [ "$SEAT_LIVE" = "0" ]; then
+    say "seat group" "in /etc/group, NOT in this session"
+    echo "      (this session predates the change; a fresh login at the VT picks it up)"
+  else
+    say "seat group" "yes"
+  fi
+elif command -v loginctl >/dev/null 2>&1; then
+  say "seat group" "no (logind should serve instead)"
+else
+  say "seat group" "no, and no loginctl"
+  note "seatd checks the 'seat' group: sudo usermod -aG seat \$USER, then log in again."
+fi
+
+# `video` is NOT required when logind or seatd opens the devices, which is the whole point of a
+# seat manager. Reported, not warned about: an earlier version of this called it a problem and
+# would have sent someone chasing a group they do not need.
+id -nG | tr ' ' '\n' | grep -qx video \
+  && say "video group" "yes" \
+  || say "video group" "no (the seat manager opens /dev/dri, so this is usually fine)"
 INPUTS="$(ls /dev/input/event* 2>/dev/null | wc -l)"
 say "input devices" "$INPUTS at /dev/input/event*"
 [ "$INPUTS" -gt 0 ] || note "No evdev devices: libinput will find no keyboard or mouse."
@@ -109,8 +139,16 @@ Pre-flight is clean. Launching --drm.
 INFO
 sleep 3
 
+# Try logind first and fall back to seatd. From inside a desktop session logind answers
+# "Function not implemented" and seatd answers "Permission denied"; which one a machine gives
+# says which manager is actually in play, and trying both costs a second.
 RUST_BACKTRACE=1 "$COMP" --drm >"$LOG" 2>&1
 rc=$?
+if [ "$rc" != 0 ] && grep -q "cannot open a seat session" "$LOG"; then
+  echo "  logind did not give us a session; trying seatd."
+  RUST_BACKTRACE=1 LIBSEAT_BACKEND=seatd "$COMP" --drm >>"$LOG" 2>&1
+  rc=$?
+fi
 
 echo
 echo "aurora-compositor exited with $rc. The log is at:"
