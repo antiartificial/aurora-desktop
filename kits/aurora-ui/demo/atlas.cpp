@@ -309,13 +309,28 @@ int main() {
     // effects marked, destructive behind a separator, and a disabled item left visible with its
     // reason. The verbs are stubs here -- wiring registry.plumb@v1 is the next piece -- but the
     // ORDER and the MARKING are the part the user is owed, and they are real.
+    State<bool> list_view(true);
+    list_view.bind(&w);
     auto list = named(ListView(&rows, &selected), "files");
+    auto icons = named(IconView(&rows, &selected), "icons");
     State<std::string> last_action("");
     last_action.bind(&w);
 
     // Enter or a double-click enters a directory. A file is handed to the plumber, which is the
     // next piece; for now it is recorded so the demo can show the intent.
     OnListActivate(list, [&](int row) {
+        const std::string name = rows.Cell(row, 0).text;
+        if (name.empty()) return;
+        if (name.back() == '/') {
+            const std::string leaf = name.substr(0, name.size() - 1);
+            const std::string base = path.get() == "/" ? "" : path.get();
+            go(base + "/" + leaf, true);
+        } else {
+            last_action.set("open " + name);
+        }
+    });
+
+    OnIconsActivate(icons, [&](int row) {
         const std::string name = rows.Cell(row, 0).text;
         if (name.empty()) return;
         if (name.back() == '/') {
@@ -362,6 +377,11 @@ int main() {
                         go(to, false);
                     }),
                     Button("Up", [&] { go(parent_of(path.get()), true); }),
+                    Button("View", [&] {
+                        list_view.set(!list_view.get());
+                        w.Invalidate();
+                        w.FocusNamed(list_view.get() ? "files" : "icons");
+                    }),
                 }),
                 0.75f),
         // NO weight: this is inside a VStack, so a weight would make the breadcrumb take a share
@@ -382,7 +402,7 @@ int main() {
                              0.5f),
                      Transition{Motion::Reveal, 160, Curve::EaseOut}),
               "filterbar"),
-        weight(list, 1),
+        weight(Either(&list_view, list, icons), 1),
     }, 0));
 
     // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because
@@ -394,6 +414,14 @@ int main() {
 
     // ATLAS_OPEN_FILTER=1 opens the bar at startup, so a scripted run can measure the reveal
     // without a key injection race.
+    // ATLAS_VIEW=icons starts in the grid, so a scripted run does not depend on hitting a
+    // toolbar button by guessed coordinates -- which cost two runs before this existed.
+    if (const char* v = getenv("ATLAS_VIEW")) {
+        if (!strcmp(v, "icons")) {
+            list_view.set(false);
+            w.FocusNamed("icons");
+        }
+    }
     if (getenv("ATLAS_OPEN_FILTER")) {
         filter_open.set(true);
         w.FocusNamed("filter");
@@ -422,7 +450,8 @@ int main() {
                rows.Count(), rows.Total(), filter_open.get() ? "yes" : "no");
         printf("ATLAS motion_degraded=%zu\n", w.motion_degraded());
         printf("ATLAS last_action=\"%s\"\n", last_action.get().c_str());
-        printf("ATLAS path=%s history=%zu\n", path.get().c_str(), history.size());
+        printf("ATLAS path=%s history=%zu view=%s\n", path.get().c_str(), history.size(),
+               list_view.get() ? "list" : "icons");
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);

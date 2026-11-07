@@ -64,6 +64,10 @@ void au_fill_ellipse(au_surface*, au_rect, au_color);
 /* A vertical linear gradient between two colours, over the rect, in layout units. */
 void au_fill_rect_gradient(au_surface*, au_rect, au_color top, au_color bottom);
 
+/* Blit a straight-alpha ARGB image. Used for anything rasterised once and reused -- icons, and
+ * later thumbnails. dst is in layout units; at 1:1 it is a copy. */
+void au_draw_image(au_surface*, const uint32_t* argb, int sw, int sh, au_rect dst);
+
 /* ---- text ---- */
 
 typedef struct { uint16_t family, style; } au_font;        /* opaque pair, from au_font_system */

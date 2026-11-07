@@ -260,6 +260,21 @@ public:
 };
 
 Desc ListView(Rows* rows, int* selected);
+
+// ---- icon view --------------------------------------------------------------------------------
+
+// A grid of tiles over the SAME Rows source as the list, so switching view fetches nothing it
+// already has and the demand-driven lstat keeps working unchanged.
+//
+// Icons are drawn procedurally from canvas primitives -- a folder shape, a page with a folded
+// corner, tinted by file class. That is deliberate, not a placeholder for want of an icon
+// system: an explorer must not link an image decoder (docs/aurora-ui.md section 2 -- decoding an
+// untrusted file is a verb that runs in a domain), and a grid of identical generic glyphs would
+// be worse than a list. A procedural icon per class carries real information at zero risk.
+// HVIF, when it lands, replaces the drawing and not the widget.
+Desc IconView(Rows* rows, int* selected);
+void OnIconsActivate(const Desc& icons, std::function<void(int)> f);
+void OnIconsContext(const Desc& icons, std::function<void(int, float, float)> f);
 // A right-click on a row calls this with (row, x, y) in window coordinates, so the app can open
 // a menu there. Set it on the Desc a ListView returned.
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f);
@@ -348,6 +363,15 @@ private:
 // The target state is live immediately: `shown` flips, hit testing follows it the same frame,
 // and only the pixels catch up. A transition that gated input would be a latency bug in costume.
 Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
+
+// Exactly one of two children, chosen by a State. Both are built once and kept; the one not
+// shown is not measured, not drawn, not hit-tested and not in the focus order.
+//
+// This is how a view switch works when there is no reconciler: you do not rebuild the tree, you
+// hold both and pick. It costs the memory of two widgets and buys instant switching with each
+// view keeping its own scroll position and selection -- which is what a person expects when they
+// toggle back.
+Desc Either(State<bool>* first, Desc a, Desc b);
 
 // ---- damage -----------------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using aurora::Canvas;
@@ -133,6 +134,11 @@ void au_fill_ellipse(au_surface* s, au_rect r, au_color c) {
     if (s) s->canvas.FillEllipse(R(r), C(c));
 }
 
+void au_draw_image(au_surface* s, const uint32_t* argb, int sw, int sh, au_rect dst) {
+    if (!s || !argb || sw <= 0 || sh <= 0) return;
+    s->canvas.DrawImage(argb, sw, sh, FRect{0, 0, (float)(sw - 1), (float)(sh - 1)}, R(dst));
+}
+
 void au_fill_rect_gradient(au_surface* s, au_rect r, au_color top, au_color bottom) {
     if (!s) return;
     Paint p;
@@ -211,17 +217,23 @@ float au_text_draw(au_surface* s, au_font f, float size, const char* utf8, int l
         const float frac = (float)(penDev - whole);
         const int bucket = (int)(frac * 4.0f) & 3;
 
-        static std::vector<std::pair<GKey, aurora::text::GlyphBitmap>>* cache =
-            new std::vector<std::pair<GKey, aurora::text::GlyphBitmap>>();
+        // A HASH lookup, not a linear scan. The first version scanned a vector that grows to
+        // thousands of entries, once per glyph: an icon grid of a hundred tiles draws about a
+        // thousand glyphs a frame, so the scan was quadratic in the cache size and measured
+        // p50 8.25 ms with every frame over the 8 ms budget. I had written down that this was
+        // the thing to fix if text-heavy frames got slow; they did.
+        static std::unordered_map<GKey, aurora::text::GlyphBitmap, GHash>* cache =
+            new std::unordered_map<GKey, aurora::text::GlyphBitmap, GHash>();
         const GKey gk{(int)f.family, (int)f.style, size, (float)sc, g.id, bucket};
         const aurora::text::GlyphBitmap* bm = nullptr;
-        for (auto& e : *cache) if (e.first == gk) { bm = &e.second; break; }
-        if (!bm) {
+        auto it = cache->find(gk);
+        if (it != cache->end()) {
+            bm = &it->second;
+        } else {
             aurora::text::GlyphBitmap fresh;
             if (TB()->Rasterize(key, size, (float)sc, g.id, bucket / 4.0f, &fresh)) {
-                if (cache->size() > 4096) cache->clear();   // bounded; a UI reuses few glyphs
-                cache->push_back({gk, std::move(fresh)});
-                bm = &cache->back().second;
+                if (cache->size() > 8192) cache->clear();   // bounded; a UI reuses few glyphs
+                bm = &cache->emplace(gk, std::move(fresh)).first->second;
             }
         }
         if (bm && bm->width > 0)

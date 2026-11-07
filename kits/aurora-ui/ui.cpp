@@ -436,6 +436,120 @@ private:
     std::chrono::steady_clock::time_point last_type_{};
 };
 
+// ---- procedural icons -------------------------------------------------------------------------
+
+namespace {
+
+enum class FileKind : uint8_t { Dir, Code, Image, Archive, Doc, Exec, Plain };
+
+// Classified from the EXTENSION, which is all we have: MIME here would mean sniffing content,
+// and content sniffing is a read of a file the list has not been asked to open. Decision 0019's
+// rule applies -- the cheap honest signal, and the UI must not imply more than it knows.
+FileKind classify(const std::string& name, bool dir) {
+    if (dir) return FileKind::Dir;
+    const size_t d = name.find_last_of('.');
+    if (d == std::string::npos || d + 1 >= name.size()) return FileKind::Plain;
+    std::string e = name.substr(d + 1);
+    for (char& c : e) c = (char)tolower((unsigned char)c);
+    if (e == "c" || e == "h" || e == "cpp" || e == "hpp" || e == "rs" || e == "go" || e == "py" ||
+        e == "js" || e == "ts" || e == "sh" || e == "toml" || e == "json" || e == "yaml")
+        return FileKind::Code;
+    if (e == "png" || e == "jpg" || e == "jpeg" || e == "gif" || e == "svg" || e == "webp" ||
+        e == "bmp" || e == "ppm")
+        return FileKind::Image;
+    if (e == "zip" || e == "gz" || e == "xz" || e == "bz2" || e == "tar" || e == "zst" ||
+        e == "7z" || e == "rpm" || e == "deb")
+        return FileKind::Archive;
+    if (e == "md" || e == "txt" || e == "pdf" || e == "doc" || e == "odt" || e == "html")
+        return FileKind::Doc;
+    if (e == "so" || e == "a" || e == "o" || e == "ko") return FileKind::Exec;
+    return FileKind::Plain;
+}
+
+au_color kind_color(FileKind k) {
+    switch (k) {
+        case FileKind::Dir: return au_color{122, 162, 247, 255};      // blue
+        case FileKind::Code: return au_color{158, 206, 106, 255};     // green
+        case FileKind::Image: return au_color{187, 154, 247, 255};    // violet
+        case FileKind::Archive: return au_color{224, 175, 104, 255};  // amber
+        case FileKind::Doc: return au_color{125, 207, 255, 255};      // cyan
+        case FileKind::Exec: return au_color{247, 118, 142, 255};     // red
+        default: return au_color{130, 138, 158, 255};                 // grey
+    }
+}
+
+// Rasterise once per (kind, device size) and blit thereafter.
+//
+// Drawing the geometry per tile measured 62% of the frame: 8.418 ms with icons against 3.248 ms
+// without, at about a hundred tiles. Round-rect fills compute per-pixel coverage for their
+// corners, so a 36x40 icon is ~1,400 pixels of coverage maths and a grid is 140,000. Cached, each
+// kind is rasterised once and every tile after that is a copy.
+//
+// This is also the shape HVIF wants when it lands: a vector icon is decoded and rasterised once
+// at the size in use, then cached. The widget does not change.
+void draw_icon_geometry(au_surface* s, Rect r, FileKind k);
+
+struct IconCache {
+    struct Entry {
+        au_surface* sf = nullptr;
+        int w = 0, h = 0;
+    };
+    // Seven kinds; one size in practice, but keyed by size so a zoom does not reuse the wrong
+    // rasterisation.
+    std::vector<std::pair<std::pair<int, int>, Entry>> e;
+
+    const Entry* get(FileKind k, int w, int h, double scale) {
+        const std::pair<int, int> key{(int)k, w * 1000 + h};
+        for (auto& it : e)
+            if (it.first == key) return &it.second;
+        Entry fresh;
+        fresh.sf = au_surface_new(w, h, scale);
+        if (!fresh.sf) return nullptr;
+        au_clear(fresh.sf, au_color{0, 0, 0, 0});
+        draw_icon_geometry(fresh.sf, Rect{0, 0, (float)w, (float)h}, k);
+        fresh.w = au_surface_px_w(fresh.sf);
+        fresh.h = au_surface_px_h(fresh.sf);
+        e.push_back({key, fresh});
+        return &e.back().second;
+    }
+};
+
+IconCache& icons_cache() {
+    static IconCache* c = new IconCache();
+    return *c;
+}
+
+void draw_icon(au_surface* s, Rect r, FileKind k, double scale) {
+    const IconCache::Entry* en = icons_cache().get(k, (int)r.w, (int)r.h, scale);
+    if (!en || !en->sf) return;
+    au_draw_image(s, au_surface_pixels(en->sf), en->w, en->h,
+                  au_rect{r.x, r.y, r.x + r.w - 1, r.y + r.h - 1});
+}
+
+// A folder, or a page with a folded corner. Everything is a canvas primitive: no bitmap, no
+// decoder, and it scales because it is geometry rather than pixels.
+void draw_icon_geometry(au_surface* s, Rect r, FileKind k) {
+    const au_color c = kind_color(k);
+    const au_color dim{(uint8_t)(c.r * 2 / 3), (uint8_t)(c.g * 2 / 3), (uint8_t)(c.b * 2 / 3), 255};
+    if (k == FileKind::Dir) {
+        // tab, then body: drawn tab-first so the body's corner radius covers the seam
+        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.12f, r.x + r.w * 0.45f, r.y + r.h * 0.35f},
+                           3, 3, dim);
+        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.26f, r.x + r.w - 1, r.y + r.h - 1}, 4, 4, c);
+        return;
+    }
+    const float fold = r.w * 0.34f;
+    au_fill_round_rect(s, au_rect{r.x + r.w * 0.12f, r.y, r.x + r.w * 0.88f, r.y + r.h - 1}, 4, 4,
+                       c);
+    // The folded corner, as a stack of shortening lines: a triangle without a polygon fill.
+    for (int i = 0; i < (int)fold; i++) {
+        const float y = r.y + 1 + i;
+        au_stroke_line(s, r.x + r.w * 0.88f - fold + i, y, r.x + r.w * 0.88f - 1, y, dim, 1);
+    }
+}
+
+}  // namespace
+
 // ---- Breadcrumb -------------------------------------------------------------------------------
 
 class CrumbNode : public Node {
@@ -539,6 +653,166 @@ private:
     Env env_;
     float end_x_ = 0;
     int hover_ = -1;
+};
+
+// ---- IconView ---------------------------------------------------------------------------------
+
+class IconsNode : public Node {
+public:
+    IconsNode(Rows* r, int* sel) : r_(r), sel_(sel) {}
+
+    Size Measure(const Env& e, Constraints c) override {
+        env_ = e;
+        tile_w_ = 96;
+        tile_h_ = 84;
+        return Size{c.max_w >= 0 ? c.max_w : 400, c.max_h >= 0 ? c.max_h : 300};
+    }
+
+    int cols() const { return std::max(1, (int)(frame.w / tile_w_)); }
+    int visible_rows() const { return std::max(1, (int)(frame.h / tile_h_)); }
+
+    void Draw(au_surface* s, const Env& e) override {
+        env_ = e;
+        au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+
+        const int n = r_->Count();
+        const int c = cols();
+        const int first = top_row_ * c;
+        const int last = std::min(n - 1, first + visible_rows() * c + c - 1);
+        if (n > 0) r_->Want(std::max(0, first - c), std::min(n - 1, last + c * 2));
+
+        au_clip_set(s, frame.box());
+        for (int i = first; i <= last; i++) {
+            const int col = (i - first) % c;
+            const int row = (i - first) / c;
+            const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
+            if (t.y > frame.y + frame.h) break;
+            const bool is_sel = sel_ && *sel_ == i;
+            if (is_sel)
+                au_fill_round_rect(s, au_rect{t.x + 3, t.y + 3, t.x + t.w - 4, t.y + t.h - 4}, 8, 8,
+                                   e.accent);
+
+            const CellValue v = r_->Cell(i, 0);
+            std::string name = v.text;
+            const bool dir = !name.empty() && name.back() == '/';
+            if (dir) name.pop_back();
+            // Attribution knobs. Two wrong guesses cost two runs each; measuring which half of
+            // the tile is expensive costs one run.
+            static const bool no_icons = getenv("AURORA_UI_NO_ICONS") != nullptr;
+            static const bool no_labels = getenv("AURORA_UI_NO_LABELS") != nullptr;
+            if (!no_icons)
+                draw_icon(s, Rect{t.x + t.w / 2 - 18, t.y + 10, 36, 40}, classify(name, dir),
+                          au_surface_scale(s));
+            if (no_labels) continue;
+
+            // One line, middle-elided: a tile is narrower than most names, and truncating the
+            // tail hides the extension, which is the part that tells you what the thing is.
+            const float maxw = t.w - 10;
+            // Eliding by BINARY SEARCH over the kept length, not by shrinking one character at
+            // a time. The first version did the latter and cost up to twenty au_text_width calls
+            // per tile; at a hundred tiles that is two thousand shaping calls a frame, and it
+            // measured p50 8.665 ms with four of five frames over the 8 ms budget. Binary search
+            // is at most seven, and the result is identical.
+            std::string shown = name;
+            if (au_text_width(e.font, e.size - 1, name.c_str(), -1) > maxw && name.size() > 6) {
+                size_t lo = 6, hi = name.size();
+                std::string best = name.substr(0, 3) + "\xe2\x80\xa6";
+                while (lo <= hi) {
+                    const size_t keep = (lo + hi) / 2;
+                    const size_t half = keep / 2;
+                    const std::string cand = name.substr(0, half) + "\xe2\x80\xa6" +
+                                             name.substr(name.size() - (keep - half));
+                    if (au_text_width(e.font, e.size - 1, cand.c_str(), -1) <= maxw) {
+                        best = cand;
+                        lo = keep + 1;
+                    } else {
+                        if (keep == 0) break;
+                        hi = keep - 1;
+                    }
+                }
+                shown = best;
+            }
+            const float tw = au_text_width(e.font, e.size - 1, shown.c_str(), -1);
+            au_text_draw(s, e.font, e.size - 1, shown.c_str(), -1, t.x + (t.w - tw) / 2,
+                         t.y + t.h - 14, is_sel ? au_color{24, 26, 34, 255} : e.fg);
+        }
+        au_clip_reset(s);
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+
+    int index_at(float x, float y) const {
+        const int c = cols();
+        const int col = (int)((x - frame.x) / tile_w_);
+        const int row = (int)((y - frame.y) / tile_h_);
+        if (col < 0 || col >= c || row < 0) return -1;
+        const int i = (top_row_ + row) * c + col;
+        return (i >= 0 && i < r_->Count()) ? i : -1;
+    }
+
+    void OnPressAt(float x, float y, int clicks) override {
+        const int i = index_at(x, y);
+        if (i < 0) return;
+        if (sel_) *sel_ = i;
+        if (clicks >= 2 && on_act_) on_act_(i);
+    }
+    bool OnContext(float x, float y) override {
+        const int i = index_at(x, y);
+        if (i < 0) return false;
+        if (sel_ && *sel_ < 0) *sel_ = i;
+        if (on_ctx_) on_ctx_(i, x, y);
+        return true;
+    }
+    bool OnWheel(float dy) override {
+        const int rows_total = (r_->Count() + cols() - 1) / cols();
+        top_row_ = std::max(0, std::min(top_row_ + (dy > 0 ? 2 : -2),
+                                        std::max(0, rows_total - visible_rows())));
+        return true;
+    }
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed || !sel_) return false;
+        const int n = r_->Count();
+        if (n == 0) return false;
+        const int c = cols();
+        const int cur = *sel_ < 0 ? -1 : *sel_;
+        int next = cur;
+        switch (k.raw_char) {
+            case 0x1c: next = std::max(0, cur - 1); break;          // left
+            case 0x1d: next = std::min(n - 1, cur + 1); break;      // right
+            case 0x1e: next = cur < c ? cur : cur - c; break;       // up
+            case 0x1f: next = std::min(n - 1, cur < 0 ? 0 : cur + c); break;  // down
+            case 0x01: next = 0; break;
+            case 0x04: next = n - 1; break;
+            case 0x0a:
+            case 0x0d:
+                if (cur >= 0 && on_act_) { on_act_(cur); return true; }
+                return false;
+            default: return false;
+        }
+        if (next == cur) return true;
+        *sel_ = next;
+        // Keep it on screen, scrolling by whole tile rows.
+        const int r = next / c;
+        if (r < top_row_) top_row_ = r;
+        else if (r >= top_row_ + visible_rows()) top_row_ = r - visible_rows() + 1;
+        return true;
+    }
+
+    void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
+    void SetContextHandler(std::function<void(int, float, float)> f) { on_ctx_ = std::move(f); }
+
+private:
+    Rows* r_;
+    int* sel_;
+    Env env_;
+    float tile_w_ = 96, tile_h_ = 84;
+    int top_row_ = 0;
+    bool focused_ = false;
+    std::function<void(int)> on_act_;
+    std::function<void(int, float, float)> on_ctx_;
 };
 
 // ---- TextField --------------------------------------------------------------------------------
@@ -781,6 +1055,30 @@ private:
     bool focused_ = false, caret_on_ = true;
 };
 
+// ---- Either -----------------------------------------------------------------------------------
+
+class EitherNode : public Node {
+public:
+    EitherNode(State<bool>* f, Desc a, Desc b) : f_(f), a_(std::move(a)), b_(std::move(b)) {
+        if (f_) f_->attach(this);
+    }
+    Node* live() const { return (f_ && f_->get()) ? a_.get() : b_.get(); }
+
+    Size Measure(const Env& e, Constraints c) override { return live()->Measure(e, c); }
+    void Place(Rect r) override {
+        frame = r;
+        live()->parent = this;
+        live()->Place(r);
+    }
+    void Draw(au_surface* s, const Env& e) override { live()->Draw(s, e); }
+    Node* HitTest(float x, float y) override { return live()->HitTest(x, y); }
+    void Children(std::vector<Node*>* out) override { out->push_back(live()); }
+
+private:
+    State<bool>* f_;
+    Desc a_, b_;
+};
+
 // ---- Reveal -----------------------------------------------------------------------------------
 
 class RevealNode : public Node {
@@ -927,8 +1225,20 @@ void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
 void OnListActivate(const Desc& list, std::function<void(int)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetActivateHandler(std::move(f));
 }
+Desc Either(State<bool>* first, Desc a, Desc b) {
+    return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
+}
+
 Desc Reveal(State<bool>* shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
+}
+
+Desc IconView(Rows* r, int* sel) { return std::make_shared<IconsNode>(r, sel); }
+void OnIconsActivate(const Desc& d, std::function<void(int)> f) {
+    if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetActivateHandler(std::move(f));
+}
+void OnIconsContext(const Desc& d, std::function<void(int, float, float)> f) {
+    if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetContextHandler(std::move(f));
 }
 
 Desc Breadcrumb(State<std::string>* p, std::function<void(const std::string&)> pick,
