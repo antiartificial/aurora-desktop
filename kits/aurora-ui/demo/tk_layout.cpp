@@ -797,6 +797,37 @@ int main() {
         eq("choosing the third selects it", pick.get() == 2 && last == 2);
     }
 
+    // ---- rubber band ------------------------------------------------------------------------
+    // The gesture people reach for in a grid before they reach for Ctrl-click.
+    {
+        ManyRows src(12);
+        int selected = -1;
+        Desc grid = IconView(&src, &selected);
+        lay(grid, e, Rect{0, 0, 400, 600});
+        grid->Draw(nullptr, e);
+        std::vector<int> last;
+        OnIconsSelectionChanged(grid, [&](const std::vector<int>& v) { last = v; });
+
+        // Start on empty space well below the tiles, so no tile is pressed.
+        grid->OnPressAt(10, 560, 1);
+        eq("a press on empty space selects nothing", IconsSelection(grid).empty());
+
+        // Drag up and across the whole grid: everything it grazes comes with it.
+        grid->OnDragTo(390, 10);
+        const size_t many = IconsSelection(grid).size();
+        eq("a band over the grid selects tiles", many > 1);
+        eq("and the app heard", last.size() == many);
+
+        // Shrinking it deselects again. Rebuilt from the base each time rather than
+        // accumulated, or an overshoot would be unfixable without starting over.
+        grid->OnDragTo(10, 555);
+        eq("shrinking the band gives them back", IconsSelection(grid).size() < many);
+
+        grid->OnRelease(true);
+        grid->OnDragTo(390, 10);
+        eq("and the band is over once released", IconsSelection(grid).size() < many);
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

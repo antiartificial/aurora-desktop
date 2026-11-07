@@ -1543,6 +1543,11 @@ public:
             au_text_draw(s, e.font, e.size - 1, shown.c_str(), -1, t.x + (t.w - tw) / 2,
                          t.y + t.h - 14, is_sel ? au_color{24, 26, 34, 255} : e.fg);
         }
+        if (band_) {
+            const au_rect b{std::min(bx0_, bx1_), std::min(by0_, by1_),
+                            std::max(bx0_, bx1_), std::max(by0_, by1_)};
+            au_stroke_rect(s, b, e.accent, 1);
+        }
         // A unit here is a tile ROW, not an item: the thumb has to measure what a scroll moves.
         sb_.set(frame, grid_rows(), visible_rows(), top_row_);
         sb_.draw(s, e);
@@ -1573,7 +1578,14 @@ public:
         const uint32_t m = mods_now();
         if (i < 0) {
             // Empty space clears, unless a modifier is held: that is someone mid-selection.
+            // It also ARMS a rubber band, which is the gesture people reach for in a grid
+            // before they reach for Ctrl-click.
             if (!(m & (AU_MOD_CTRL | AU_MOD_SHIFT))) set_only(-1);
+            band_ = true;
+            band_add_ = (m & AU_MOD_CTRL) != 0;
+            band_base_ = band_add_ ? selection() : std::vector<int>();
+            bx0_ = bx1_ = x;
+            by0_ = by1_ = y;
             return;
         }
         if (m & AU_MOD_CTRL) {
@@ -1599,10 +1611,42 @@ public:
         return true;
     }
 
-    void OnDragTo(float, float y) override {
-        if (sb_.dragging) top_row_ = sb_.drag(y, grid_rows(), visible_rows(), top_row_);
+    void OnDragTo(float x, float y) override {
+        if (sb_.dragging) {
+            top_row_ = sb_.drag(y, grid_rows(), visible_rows(), top_row_);
+            return;
+        }
+        if (!band_) return;
+        bx1_ = x;
+        by1_ = y;
+        // Rebuilt from the BASE each time rather than accumulated, so shrinking the band
+        // deselects again. A band that only ever added would make an overshoot unfixable
+        // without starting over.
+        multi_.clear();
+        for (int k : band_base_) multi_.insert(k);
+        const float lo_x = std::min(bx0_, bx1_), hi_x = std::max(bx0_, bx1_);
+        const float lo_y = std::min(by0_, by1_), hi_y = std::max(by0_, by1_);
+        const int c = cols();
+        const int n = r_->Count();
+        for (int k = 0; k < n; k++) {
+            const int row = k / c - top_row_, col = k % c;
+            if (row < 0) continue;
+            const float tx = frame.x + col * tile_w_, ty = frame.y + row * tile_h_;
+            // Touched, not enclosed: a band has to select what it grazes, or picking up a row
+            // of icons means carefully boxing every one.
+            if (tx < hi_x && tx + tile_w_ > lo_x && ty < hi_y && ty + tile_h_ > lo_y) {
+                multi_.insert(k);
+            }
+        }
+        if (on_multi_) on_multi_(selection());
     }
-    void OnRelease(bool) override { sb_.dragging = false; }
+
+    void OnRelease(bool) override {
+        sb_.dragging = false;
+        band_ = false;
+    }
+
+    bool band_active() const { return band_; }
     bool OnKey(const au_key& k) override {
         if (!k.pressed || !sel_) return false;
         const int n = r_->Count();
@@ -1724,6 +1768,9 @@ private:
     std::function<void(int)> on_sel_;
     Scroller sb_;
     std::set<int> multi_;
+    std::vector<int> band_base_;        // what was selected when the band started
+    float bx0_ = 0, by0_ = 0, bx1_ = 0, by1_ = 0;
+    bool band_ = false, band_add_ = false;
     Window* win_ = nullptr;
     int anchor_ = -1;
     std::function<void(const std::vector<int>&)> on_multi_;

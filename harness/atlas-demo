@@ -112,9 +112,14 @@ beat() {
 echo "atlas-demo: recording"
 beat "Atlas opens: sidebar, breadcrumb, list, scrollbars"
 ti "pointer 41 135" click;            beat "the twisty expands Home in place, without navigating"
-ti "pointer 640 75" click;            beat "the icon grid, over the same rows"
-ti "pointer 640 75" click;            beat "back to the list"
-ti "pointer 577 75" click;            beat "the preview pane reveals"
+# Toolbar positions, read off a capture rather than guessed: Back 326, Forward 391, Up 450,
+# Preview 508, View 570, Hidden 610, all at y=75. They move whenever the toolbar gains a
+# control -- adding Forward and the Hidden checkbox silently turned the "View" click in this
+# script into a click on something else, and the reel went on looking plausible while testing
+# the wrong things.
+ti "pointer 570 75" click;            beat "the icon grid, over the same rows"
+ti "pointer 570 75" click;            beat "back to the list"
+ti "pointer 508 75" click;            beat "the preview pane reveals"
 ti "pointer 300 287" click;           beat "README.md previews in process: text needs no decoder"
 ti "pointer 300 265" rclick;          beat "the plumber says what can be done with a PNG"
 ti "key Escape";                      beat "dismissed" 3
