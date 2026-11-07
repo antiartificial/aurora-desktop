@@ -114,13 +114,14 @@ table and buy no authority we do not have.
 capability, is a kernel design. Aurora is hosted on Linux and the kernel's
 memory is not ours to hand out. Nothing to take.
 
-**seL4's derivation tree is worth taking, and is not in this record.** Flat
-revocation is wrong the moment routing exists: if A holds `file:/x [read,write,
-grant]` and passes `file:/x [read]` to B, revoking A's handle must kill B's.
-That is a `parent` field and a recursive revoke in the daemon's table, and it
-belongs with routing, not with naming. Recorded here so the gap is on the page:
-until it lands, **a routed handle outlives its parent**, which is a real hole and
-not a small one.
+**seL4's derivation tree is worth taking.** Flat revocation is wrong the moment
+routing exists: if A holds `file:/x [read,write,grant]` and passes
+`file:/x [read]` to B, revoking A's handle must kill B's. This record first said
+the gap was open and that a routed handle outlives its parent. **It is now
+closed**: `bus.derive@v1` records a `parent` id and `bus.revoke@v1` cascades
+transitively, tested over a three-deep chain and over revoking a middle handle,
+which spares its parent and its siblings. A derived handle also inherits its
+parent's expiry, so routing a handle through yourself cannot extend a TTL.
 
 ## Hubris leases
 
@@ -156,4 +157,15 @@ this record there was no "rights" for a lease to drop.
 3. Rights enforcement at use sites. Minting a handle with `use` changes nothing
    until something refuses to act without it; until then this record buys
    naming and nothing more.
-4. The derivation tree, then capability routing in manifests, then leases.
+4. Capability routing in manifests, then leases (`0019`). The derivation tree
+   that both of those need is done.
+5. `capbus.Mint` sends no `rights`, so every controller-minted handle currently
+   records `none`. That is harmless while nothing enforces rights at use sites,
+   and becomes a fail-closed outage the moment something does. Pass the rights
+   with the mint (`use` for a device grant, `read` or `read,write` for a file)
+   in the same change that adds the first enforcement, not before and not after.
+6. Only the minting domain may revoke. A root's minter can revoke the root and
+   everything beneath it, but cannot directly revoke a child some other domain
+   derived. That is the existing `cap_not_minter` rule applied unchanged, and it
+   is the right default; noted because it is the kind of thing a reader assumes
+   the other way.
