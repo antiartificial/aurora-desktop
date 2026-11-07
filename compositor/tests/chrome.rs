@@ -396,9 +396,20 @@ fn keyboard_drives_the_settings_panel() {
     for _ in 0..downs { c.inject("key Down"); }
     c.inject("key Return");
     let l = wait_relayout(&c, "settings", 0);
-    // Tab to Keyboard (3 tabs on), Down to Layout (row 0), Right: next layout.
-    for _ in 0..3 { c.inject("key Tab"); }
-    wait_relayout(&c, "settings", l.n);
+    // Tab until the Keyboard page is up, rather than a fixed number of tabs. The count was 3
+    // and became wrong the moment a page was inserted before Keyboard, which is nothing to do
+    // with what this test is about.
+    let mut l = l;
+    let mut found = false;
+    for _ in 0..8 {
+        if parse(&c.log(), "settings").unwrap().text.iter().any(|t| t.0 == "Layout") {
+            found = true;
+            break;
+        }
+        c.inject("key Tab");
+        l = wait_relayout(&c, "settings", l.n);
+    }
+    assert!(found, "Tab never reached the Keyboard page: {:?}", parse(&c.log(), "settings").unwrap().text.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
     c.inject("key Down");
     c.inject("key Right");
     wait_for("input layout written", || file().contains("[input]") && file().contains("layout = \"us\""));

@@ -37,6 +37,10 @@ pub struct Ctx<'a> {
     /// True when the compositor is a client of another one. Input settings reach libinput, which
     /// only exists on the DRM backend, so nested is the case where they are inert.
     pub nested: bool,
+    /// The machine's real network interfaces (deskbar::sysinfo::interfaces). Passed in rather
+    /// than read here, so this stays a pure function of its context and the Network page can be
+    /// tested against any machine's shape.
+    pub ifaces: &'a [crate::deskbar::sysinfo::Iface],
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +175,39 @@ pub fn pages(c: &Ctx) -> Vec<Page> {
     if b.image.is_empty() {
         mode_row = noted(mode_row, "Image needs a path: set [background] image in the theme file.");
     }
+    // Network. Read-only on purpose: changing an interface's state is NetworkManager's job and
+    // decision 0015's, not a compositor's. What the page is for is answering "am I actually on
+    // the network, and by what", which until now only existed as one word in the deskbar.
+    let network = Page {
+        title: "Network",
+        rows: if c.ifaces.is_empty() {
+            vec![noted(
+                row("Interfaces", Control::Fixed { value: "none".into() }),
+                "No interface is backed by hardware. Virtual ones (docker, bridges, VPN tunnels) are not listed.",
+            )]
+        } else {
+            c.ifaces
+                .iter()
+                .map(|i| {
+                    let kind = if i.wireless { "wireless" } else { "wired" };
+                    let state = if i.up { "up" } else { "down" };
+                    let value = match i.mbit {
+                        Some(m) if i.up => format!("{kind}, {state}, {m} Mbit/s"),
+                        _ => format!("{kind}, {state}"),
+                    };
+                    noted(
+                        row(&i.name, Control::Fixed { value }),
+                        if i.wireless {
+                            "The network's name needs netlink and is not read here."
+                        } else {
+                            "Speed is what the driver reports for the link."
+                        },
+                    )
+                })
+                .collect()
+        },
+    };
+
     let desktop = Page { title: "Desktop", rows: vec![mode_row, oklab("Top", "top", b.top), oklab("Bottom", "bottom", b.bottom), oklab("Accent", "accent", b.accent)] };
     // Dock and text
     let d = &t.dock;
@@ -235,7 +272,7 @@ pub fn pages(c: &Ctx) -> Vec<Page> {
             ),
         ],
     };
-    vec![display, desktop, dock, keyboard, pointer]
+    vec![display, network, desktop, dock, keyboard, pointer]
 }
 
 // ---- layout ----------------------------------------------------------------
@@ -467,8 +504,11 @@ pub fn draw(b: &Built, hover: Option<usize>, sel: Option<usize>, st: &Style, acc
 mod tests {
     use super::*;
 
-    fn ctx<'a>(t: &'a Theme, fams: &'a [String]) -> Ctx<'a> {
-        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), refresh_mhz: 59_950, outputs: 1, families: fams, nested: true }
+    pub(super) fn ctx<'a>(t: &'a Theme, fams: &'a [String]) -> Ctx<'a> {
+        // Pages are looked up by TITLE, never by position. These tests indexed pages[2] and
+        // pages[3] and broke the moment a page was inserted before them, which says nothing
+        // about the thing they are testing.
+        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), refresh_mhz: 59_950, outputs: 1, families: fams, nested: true, ifaces: &[] }
     }
 
     #[test]
@@ -492,7 +532,7 @@ mod tests {
     #[test]
     fn the_refresh_rate_is_shown_when_it_is_known_and_said_to_be_unknown_when_it_is_not() {
         let (t, f) = (Theme::default(), vec![]);
-        let mut c = ctx(&t, &f);
+        let mut c = super::tests::ctx(&t, &f);
         c.refresh_mhz = 59_950;
         let p = pages(&c);
         let r = p[0].rows.iter().find(|r| r.label == "Refresh rate").unwrap();
@@ -531,7 +571,7 @@ mod tests {
     #[test]
     fn on_drm_the_pointer_rows_do_not_claim_to_be_inert() {
         let (t, f) = (Theme::default(), vec![]);
-        let mut c = ctx(&t, &f);
+        let mut c = super::tests::ctx(&t, &f);
         c.nested = false;
         let p = pages(&c);
         let page = p.iter().find(|p| p.title == "Pointer").unwrap();
@@ -545,7 +585,9 @@ mod tests {
         let mut t = Theme::default();
         t.output.scale = 1.5;
         let f = vec![];
-        let Control::Segments(s) = &pages(&ctx(&t, &f))[0].rows[0].ctl else { panic!() };
+        let p = pages(&ctx(&t, &f));
+        let page = p.iter().find(|p| p.title == "Display").expect("Display page");
+        let Control::Segments(s) = &page.rows[0].ctl else { panic!("Display row 0 is not segments") };
         assert_eq!(s.iter().filter(|g| g.on).map(|g| g.label.as_str()).collect::<Vec<_>>(), ["1.5"]);
         assert_eq!(s[0].edits, vec![Edit::n("output", "scale", 0.0)], "Auto is 0: follow the host");
     }
@@ -555,7 +597,9 @@ mod tests {
         let mut t = Theme::default();
         t.dock.item_height = 64.0;
         let f = vec![];
-        let Control::Stepper(p) = &pages(&ctx(&t, &f))[2].rows[2].ctl else { panic!() };
+        let all = pages(&ctx(&t, &f));
+        let page = all.iter().find(|p| p.title == "Dock & Text").expect("Dock & Text page");
+        let Control::Stepper(p) = &page.rows[2].ctl else { panic!("Dock & Text row 2 is not a stepper") };
         assert!(p.inc.is_none() && p.dec.is_some());
         assert_eq!(p.label, "64 px");
     }
@@ -565,7 +609,9 @@ mod tests {
         let mut t = Theme::default();
         t.input.layout = "latam".into();
         let f = vec![];
-        let Control::Cycle(p) = &pages(&ctx(&t, &f))[3].rows[0].ctl else { panic!() };
+        let all = pages(&ctx(&t, &f));
+        let page = all.iter().find(|p| p.title == "Keyboard").expect("Keyboard page");
+        let Control::Cycle(p) = &page.rows[0].ctl else { panic!("Keyboard row 0 is not a cycle") };
         assert_eq!(p.label, "latam");
     }
 
@@ -583,5 +629,53 @@ mod tests {
                 assert!(h.r.x >= 0.0 && h.r.y >= 0.0 && h.r.x + h.r.w <= a.size.0 + 0.5 && h.r.y + h.r.h <= a.size.1, "page {pg}: {:?} outside {:?}", h.r, a.size);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod network_page_tests {
+    use super::*;
+    use crate::deskbar::sysinfo::Iface;
+
+    fn page_with(ifaces: &[Iface]) -> Page {
+        let t = Theme::default();
+        let f: Vec<String> = vec![];
+        let mut c = super::tests::ctx(&t, &f);
+        c.ifaces = ifaces;
+        pages(&c).into_iter().find(|p| p.title == "Network").expect("a Network page")
+    }
+
+    #[test]
+    fn each_interface_is_a_read_only_row_saying_what_it_is() {
+        let p = page_with(&[
+            Iface { name: "eno1".into(), wireless: false, up: true, mbit: Some(1000) },
+            Iface { name: "wlp11s0".into(), wireless: true, up: true, mbit: None },
+        ]);
+        assert_eq!(p.rows.len(), 2);
+        let eno = &p.rows[0];
+        assert_eq!(eno.label, "eno1");
+        let Control::Fixed { value } = &eno.ctl else { panic!("an interface is not editable from here") };
+        assert_eq!(value, "wired, up, 1000 Mbit/s");
+        assert!(eno.left.is_none() && eno.right.is_none(), "a read-only row has no controls");
+
+        let Control::Fixed { value } = &p.rows[1].ctl else { panic!() };
+        assert_eq!(value, "wireless, up", "wireless has no link speed to report");
+    }
+
+    #[test]
+    fn a_link_that_is_down_reports_no_speed_even_if_one_was_read() {
+        // A wired interface keeps its last speed in sysfs after the cable goes. Printing it
+        // beside "down" would be two statements that contradict each other.
+        let p = page_with(&[Iface { name: "eno1".into(), wireless: false, up: false, mbit: Some(1000) }]);
+        let Control::Fixed { value } = &p.rows[0].ctl else { panic!() };
+        assert_eq!(value, "wired, down");
+    }
+
+    #[test]
+    fn a_machine_with_no_hardware_says_so_rather_than_showing_an_empty_page() {
+        let p = page_with(&[]);
+        assert_eq!(p.rows.len(), 1);
+        let note = p.rows[0].note.as_deref().unwrap_or("");
+        assert!(note.contains("docker"), "the reason should name what is NOT listed: {note}");
     }
 }

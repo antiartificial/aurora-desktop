@@ -102,6 +102,44 @@ pub fn link(r: &Roots) -> Option<Link> {
     })
 }
 
+/// One network interface, as the settings page reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Iface {
+    pub name: String,
+    pub wireless: bool,
+    /// `operstate` is "up". The kernel's word, not a guess from an address.
+    pub up: bool,
+    /// Link speed in Mbit/s, when the driver reports one. Absent on wireless, and on a wired
+    /// interface with no carrier, where the file reads -1 or errors.
+    pub mbit: Option<u32>,
+}
+
+/// Every interface backed by real hardware, in name order.
+///
+/// Same `device` test as `link`, and for the same reason: without it this lists docker0, veth
+/// pairs and VPN tunnels, which is a list of things the user did not plug in. Loopback is
+/// skipped for the same reason it is there.
+pub fn interfaces(r: &Roots) -> Vec<Iface> {
+    let mut out: Vec<Iface> = Vec::new();
+    let Ok(dir) = std::fs::read_dir(&r.net) else { return out };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == "lo" || !e.path().join("device").exists() {
+            continue;
+        }
+        let up = read_trim(&e.path().join("operstate")).as_deref() == Some("up");
+        // -1 means "the driver has no answer", which is what a wired interface with nothing
+        // plugged in reports. It is not a speed and must not be shown as one.
+        let mbit = read_trim(&e.path().join("speed"))
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|v| *v > 0)
+            .map(|v| v as u32);
+        out.push(Iface { name, wireless: e.path().join("wireless").is_dir(), up, mbit });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// The first battery that reports a capacity, or `None` on a machine with none.
 pub fn battery(r: &Roots) -> Option<Battery> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&r.power).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
@@ -247,5 +285,89 @@ mod tests {
         let b = battery(&roots(d.path())).expect("the battery, not the adapter");
         assert_eq!(b.percent, 100, "a capacity over 100 is clamped, not shown as 137%");
         assert!(b.charging);
+    }
+}
+
+#[cfg(test)]
+mod iface_probe {
+    use super::*;
+
+    /// Not an assertion about this machine, which has whatever hardware it has. It prints what
+    /// the reader makes of the REAL /sys, because the `device` rule in both readers exists
+    /// entirely because the idealised fixtures agreed with a wrong assumption and one `ls` of
+    /// the real thing did not.
+    #[test]
+    fn what_this_machine_actually_has() {
+        let r = Roots::default();
+        let all: Vec<String> = std::fs::read_dir(&r.net)
+            .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        println!("/sys/class/net holds: {all:?}");
+        for i in interfaces(&r) {
+            println!("  reported: {} wireless={} up={} mbit={:?}", i.name, i.wireless, i.up, i.mbit);
+        }
+        println!("  link(): {:?}", link(&r));
+    }
+}
+
+#[cfg(test)]
+mod interfaces_tests {
+    use super::*;
+
+    fn iface(root: &Path, name: &str, dev: bool, wireless: bool, state: &str, speed: Option<&str>) {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        if dev { std::fs::create_dir_all(d.join("device")).unwrap(); }
+        if wireless { std::fs::create_dir_all(d.join("wireless")).unwrap(); }
+        std::fs::write(d.join("operstate"), state).unwrap();
+        if let Some(s) = speed { std::fs::write(d.join("speed"), s).unwrap(); }
+    }
+
+    #[test]
+    fn only_hardware_is_listed_and_it_is_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let net = tmp.path();
+        // Shaped like the real /sys/class/net on the machine this was written on, where SIX of
+        // eight entries are virtual: a veth pair, two docker bridges, a VPN tunnel, loopback.
+        iface(net, "lo", false, false, "up", None);
+        iface(net, "docker0", false, false, "up", None);
+        iface(net, "veth38a23d9", false, false, "up", None);
+        iface(net, "br-cab4e5ab663e", false, false, "up", None);
+        iface(net, "tailscale0", false, false, "unknown", None);
+        iface(net, "wlp11s0", true, true, "up", None);
+        iface(net, "eno1", true, false, "up", Some("1000"));
+
+        let r = Roots { net: net.to_path_buf(), power: net.to_path_buf() };
+        let got = interfaces(&r);
+        assert_eq!(
+            got,
+            vec![
+                Iface { name: "eno1".into(), wireless: false, up: true, mbit: Some(1000) },
+                Iface { name: "wlp11s0".into(), wireless: true, up: true, mbit: None },
+            ],
+            "a virtual interface reached the list"
+        );
+    }
+
+    #[test]
+    fn a_wired_interface_with_nothing_plugged_in_reports_no_speed() {
+        // The driver writes -1 when it has no answer. Showing that as "-1 Mbit/s" would be a
+        // figure the machine never reported.
+        let tmp = tempfile::tempdir().unwrap();
+        let net = tmp.path();
+        iface(net, "eno1", true, false, "down", Some("-1"));
+        let r = Roots { net: net.to_path_buf(), power: net.to_path_buf() };
+        let got = interfaces(&r);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].mbit, None, "-1 was reported as a speed");
+        assert!(!got[0].up);
+    }
+
+    #[test]
+    fn a_machine_with_no_hardware_lists_nothing_rather_than_guessing() {
+        let tmp = tempfile::tempdir().unwrap();
+        iface(tmp.path(), "lo", false, false, "up", None);
+        let r = Roots { net: tmp.path().to_path_buf(), power: tmp.path().to_path_buf() };
+        assert!(interfaces(&r).is_empty());
     }
 }
