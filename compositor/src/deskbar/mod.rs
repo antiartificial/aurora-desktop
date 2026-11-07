@@ -184,13 +184,43 @@ impl Aurora {
         }
     }
 
+    /// The registry name of the app a launch domain was made for, from the domain's own name.
+    ///
+    /// `win-<prefix>-<hash>-<random>`, where hash is the first four bytes of sha256 over the
+    /// full app id (`invoke.LaunchDomainName`). Matching on the hash and not the prefix is the
+    /// point: the prefix is truncated to eight characters and so is ambiguous.
+    fn deskbar_app_from_domain(&self, dom: &model::Dom) -> Option<String> {
+        let want = launch_hash(dom.name()?)?;
+        self.shell.registry.apps.iter().find(|a| app_hash(&a.id) == want).map(|a| model::safe(&a.name))
+    }
+
     /// Group the windows by (app id, domain) and give both groups and windows a stable order.
     fn deskbar_groups(&mut self, seen: Vec<Seen>) -> Vec<Group> {
         let mut groups: Vec<Group> = vec![];
         for s in seen {
             let key = format!("{}\u{1f}{}", s.app_id, draw::domain_label(&s.dom));
-            let label = match self.shell.registry.apps.iter().find(|a| !s.app_id.is_empty() && a.id == s.app_id) {
-                Some(a) => model::safe(&a.name),
+            // Prefer the app the DOMAIN NAME names over the app_id the client claims.
+            //
+            // Every Haiku app sets the same app_id ("org.aurora.interface-kit"), because it is
+            // the kit's, so the registry lookup missed and every window of every kit app read
+            // "org.aurora.interface-kit". The domain name is better on both counts: it is
+            // exact, and it is not the client's to say.
+            //
+            // The controller builds it as "win-<8 chars of app>-<sha256(app id)[0..4]>-<rand>"
+            // (invoke.LaunchDomainName), and the name reaches us inside the attested identity,
+            // which decision 0022 already relies on. So matching the hash resolves the app
+            // from data the client cannot forge. The truncated prefix is NOT used: it is eight
+            // characters, so "kitchensink" and anything else beginning "kitchens" collide.
+            //
+            // This deliberately avoids the other available source, the `app` field the
+            // controller publishes on provenance.grant.held. That would work -- the minter is
+            // a session identity, so it is the controller's own word -- but decision 0016 holds
+            // that nothing from a payload is ever displayed, and an exact answer from attested
+            // data costs nothing and leaves that invariant alone.
+            let label = match self.deskbar_app_from_domain(&s.dom).or_else(|| {
+                self.shell.registry.apps.iter().find(|a| !s.app_id.is_empty() && a.id == s.app_id).map(|a| model::safe(&a.name))
+            }) {
+                Some(n) => n,
                 None if s.app_id.is_empty() => "Unidentified".to_string(),
                 None => model::safe(&s.app_id),
             };
@@ -281,5 +311,74 @@ impl Aurora {
             _ => {}
         }
         true
+    }
+}
+
+/// The app-id hash inside a launch domain's name, or None if it is not one.
+///
+/// `win-<prefix>-<hash>-<random>`. The hash is taken as the second-to-last dash-separated
+/// field rather than the second, because a sanitised app prefix may itself contain dashes.
+fn launch_hash(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("win-")?;
+    let mut it = rest.rsplitn(3, '-');
+    let _rand = it.next()?;
+    let hash = it.next()?;
+    let _pre = it.next()?; // must exist: three fields after "win-"
+    (hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
+}
+
+/// The same eight hex digits the controller puts in a domain name: `sha256(app id)[0..4]`.
+fn app_hash(app_id: &str) -> String {
+    crate::trusted::sign::sha256(app_id.as_bytes())[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::{app_hash, launch_hash};
+
+    /// The hashes are the ones a running controller actually produced, copied from a live
+    /// desktop log. If `LaunchDomainName` ever changes how it hashes, this fails and says so
+    /// rather than the Deskbar quietly going back to showing raw app ids.
+    #[test]
+    fn a_domain_name_identifies_its_app_exactly() {
+        for (id, dom) in [
+            ("org.aurora.haiku.controls", "win-controls-d6f8c2d7-512b89"),
+            ("org.aurora.haiku.kitchensink", "win-kitchens-b3424d13-5f585f"),
+            ("org.aurora.haiku.layout", "win-layout-1ed0449b-aa4352"),
+        ] {
+            assert_eq!(launch_hash(dom), Some(app_hash(id).as_str()), "{dom}");
+        }
+    }
+
+    /// Why the hash and not the prefix: the prefix is truncated to eight characters, so
+    /// "kitchensink" and a hypothetical "kitchenside" would both read "kitchens". The hash
+    /// separates them, which is the whole reason the prefix is not used for matching.
+    #[test]
+    fn the_truncated_prefix_is_ambiguous_and_the_hash_is_not() {
+        let (a, b) = ("org.aurora.haiku.kitchensink", "org.aurora.haiku.kitchenside");
+        assert_ne!(app_hash(a), app_hash(b));
+        // both would be spelled with the same eight-character prefix
+        assert_eq!(&a[17..25], &b[17..25]);
+    }
+
+    #[test]
+    fn a_prefix_containing_dashes_still_parses() {
+        // "win-" + "my-app" + hash + random: the hash is the second-to-last field, not the second
+        assert_eq!(launch_hash("win-my-app-d6f8c2d7-512b89"), Some("d6f8c2d7"));
+    }
+
+    #[test]
+    fn anything_that_is_not_a_launch_domain_is_refused() {
+        for n in [
+            "",
+            "win-",
+            "win-controls-512b89",          // no hash field
+            "win-controls-NOTAHEX0-512b89", // not hex
+            "win-controls-d6f8c2d-512b89",  // seven digits
+            "a11y-beta-334372-8765857d",    // some other domain's name
+            "controls-d6f8c2d7-512b89",     // no win- prefix
+        ] {
+            assert_eq!(launch_hash(n), None, "{n:?}");
+        }
     }
 }
