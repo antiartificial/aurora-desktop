@@ -1,17 +1,22 @@
 // Command powerbox is the file picker the user drives to grant an app access
-// to one file. It prints a JSON {"path","mode","ticket"} line on stdout; the
-// user interface is on /dev/tty, never on stdout or stdin, so a script that
-// pipes into or reads from it does not supply the gesture.
+// to one file. It prints a JSON {"path","mode","ticket"} line on stdout.
+//
+// The user chooses in the graphical chooser (aurora-chooser) when a Wayland
+// display is reachable, else on /dev/tty, never on stdout or stdin, so a
+// script that pipes into or reads from it does not supply the gesture. The
+// chosen path is then confirmed on the compositor's trusted socket, and a
+// ticket is minted only on a signed allow (--attest).
 //
 // Not a trusted path: see contracts/decisions/0007-ambient-and-gesture-grants.md.
 package main
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/antiartificial/aurora/controller/ticket"
 	"github.com/antiartificial/aurora/shell/picker"
@@ -27,6 +32,10 @@ func main() {
 	suggest := fs.String("suggest", "", "save: suggested file name")
 	ttl := fs.Duration("ttl", ticket.DefaultTTL, "ticket lifetime")
 	keyPath := fs.String("key", ticket.KeyPath(), "shared key file (env AURORA_POWERBOX_KEY), created 0600 if missing")
+	forceTTY := fs.Bool("tty", false, "choose in the terminal even when a chooser and a display are available")
+	sock := fs.String("approval-socket", "", "compositor trusted socket to confirm on (default: env AURORA_TRUSTED_SOCK, else $XDG_RUNTIME_DIR/aurora-trusted.sock)")
+	attest := fs.String("attest", "off", "EXPERIMENTAL, default off: confirm the chosen path on the compositor's trusted path before minting. off: never confirm; auto: confirm when a trusted socket is configured or present, and fail if it does not answer; required: also fail when there is no socket. Read contracts/decisions/0011 before turning it on: it proves that something holding the approval key answered one request id, NOT that the path you saw is the path that binds, and because a pick carries no domain identity the prompt wears an UNVERIFIED DOMAIN banner on every file open.")
+	approvalTimeout := fs.Duration("approval-timeout", picker.DefaultApprovalTimeout, "how long to wait for the compositor's answer")
 	testPath := fs.String("path", "", "TEST AFFORDANCE: mint for this path with NO user gesture. Defeats the purpose of the powerbox; never use outside tests.")
 	fs.Parse(os.Args[1:])
 
@@ -46,24 +55,39 @@ func main() {
 	o := picker.Options{App: *app, Verb: *verb, Mode: *mode, Kind: *kind, Start: *start, Suggest: *suggest, TTL: *ttl, Key: key}
 
 	var res picker.Result
-	if *testPath != "" {
+	pb, err := wire(o, *forceTTY, *attest, *sock, *approvalTimeout)
+	if err == nil && *testPath != "" {
 		if os.Getenv("AURORA_POWERBOX_ALLOW_PATH") != "1" {
 			die("--path is a test affordance that skips the user gesture; set AURORA_POWERBOX_ALLOW_PATH=1 to use it (a speed bump, not a security boundary: any same-user process can set it)")
 		}
 		fmt.Fprintln(os.Stderr, "powerbox: WARNING: --path is a test affordance; no user chose this, the ticket proves nothing about a gesture")
-		res, err = picker.Mint(o, *testPath)
-	} else {
-		tty, terr := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if terr != nil {
-			die("no controlling terminal (/dev/tty): the picker needs a user to drive it")
-		}
-		defer tty.Close()
-		res, err = picker.Run(o, bufio.NewReader(tty), tty)
+		// --path replaces the CHOOSING and nothing else. It used to call Mint
+		// directly, which also skipped the compositor confirm, so --attest
+		// required would answer deny and still hand back a ticket. A flag that
+		// says required has to mean it.
+		pb.Route, pb.FixedPath = picker.RouteFixedPath, *testPath
+	}
+	if err == nil {
+		res, err = pb.Grant(context.Background())
 	}
 	if err != nil {
 		die("%v", err)
 	}
 	json.NewEncoder(os.Stdout).Encode(res)
+}
+
+func wire(o picker.Options, forceTTY bool, attest, sock string, timeout time.Duration) (picker.Powerbox, error) {
+	policy, err := picker.ParseAttestPolicy(attest)
+	if err != nil {
+		return picker.Powerbox{}, err
+	}
+	env := picker.OSEnv()
+	confirmer, err := picker.NewConfirmer(policy, sock, env, timeout)
+	if err != nil {
+		return picker.Powerbox{}, err
+	}
+	route, chooser := picker.PlanRoute(env, forceTTY)
+	return picker.Powerbox{Opts: o, Route: route, Chooser: chooser, TTY: picker.OpenTTY, Confirm: confirmer, Log: os.Stderr}, nil
 }
 
 func die(f string, a ...any) {

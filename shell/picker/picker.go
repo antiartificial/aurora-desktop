@@ -137,15 +137,27 @@ func list(dir string) ([]entry, error) {
 
 const maxShown = 200
 
-// Run drives the picker on in/out until the user confirms or quits.
+// Run drives the picker on in/out until the user confirms or quits, then
+// mints. Powerbox.Grant uses Choose instead, so that something else gets to
+// say yes between the choice and the ticket.
 func Run(o Options, in *bufio.Reader, out io.Writer) (Result, error) {
+	path, err := Choose(o, in, out)
+	if err != nil {
+		return Result{}, err
+	}
+	return Mint(o, path)
+}
+
+// Choose drives the terminal picker until the user confirms a path or quits.
+// It returns the path the user confirmed, unresolved, and mints nothing.
+func Choose(o Options, in *bufio.Reader, out io.Writer) (string, error) {
 	cur := o.Start
 	if cur == "" {
 		cur, _ = os.Getwd()
 	}
 	cur, err := filepath.Abs(cur)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
 	access := map[string]string{"ro": "read-only", "rw": "read-write"}[o.Mode]
 	fmt.Fprintf(out, "\n== Powerbox: choose %s for %s (verb %s), %s ==\n", map[string]string{KindFile: "a file", KindDir: "a folder", KindSave: "where to save"}[o.Kind], o.App, o.Verb, access)
@@ -172,18 +184,19 @@ func Run(o Options, in *bufio.Reader, out io.Writer) (Result, error) {
 		line, err := in.ReadString('\n')
 		line = strings.TrimSpace(line)
 		if err != nil && line == "" {
-			return Result{}, ErrCancelled
+			return "", ErrCancelled
 		}
 		next, chosen := step(o, cur, es, line)
 		switch {
 		case line == "q":
-			return Result{}, ErrCancelled
+			return "", ErrCancelled
 		case chosen != "":
-			ok, err := confirm(o, chosen, access, in, out)
+			ok, resolved, err := confirm(o, chosen, access, in, out)
 			if err != nil {
 				fmt.Fprintf(out, "  %v\n", err)
 			} else if ok {
-				return Mint(o, chosen)
+				// The resolved path, not `chosen`: what was shown is what binds.
+				return resolved, nil
 			} else {
 				fmt.Fprintln(out, "  not granted")
 			}
@@ -245,19 +258,30 @@ func step(o Options, cur string, es []entry, line string) (next, chosen string) 
 	return cur, ""
 }
 
-func confirm(o Options, path, access string, in *bufio.Reader, out io.Writer) (bool, error) {
-	if _, err := Resolve(o.Kind, path); err != nil {
-		return false, err
+// confirm asks about the RESOLVED path and returns it, so that the string the
+// user read is the string that gets bound.
+//
+// It used to resolve only to check for an error, throw the result away, and
+// print the path as typed. Mint then resolved a second time, later, and bound
+// whatever it got. Swapping a symlink component in between meant the user
+// approved ~/tree/docs/report.pdf and the app received ~/tree/secret/report.pdf,
+// which the controller then re-resolved and agreed with. Resolving once and
+// showing what was resolved is the whole fix: there is no second resolution left
+// to disagree with the first.
+func confirm(o Options, path, access string, in *bufio.Reader, out io.Writer) (bool, string, error) {
+	resolved, err := Resolve(o.Kind, path)
+	if err != nil {
+		return false, "", err
 	}
 	extra := ""
 	if o.Kind == KindSave {
-		if _, err := os.Lstat(path); err == nil {
+		if _, err := os.Lstat(resolved); err == nil {
 			extra = " (EXISTS, will be overwritten)"
 		}
 	}
-	fmt.Fprintf(out, "Grant %s access to %s%s\nto %s for %s, for one use within %s? [y/N] ", access, path, extra, o.App, o.Verb, ttlOf(o))
+	fmt.Fprintf(out, "Grant %s access to %s%s\nto %s for %s, for one use within %s? [y/N] ", access, resolved, extra, o.App, o.Verb, ttlOf(o))
 	line, _ := in.ReadString('\n')
-	return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+	return strings.EqualFold(strings.TrimSpace(line), "y"), resolved, nil
 }
 
 func ttlOf(o Options) time.Duration {
