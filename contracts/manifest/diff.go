@@ -71,7 +71,7 @@ func Diff(old, new *Manifest) DiffResult {
 		r.add(false, "version %s -> %s", old.App.Version, new.App.Version)
 	}
 	if old.App.Windowed != new.App.Windowed || old.App.Exec != new.App.Exec {
-		// What the system launches changed, and a windowed app is unsandboxed (0012).
+		// What the system launches changed, and a windowed app is launched with a display grant (0012, 0022).
 		r.add(true, "launch target changed: windowed %v -> %v, exec %q -> %q", old.App.Windowed, new.App.Windowed, old.App.Exec, new.App.Exec)
 	}
 	diffPaths(&r, old.Capabilities.Paths, new.Capabilities.Paths)

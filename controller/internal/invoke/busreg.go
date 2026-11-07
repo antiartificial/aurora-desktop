@@ -66,6 +66,8 @@ func (iv *Invoker) Teardown(name string) error {
 // Close unregisters every domain this controller registered. Domains
 // themselves are never destroyed by the controller, so this is the teardown.
 func (iv *Invoker) Close() {
+	// Windows first: their teardown revokes handles and unregisters domains.
+	iv.stopLaunches()
 	iv.regMu.Lock()
 	names := make([]string, 0, len(iv.registered))
 	for n := range iv.registered {

@@ -5,11 +5,11 @@
 # the exec below does not exist; the registry then reports the app as "not built"
 # instead of listing it as launchable.
 #
-# NO SANDBOX. A windowed app launches as a plain host process, outside the domain
-# machinery (decision 0012). [capabilities] could not gate anything here, so it is
-# left empty on purpose: declaring paths or devices that nothing enforces would read
-# as a promise. The one thing the app needs, a Wayland socket, has no grantable form
-# in the schema yet.
+# SANDBOXED (decision 0012, amended; 0022). A dock click launches this app in its own
+# domain: bubblewrap, its own uid, the aurora-domains cgroup, no network, and a
+# device:wayland grant, which a windowed app always gets because the window is the
+# point. It sees none of the host filesystem. [capabilities] below is what it gets
+# on top of that, and an empty section means exactly nothing more.
 # image_hash is a placeholder; real images do not exist yet (0002 open question 6).
 
 [app]
@@ -20,8 +20,12 @@ image_hash = "sha256:00000000000000000000000000000000000000000000000000000000000
 windowed = true
 exec = "../../kits/build/interface/iface_browser"
 
-# What it really does, because nothing sandboxes it: it lists directories from the
-# host filesystem (readdir + lstat, starting at $HOME or BROWSER_DIR), and it runs
-# `aurora query show FILE --json` and `aurora open FILE` (the latter inside a
-# terminal) as child processes. It can read anything the user can read. No path
-# capability is declared because none would be enforced.
+# What it does, and what the domain now means for it: it lists directories (readdir +
+# lstat, starting at $HOME or BROWSER_DIR) and runs `aurora query show FILE --json`
+# and `aurora open FILE` as child processes. In its domain $HOME is the domain's own
+# empty data directory, and the `aurora` binary is not in the domain, so today it
+# browses an empty tree and its query and open actions find nothing to run. That is
+# the sandbox working, not a bug to loosen: the way to show it a folder is a path
+# capability granted by the powerbox, which windowed launches do not do yet. No path
+# is declared here, because declaring $HOME would hand an app the whole home
+# directory, which is the thing a domain exists to avoid.

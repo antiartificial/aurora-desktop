@@ -95,10 +95,13 @@ Stated here for the same reason they're stated in the code.
   `demos/crash-survival/run.sh`.
 - **X11 clients are not HiDPI.** They get client scale 1, so an X window is
   the right size at any output scale but soft above 1: a 1x buffer upscaled.
-- **Windowed apps run unsandboxed.** A Haiku GUI app launched from the dock
-  is an ordinary process, outside the domain machinery that is this project's
-  whole security argument, because the Wayland socket is not yet a grantable
-  capability. Decision 0012 says what fixing it needs.
+- **Windowed apps run in a domain, and a window can do anything the Wayland
+  protocol allows.** A dock click launches a Haiku app in its own domain with
+  `device:wayland` and what its manifest declares (decision 0022,
+  `demos/windowed-domain/run.sh`), the capability indicator lights for it, and
+  the compositor badges its window with the domain. The display grant is wide
+  (decision 0014); Files sees an empty home; `controllerd --unsandboxed-windows`
+  is the loud escape hatch and what it launches is invisible to the indicator.
 - **No window decorations yet.** Nothing draws a title bar, so a window cannot
   be moved, resized or closed by hand. Being built.
 - **`demos/interface-kit/run.sh` has a flake.** Its browser section raced to five

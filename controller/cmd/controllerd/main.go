@@ -44,6 +44,7 @@ func main() {
 	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
 	plumbRules := fs.String("plumb-rules", "", "plumb rules file (default: the rules embedded from contracts/plumb/rules.toml); a file that does not validate stops startup")
+	unsandboxed := fs.Bool("unsandboxed-windows", false, "ESCAPE HATCH: launch windowed apps as plain host processes instead of in a domain (HAIKU_SRC builds, debugging). Default off: a dock click puts the app in a domain with device:wayland and what its manifest declares. Logged on every launch")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
 	execs := map[string]string{}
 	fs.Func("exec", "app executable override, id=path (repeatable); for apps whose binary is built outside the app dir", func(v string) error {
@@ -123,6 +124,12 @@ func main() {
 		log.Printf("domain tooling: %s", runner.Bin)
 	}
 
+	if *unsandboxed {
+		log.Printf("WARNING: --unsandboxed-windows: windowed apps launch as HOST PROCESSES with your files, network and environment, in no domain, with no grant and no indicator (decision 0012). This is a debugging escape hatch.")
+	} else {
+		log.Printf("windowed apps launch in a domain with device:wayland plus their manifest's declared capabilities (registry.launch@v1)")
+	}
+
 	c, err := client.Dial(*sock)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -130,7 +137,7 @@ func main() {
 	defer c.Close()
 	inv := &invoke.Invoker{
 		Reg: reg, Runner: runner, Logf: log.Printf, RequireIsolation: *require, NoGestureGrants: *noGesture, RequirePowerbox: *reqPB, Tickets: tickets, Execs: execs, Timeout: *timeout, Approvals: approver,
-		Bus: busreg.Client{C: c}, Caps: &capbus.Client{C: c},
+		Bus: busreg.Client{C: c}, Caps: &capbus.Client{C: c}, UnsandboxedWindows: *unsandboxed,
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)
 		},

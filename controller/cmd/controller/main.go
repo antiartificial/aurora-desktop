@@ -23,6 +23,8 @@ const usage = `usage: controller [--socket S] <command>
   describe <app> <verb>                      a verb's input/output schema and effect
   invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]
                                              run a verb (values: JSON if valid, else string)
+  launch <app>                               launch a windowed app in its own domain (registry.launch@v1)
+  stop <app> | stop --domain NAME            end a launched window; its domain and grants go
   decide <request_id> allow|deny             answer an approval.requested (from the session socket)
   provenance <file> [--verify]               read back the file's provenance xattr; --verify asks the
                                              daemon about the record's handle ids (exit 0 verified,
@@ -118,6 +120,24 @@ func main() {
 			p["output_ticket"] = *otk
 		}
 		call(sock, "registry.invoke@v1", p)
+	case "launch":
+		pos := split(fs, rest)
+		if len(pos) != 1 {
+			die("usage: controller launch <windowed-app-id>   (what a dock click sends: a domain with device:wayland, not a verb)")
+		}
+		call(sock, "registry.launch@v1", map[string]any{"app": pos[0]})
+	case "stop":
+		dom := fs.String("domain", "", "stop one launch by domain name")
+		pos := split(fs, rest)
+		p := map[string]any{}
+		if *dom != "" {
+			p["domain"] = *dom
+		} else if len(pos) == 1 {
+			p["app"] = pos[0]
+		} else {
+			die("usage: controller stop <app-id> | controller stop --domain NAME")
+		}
+		call(sock, "registry.stop@v1", p)
 	case "decide":
 		pos := split(fs, rest)
 		if len(pos) != 2 {

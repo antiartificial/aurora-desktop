@@ -78,6 +78,27 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 		if e = decode(req, &q); e == nil {
 			out, e = s.describe(q.App, q.Verb)
 		}
+	case "registry.launch@v1", "registry.stop@v1":
+		// A window is the user's to open and close. A domain's app asking the
+		// controller to start another app (inside another domain, with a
+		// display grant) is not something any manifest has asked for.
+		if !mayDecide(req.From) {
+			return nil, &invoke.Error{Code: "not_permitted", Msg: req.Verb + " may only be called from the session socket", Detail: "caller " + req.From + " is not the session user"}
+		}
+		if req.Verb == "registry.launch@v1" {
+			var q invoke.LaunchRequest
+			if e = decode(req, &q); e == nil {
+				out, e = launchResult(s.Inv.Launch(context.Background(), q))
+			}
+		} else {
+			var q invoke.StopRequest
+			if e = decode(req, &q); e == nil {
+				var names []string
+				if names, e = s.Inv.Stop(q); e == nil {
+					out = map[string]any{"ok": true, "stopped": names}
+				}
+			}
+		}
 	case "registry.invoke@v1":
 		var q invoke.Request
 		if e = decode(req, &q); e == nil {
@@ -87,6 +108,13 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 		e = &invoke.Error{Code: "no_such_verb", Msg: "registry has no verb " + req.Verb}
 	}
 	return out, e
+}
+
+func launchResult(r *invoke.LaunchResult, e *invoke.Error) (any, *invoke.Error) {
+	if e != nil {
+		return nil, e
+	}
+	return r, nil
 }
 
 func invokeResult(r *invoke.Result, e *invoke.Error) (any, *invoke.Error) {
@@ -130,6 +158,12 @@ func (s *Service) listApps() any {
 		info.Windowed = m.App.Windowed
 		info.Exec, info.ExecProblem = a.ExecStatus()
 		info.Launchable, info.LaunchProblem = a.Launchable()
+		// A launch that just failed is reported on the same channel, for a while.
+		if info.Launchable && info.Windowed {
+			if p := s.Inv.LaunchProblem(a.ID()); p != "" {
+				info.Launchable, info.LaunchProblem = false, p
+			}
+		}
 		for _, v := range m.Verbs {
 			info.Verbs = append(info.Verbs, v.Name)
 		}
