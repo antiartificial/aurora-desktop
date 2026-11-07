@@ -277,6 +277,21 @@ static void test_threads()
 	CHECK_EQ(resume_thread(99999999), B_BAD_THREAD_ID);
 }
 
+// A thread that leaves through exit_thread() is still a thread someone waits for: BLooper::Quit()
+// takes that path when a looper quits itself, while another thread sits in wait_for_thread() on it.
+static void test_exit_thread_wakes_waiter()
+{
+	thread_id t = spawn_thread([](void *) -> status_t { exit_thread(42); return 0; },
+		"exiter", B_NORMAL_PRIORITY, NULL);
+	CHECK(t >= 0);
+	CHECK_EQ(resume_thread(t), B_OK);
+	status_t rv = 0;
+	bigtime_t t0 = system_time();
+	CHECK_EQ(wait_for_thread(t, &rv), B_OK);         // hung forever before exit_thread marked it done
+	CHECK(system_time() - t0 < 2000000);
+	CHECK_EQ(rv, 42);                                // and it carries the status it exited with
+}
+
 int main(int argc, char **argv)
 {
 	if (argc >= 5 && !strcmp(argv[1], "--child")) return child_main(argv);
@@ -292,6 +307,7 @@ int main(int argc, char **argv)
 	RUN(test_area_protection);
 	RUN(test_semaphores);
 	RUN(test_threads);
+	RUN(test_exit_thread_wakes_waiter);
 	_kits_unlink_namespace();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

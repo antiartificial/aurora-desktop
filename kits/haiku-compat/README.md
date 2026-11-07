@@ -97,7 +97,7 @@ The pattern: Haiku's source needs the **full** `OS.h`. Our `OS.h` has 21 calls; 
 | `debugger` | IMPLEMENT | prints and aborts |
 | `_get_port_message_info_etc` | HOLLOW | size only; our ports record no sender (uid/gid/team all 0). Needed for the security-relevant sender identity in KMessage. |
 | `get_vref_dev`, `acquire_vref`, `release_vref` | HOLLOW | `get_vref_dev` returns `B_INVALID_DEV`, which switches every vref path in `Message.cpp` off. No message can carry an fd. |
-| `exit_thread` | HOLLOW | `pthread_exit`; unverified against our thread layer |
+| `exit_thread` | (moved) | now real, in `src/thread.c`: records the status and marks the thread done, so `wait_for_thread` on it returns. As a bare `pthread_exit` here it hung every close that raced `BWindow::Quit` against the window's own quit. |
 | `get_thread_info` | HOLLOW | always `B_ERROR`; only the looper's thread-name lookup uses it |
 | `_kern_transfer_area` | HOLLOW / BLOCKED | `B_NOT_SUPPORTED`; used for cross-team area handover of large messages |
 | `load_add_on`, `get_image_symbol`, `_get_next_image_info` | HOLLOW | `BArchivable` instantiate-by-name cannot work |
@@ -118,7 +118,7 @@ The pattern: Haiku's source needs the **full** `OS.h`. Our `OS.h` has 21 calls; 
 
 - **The source is the VOS fork, not stock Haiku.** `headers/posix` is nearly empty (glibc is used), storage defs use Linux constants, `entry_ref` carries `team`/`real_device` fields, `Message.cpp` has `_HandleMessageVRefs`, and `__VOS__` forks about 20 places in the files examined. That is why it compiled this easily. Stock Haiku's `src/kits` against our headers was **not** tested; expect a worse result there (this resolves 0008 question 1 only in the sense that the VOS fork is the realistic source, and its delta is not fully understood).
 - **The flat-format result is a self-round-trip.** Haiku's code reads what Haiku's code wrote, on our ports. No bytes produced by a real Haiku/VOS system were compared, so interop is unproven. The header decodes as the Haiku format by inspection only.
-- **Loopers and messengers: one in-process sync round trip.** Not tested: cross-process, `BApplication`, quit/lock ordering, message filters, scripting, big messages (area transfer is hollow), drop/reply-to plumbing beyond `SendReply`. `exit_thread` and `get_thread_info` are hollow, so `Quit()` from non-looper threads is the only exit path exercised.
+- **Loopers and messengers: one in-process sync round trip.** Not tested: cross-process, `BApplication`, quit/lock ordering, message filters, scripting, big messages (area transfer is hollow), drop/reply-to plumbing beyond `SendReply`. `get_thread_info` is hollow. `exit_thread` is real now (`src/thread.c`), which is the path a looper takes when it quits itself; `harness/hang-on-close.sh` is what exercises it.
 - `-w` silences warnings in Haiku files (many `-Waddress-of-packed-member`: Haiku's packed message header taken by pointer; x86-64 only, benign here, UB-adjacent elsewhere).
 - Our existing reimplemented `libkitsapp` is unaffected and unused here.
 

@@ -31,8 +31,6 @@ status_t acquire_vref(vref_id) { return B_ERROR; }
 status_t release_vref(vref_id) { return B_ERROR; }
 /* REAL: abort with the message, as debugger() does with no debugger attached. */
 void debugger(const char* m) { fprintf(stderr, "debugger(): %s\n", m); abort(); }
-/* HOLLOW: only reached by BLooper::Quit() from the looper thread. Wrong for our thread layer. */
-void exit_thread(status_t) { pthread_exit(NULL); }
 /* HOLLOW: our primitives have no thread table query. */
 status_t get_thread_info(thread_id, thread_info*) { return B_ERROR; }
 /* HOLLOW: our ports record no sender; reports size only, sender fields zero. */

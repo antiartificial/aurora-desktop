@@ -19,6 +19,17 @@ static pthread_cond_t tc = PTHREAD_COND_INITIALIZER;
 
 static thread_id mytid(void) { return (thread_id)syscall(SYS_gettid); }
 
+/* Whichever way the thread leaves -- returning, exit_thread(), cancellation -- it must get here, or
+   a wait_for_thread() on it never returns. */
+static void mark_done(void *p)
+{
+	kthread *t = p;
+	pthread_mutex_lock(&tl);
+	t->done = 1;
+	pthread_cond_broadcast(&tc);
+	pthread_mutex_unlock(&tl);
+}
+
 static void *entry(void *p)
 {
 	kthread *t = p;
@@ -27,11 +38,12 @@ static void *entry(void *p)
 	pthread_cond_broadcast(&tc);
 	while (!t->started) pthread_cond_wait(&tc, &tl); /* BeOS: born suspended */
 	pthread_mutex_unlock(&tl);
+	pthread_cleanup_push(mark_done, t);
 	status_t r = t->fn(t->arg);
 	pthread_mutex_lock(&tl);
-	t->ret = r; t->done = 1;
-	pthread_cond_broadcast(&tc);
+	t->ret = r;
 	pthread_mutex_unlock(&tl);
+	pthread_cleanup_pop(1);                          /* runs mark_done */
 	return NULL;
 }
 
@@ -89,6 +101,17 @@ thread_id find_thread(const char *name)
 		}
 	pthread_mutex_unlock(&tl);
 	return r;
+}
+
+/* Haiku's exit_thread: leave this thread with that return value. BLooper::Quit() takes this path
+   when a looper quits itself, and another thread may already be in wait_for_thread() on it. */
+void exit_thread(status_t status)
+{
+	pthread_mutex_lock(&tl);
+	kthread *t = lookup(mytid());
+	if (t) t->ret = status;
+	pthread_mutex_unlock(&tl);
+	pthread_exit(NULL);                              /* unwinds through mark_done */
 }
 
 status_t wait_for_thread(thread_id id, status_t *ret)

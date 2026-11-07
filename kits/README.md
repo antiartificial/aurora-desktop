@@ -57,7 +57,7 @@ Matched, and exercised by tests:
 - `create_area` returns an id and address, sealed memfd, page-rounded size. `get_area_info` reports size, protection, team, address (address only for areas mapped in this process). `set_area_protection` calls `mprotect` (tested with a real SIGSEGV).
 - Areas are shareable between unrelated processes: `clone_area(name, &addr, spec, prot, source_id)` reopens the owner's memfd via `/proc/<pid>/fd/<n>` (same uid), which reaches the same inode and seals. Tested through fork+exec.
 - Semaphores: counting, atomic multi-count acquire, `B_RELATIVE_TIMEOUT`/`B_ABSOLUTE_TIMEOUT`, `B_WOULD_BLOCK`, `B_BAD_SEM_ID` on a deleted sem (and for waiters when it is deleted).
-- Threads are born suspended and run only after `resume_thread`. `find_thread(NULL)` is the kernel tid, stable per thread, and equals the id `spawn_thread` returned. `find_thread(name)` and `wait_for_thread` work.
+- Threads are born suspended and run only after `resume_thread`. `find_thread(NULL)` is the kernel tid, stable per thread, and equals the id `spawn_thread` returned. `find_thread(name)` and `wait_for_thread` work. A thread that leaves through `exit_thread` wakes its waiters with the status it passed, as does one that returns or is cancelled.
 - Errors and typedefs: Haiku names and values (`B_BAD_PORT_ID = INT_MIN + 0x2000 + 8`, `B_TIMED_OUT = -ETIMEDOUT`, and so on).
 
 ### Approximated or simplified
@@ -78,7 +78,7 @@ Matched, and exercised by tests:
 
 ## Not implemented
 
-`get_next_port_info`, `get_next_area_info`, `area_for`, `find_area`, `suspend_thread`, `kill_thread`, `exit_thread`, `get_thread_info`, `rename_thread`, `set_thread_priority`, `snooze_until`, `acquire_sem` interruption, `set_sem_owner`, `get_sem_info`, `find_sem`, `read_port` flags beyond timeouts, port message sender info (`_get_port_message_info_etc`), teams (`team_id` is just a pid), `B_CLONE_ADDRESS` semantics, resource limits. Anything libbe needs that is not in the 21 calls listed in the task is also absent.
+`get_next_port_info`, `get_next_area_info`, `area_for`, `find_area`, `suspend_thread`, `kill_thread`, `get_thread_info`, `rename_thread`, `set_thread_priority`, `snooze_until`, `acquire_sem` interruption, `set_sem_owner`, `get_sem_info`, `find_sem`, `read_port` flags beyond timeouts, port message sender info (`_get_port_message_info_etc`), teams (`team_id` is just a pid), `B_CLONE_ADDRESS` semantics, resource limits. Anything libbe needs that is not in the 21 calls listed in the task is also absent.
 
 ## Relation to decision 0008, Stage A
 

@@ -1,39 +1,44 @@
 #!/bin/bash
-# Reproduce the hang-on-close bug. N=14 reproduces it in roughly a third of runs.
+# Reproduce the hang on close: compositor headless, one Haiku app, click the title bar's close
+# button, and see whether the process exits. N=14 reproduced it in roughly a third of runs before
+# the fix below. STACKS=1 runs the app under gdb and dumps every thread's stack when it hangs,
+# which is the only way to get one here: yama ptrace_scope=1, so gdb must be the launcher, not an
+# attacher. Only ever kills pids this script started.
 #
-# DIAGNOSIS (from the thread states this script captures, plus kits/src/app/Looper.cpp):
+# DIAGNOSIS (from the stacks STACKS=1 captures, now fixed):
 #
-#   BLooper::Quit() does
-#       write_port_etc(fPort, kPortCodeQuit, NULL, 0, B_RELATIVE_TIMEOUT, 0);  // return DISCARDED
-#       status_t rv; wait_for_thread(fThread, &rv);                            // waits FOREVER
+#   Thread 1, the app looper:  wait_for_thread <- BLooper::Quit <- BWindow::Quit
+#                              <- BApplication::_WindowQuitLoop <- _QuitAllWindows
+#                              <- BApplication::QuitRequested <- task_looper
+#   and the window's looper thread was already gone.
 #
-#   and BLooper::RunLoop() does
-#       while (!fTerminating) { wire_receive(fPort, B_INFINITE_TIMEOUT, ...); }
+#   Closing a window drives two quit paths at once. The window's own thread dispatches
+#   B_QUIT_REQUESTED, so BLooper::Quit() runs on it and leaves through exit_thread(). The app
+#   thread, meanwhile, gets its own B_QUIT_REQUESTED and walks every window in gLooperList:
+#   if it still sees that window, it calls BWindow::Quit() on it, which takes the cross-thread
+#   path -- post _QUIT_, then wait_for_thread(). Who wins is a race, which is why it hung in
+#   only some runs.
 #
-#   The quit write is non-blocking and its result is thrown away. If the port is full at that
-#   instant -- plausible during a close, with pointer and redraw traffic in flight -- the quit
-#   code never arrives. Setting fTerminating cannot help, because the loop only tests it BETWEEN
-#   messages while blocked in an INFINITE receive. So the looper sleeps forever and
-#   wait_for_thread blocks forever.
+#   Losing that race was fatal because haiku-compat/stubs.cpp defined exit_thread() as a bare
+#   pthread_exit(). Our thread layer (kits/src/thread.c) marks a thread done in its own registry
+#   when its entry function RETURNS, and that is what wait_for_thread() waits on. A thread that
+#   left through exit_thread() was never marked, so wait_for_thread() on it blocked forever.
 #
-#   Signature this script prints when it catches one: the main thread in futex_do_wait
-#   (wait_for_thread), the looper in futex_do_wait (blocked receive), and one thread in
-#   poll_schedule_timeout (the presenter). Nondeterministic because it depends on whether the
-#   port happened to be full.
+#   THE FIX (applied): exit_thread() lives in kits/src/thread.c, records the status, and exits
+#   through a pthread cleanup handler that marks the thread done -- so every way out of a thread,
+#   including cancellation, wakes its waiters. Regressions: test_exit_thread_wakes_waiter in
+#   kits/tests/test_kits.cpp, which hangs without it.
 #
-# THE FIX, not yet applied: make the quit write blocking (or retry, and CHECK the return), and
-# give the receive a finite timeout so the loop re-tests fTerminating. Belt and braces -- either
-# alone closes the window of this race, both together close it properly.
-#
-# Original reproduce-the-hang-on-close: compositor headless, one Haiku app, click the title bar's
-# close button, and see whether the process exits. Captures a backtrace when it does not.
-# Only ever kills pids this script started.
+#   An earlier diagnosis in this header blamed a lost quit code in kits/src/app/Looper.cpp. That
+#   was wrong: this app links Haiku's own Looper.cpp (kits/haiku-compat), not ours. The defect it
+#   described is real, and is fixed in our BLooper too, but it was never this hang.
 set -u
 ROOT=/home/arti/projects/aurora
 COMP=$ROOT/compositor/target/release/aurora-compositor
 TI="python3 -I $ROOT/demos/kitchen-sink/ti.py"
 APP=${APP:-$ROOT/kits/build/interface/iface_controls}
 N=${N:-10}
+STACKS=${STACKS:-0}
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 hangs=0
 for i in $(seq "$N"); do
@@ -42,7 +47,13 @@ for i in $(seq "$N"); do
       >"$R/comp.log" 2>&1 & CP=$!
   for _ in $(seq 200); do [ -S "$R/ti" ] && grep -q 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
   sock=$(grep -oE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
-  env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" "$APP" >"$R/app.out" 2>&1 & AP=$!
+  if [ "$STACKS" = 1 ]; then
+    env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" gdb -q -batch -ex "set confirm off" \
+        -ex "handle SIGPIPE nostop noprint pass" -ex run -ex "echo \n=== STACKS ===\n" \
+        -ex "thread apply all bt 25" -ex kill --args "$APP" >"$R/app.out" 2>&1 & AP=$!
+  else
+    env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" "$APP" >"$R/app.out" 2>&1 & AP=$!
+  fi
   # wait for the compositor to lay out its title bar
   for _ in $(seq 120); do grep -q 'deco: layout' "$R/comp.log" && break; sleep 0.05; done
   c=$(sed 's/\x1b\[[0-9;]*m//g' "$R/comp.log" | grep 'deco: layout' | tail -1 | sed 's/.* close=\([0-9,]*\) .*/\1/')
@@ -55,13 +66,17 @@ for i in $(seq "$N"); do
   if [ "$gone" = 0 ]; then
     hangs=$((hangs+1))
     echo "=== run $i: HUNG after close (pid $AP) ==="
-    eu-stack -p $AP 2>&1 | head -40
-    echo "--- threads: tid state comm wchan syscall ---"
-    for t in /proc/$AP/task/*; do
-      echo "$(basename $t) $(awk '{print $3}' $t/stat 2>/dev/null) $(cat $t/comm 2>/dev/null) wchan=$(cat $t/wchan 2>/dev/null) syscall=$(cut -d' ' -f1 $t/syscall 2>/dev/null)"
-    done
-    echo "--- gdb backtrace attempt ---"
-    timeout 25 gdb -p $AP -batch -ex "thread apply all bt 8" 2>&1 | grep -vE "^\[|^Reading|^warning:|Download|^$" | head -45
+    if [ "$STACKS" = 1 ]; then
+      kill -INT $AP                               # gdb stops its inferior and runs the rest
+      for _ in $(seq 100); do grep -q '=== STACKS ===' "$R/app.out" && break; sleep 0.1; done
+      sleep 2
+      sed -n '/=== STACKS ===/,$p' "$R/app.out"
+    else
+      echo "--- threads: tid state comm wchan (no stacks: rerun with STACKS=1) ---"
+      for t in /proc/$AP/task/*; do
+        echo "$(basename $t) $(awk '{print $3}' $t/stat 2>/dev/null) $(cat $t/comm 2>/dev/null) wchan=$(cat $t/wchan 2>/dev/null)"
+      done
+    fi
     echo "--- the app's own stderr tail ---"; tail -5 "$R/app.out"
     echo "--- the compositor's close lines ---"; sed 's/\x1b\[[0-9;]*m//g' "$R/comp.log" | grep -iE "close|quit" | tail -5
     kill -KILL $AP 2>/dev/null

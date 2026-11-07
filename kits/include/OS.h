@@ -105,6 +105,7 @@ thread_id spawn_thread(thread_func func, const char *name, int32 priority,
 status_t  resume_thread(thread_id thread);
 thread_id find_thread(const char *name);   /* NULL = calling thread */
 status_t  wait_for_thread(thread_id thread, status_t *returnValue);
+void      exit_thread(status_t returnValue);   /* leaves the calling thread */
 
 /* Aurora extension: remove this process's namespace file (tests/demos). */
 void _kits_unlink_namespace(void);
