@@ -1,4 +1,4 @@
-# 0017. Drag and drop between the host and Aurora's clients, and what a dropped file means inside a domain
+# 0020. Drag and drop between the host and Aurora's clients, and what a dropped file means inside a domain
 
 - **Status:** proposed (host to guest and the interim file policy are built; the grant and guest to host are not)
 - **Date:** 2026-11-06

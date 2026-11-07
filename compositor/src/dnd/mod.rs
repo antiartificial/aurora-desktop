@@ -58,7 +58,7 @@
 //! `text/uri-list` names host paths; a confined app cannot open them. `policy.rs` therefore
 //! withholds path-bearing types from clients that are not provably outside a domain (the same
 //! fail-closed test as the clipboard) and logs it. The real answer, a *grant* made by the drop
-//! gesture, is specified in `contracts/decisions/0017-drag-and-drop.md` and is not built.
+//! gesture, is specified in `contracts/decisions/0020-drag-and-drop.md` and is not built.
 //!
 //! # What does not exist (guest to host)
 //!
@@ -357,7 +357,7 @@ impl Inner {
         let allowed = if confined { policy::for_confined(&self.offered) } else { self.offered.clone() };
         if allowed.len() < self.offered.len() && !self.noted.swap(true, Ordering::SeqCst) {
             eprintln!(
-                "aurora-compositor: dnd: withholding [{}] from a confined client: a host path means nothing inside a domain (decision 0017: dropping a file onto a confined app is a grant, not built yet){}",
+                "aurora-compositor: dnd: withholding [{}] from a confined client: a host path means nothing inside a domain (decision 0020: dropping a file onto a confined app is a grant, not built yet){}",
                 self.offered.iter().filter(|m| !allowed.contains(m)).cloned().collect::<Vec<_>>().join(", "),
                 if allowed.is_empty() { "; nothing is left to offer, so the app sees no drag" } else { "" },
             );

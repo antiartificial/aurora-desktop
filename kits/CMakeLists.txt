@@ -45,12 +45,23 @@ target_link_libraries(test_bus kitsbus)
 # The real-busd tests need the Go toolchain; they build busd themselves into the build tree.
 find_program(GO_EXE go)
 if(GO_EXE)
-  add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus
+  # Always run, rather than an add_custom_command with OUTPUT files. That form
+  # had no DEPENDS on the Go sources, so once build/busd existed ninja held it
+  # up to date forever: bus_bridge, bus_demo and every demo that takes busd
+  # from this build tree were testing whatever daemon happened to be built
+  # first. One was found 14 hours stale, which cost an hour of chasing a
+  # failure in code that had already been fixed.
+  #
+  # Listing the Go sources as DEPENDS would be the other fix and is worse: the
+  # list goes stale the moment a file is added, and it fails the same silent
+  # way. Go has its own build cache, so an unconditional `go build` is close to
+  # free when nothing changed and correct when something did.
+  add_custom_target(bus_binaries ALL
     COMMAND ${CMAKE_COMMAND} -E env ${GO_EXE} build -o ${CMAKE_BINARY_DIR}/busd ./cmd/busd
     COMMAND ${CMAKE_COMMAND} -E env ${GO_EXE} build -o ${CMAKE_BINARY_DIR}/bus ./cmd/bus
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/../bus
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus
     COMMENT "building busd and bus (Go)")
-  add_custom_target(bus_binaries ALL DEPENDS ${CMAKE_BINARY_DIR}/busd ${CMAKE_BINARY_DIR}/bus)
   add_dependencies(test_bus bus_binaries)
   add_test(NAME bus_bridge COMMAND test_bus ${CMAKE_BINARY_DIR}/busd)
   add_test(NAME bus_demo COMMAND ${CMAKE_SOURCE_DIR}/demo/bus_demo.sh ${CMAKE_BINARY_DIR})

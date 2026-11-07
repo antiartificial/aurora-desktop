@@ -4,7 +4,7 @@
 //! `file:///home/arti/photo.png`. Inside a domain that path names nothing (the app cannot see the
 //! host filesystem), and handing it over anyway is worse than useless: it leaks a host path and
 //! teaches the app that the drop "worked" when nothing was granted. The honest design is a
-//! *grant* at the moment of the drop (decision 0017); until that exists, the safe behaviour is to
+//! *grant* at the moment of the drop (decision 0020); until that exists, the safe behaviour is to
 //! not offer path-bearing types to a confined client at all, and to say so in the log.
 //!
 //! "Confined" here is the same fail-closed test the clipboard uses (`ClientState::may_read_clipboard`
