@@ -11,7 +11,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define K_MAGIC 0x41555231u
+/* Bumped when the shared layout changes: kport and karea grew a team_start field. An older
+ * build and this one must never read each other's region, and the bump also means the first
+ * process of the new build reinitialises a stale one rather than inheriting its slots. */
+#define K_MAGIC 0x41555232u
 kshm *K;
 char *K_rings;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
@@ -85,6 +88,47 @@ void _kits_unlink_namespace(void) { k_init(); unlink(path); }
 int k_pid_dead(team_id team)
 {
 	return team > 0 && kill(team, 0) < 0 && errno == ESRCH;
+}
+
+uint64 k_pid_start(team_id team)
+{
+	if (team <= 0) return 0;
+	char path[64];
+	snprintf(path, sizeof path, "/proc/%d/stat", (int)team);
+	FILE *f = fopen(path, "re");
+	if (!f) return 0;
+	char buf[1024];
+	size_t n = fread(buf, 1, sizeof buf - 1, f);
+	fclose(f);
+	if (n == 0) return 0;
+	buf[n] = 0;
+	/* Field 2 is the executable name in parentheses and may itself contain spaces and
+	 * parentheses, so the only safe place to start counting is after the LAST ')'. */
+	const char *p = strrchr(buf, ')');
+	if (!p) return 0;
+	p++;
+	/* starttime is field 22; after the ')' the next field is 3, so skip 19 and read the 20th. */
+	int field = 2;
+	while (*p) {
+		while (*p == ' ') p++;
+		field++;
+		if (field == 22) {
+			unsigned long long v = 0;
+			if (sscanf(p, "%llu", &v) == 1) return (uint64)v;
+			return 0;
+		}
+		while (*p && *p != ' ') p++;
+	}
+	return 0;
+}
+
+int k_owner_gone(team_id team, uint64 start)
+{
+	if (team <= 0) return 1;
+	if (k_pid_dead(team)) return 1;
+	if (start == 0) return 0;          /* nothing recorded: the old pid-only behaviour */
+	uint64 now = k_pid_start(team);
+	return now != 0 && now != start;   /* the pid is alive but it is a DIFFERENT process */
 }
 
 bigtime_t system_time(void)

@@ -56,13 +56,13 @@ static area_id adopt(const char *name, void **addr, uint32 spec, size_t size,
 	for (int pass = 0; pass < 2 && slot < 0; pass++)
 		for (int i = 0; i < K_MAX_AREAS; i++) {
 			karea *a = &K->areas[i];
-			if (pass == 1 && a->id && k_pid_dead(a->team)) a->id = 0;
+			if (pass == 1 && a->id && k_owner_gone(a->team, a->team_start)) a->id = 0;
 			if (!a->id) { slot = i; break; }
 		}
 	if (slot < 0) { k_unlock(); munmap(m, size); return B_NO_MORE_AREAS; }
 	karea *a = &K->areas[slot];
 	a->id = (int32)(K->area_gen++ % 4000000u) * K_MAX_AREAS + slot + 1;
-	a->team = getpid(); a->fd = fd; a->size = size; a->protection = protection;
+	a->team = getpid(); a->team_start = k_pid_start(a->team); a->fd = fd; a->size = size; a->protection = protection;
 	snprintf(a->name, sizeof a->name, "%s", name ? name : "unnamed area");
 	area_id id = a->id;
 	k_unlock();

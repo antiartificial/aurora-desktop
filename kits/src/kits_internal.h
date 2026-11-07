@@ -12,6 +12,7 @@
 typedef struct kport {
 	int32 id;                 /* 0 = free */
 	team_id team;
+	uint64 team_start;        /* the owner's start time: tells a dead owner from a reused pid */
 	char name[B_OS_NAME_LENGTH];
 	int32 capacity, count, total, closed;
 	uint32 head, used;        /* ring offsets, bytes */
@@ -21,6 +22,7 @@ typedef struct kport {
 typedef struct karea {
 	int32 id;                 /* 0 = free */
 	team_id team;             /* process holding fd */
+	uint64 team_start;        /* see kport.team_start */
 	int32 fd;                 /* fd number inside that process */
 	char name[B_OS_NAME_LENGTH];
 	uint64 size;
@@ -51,4 +53,12 @@ int  k_deadline(uint32 flags, bigtime_t timeout, struct timespec *ts);
 status_t k_wait(pthread_cond_t *c, pthread_mutex_t *m, int has, const struct timespec *ts);
 void k_cond_init(pthread_cond_t *c);
 int  k_pid_dead(team_id team);
+/* The owner's start time, from /proc/<pid>/stat, or 0 when it cannot be read. A pid alone does
+ * not identify a process: pids are reused, and a reused one makes a dead owner's slot look
+ * occupied forever. */
+uint64 k_pid_start(team_id team);
+/* True when the process that took this slot is gone, INCLUDING the case where its pid now
+ * belongs to something else. A slot whose start token was never readable falls back to the pid
+ * test, which is what the code did before. */
+int  k_owner_gone(team_id team, uint64 start);
 #endif

@@ -41,7 +41,7 @@ port_id create_port(int32 capacity, const char *name)
 	for (int pass = 0; pass < 2 && slot < 0; pass++) {
 		for (int i = 0; i < K_MAX_PORTS; i++) {
 			kport *p = &K->ports[i];
-			if (pass == 1 && p->id && k_pid_dead(p->team)) p->id = 0; /* reap */
+			if (pass == 1 && p->id && k_owner_gone(p->team, p->team_start)) p->id = 0; /* reap */
 			if (!p->id) { slot = i; break; }
 		}
 	}
@@ -49,6 +49,7 @@ port_id create_port(int32 capacity, const char *name)
 	kport *p = &K->ports[slot];
 	p->id = (int32)(K->port_gen++ % 16000000u) * K_MAX_PORTS + slot + 1;
 	p->team = getpid();
+	p->team_start = k_pid_start(p->team);
 	snprintf(p->name, sizeof p->name, "%s", name ? name : "unnamed port");
 	p->capacity = capacity;
 	p->count = p->total = p->closed = 0;

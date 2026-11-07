@@ -1,5 +1,6 @@
 // Primitives-layer tests. Written in C++ on purpose: Haiku's kits are C++.
 #include <OS.h>
+#include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -292,11 +293,66 @@ static void test_exit_thread_wakes_waiter()
 	CHECK_EQ(rv, 42);                                // and it carries the status it exited with
 }
 
+/* Declared here rather than by including the private header, which is C and would need the
+ * whole of pthread.h and OS.h wrapped in extern "C" to be read from this file. */
+extern "C" {
+uint64 k_pid_start(team_id team);
+int k_owner_gone(team_id team, uint64 start);
+}
+
+/* A pid alone does not identify a process. The port table reclaimed a slot only when its
+ * owner's pid was dead, so a pid that had been REUSED kept the slot forever: by the end of a
+ * long session the 128-slot table was full of entries owned by processes that had exited hours
+ * earlier, and every new BApplication died with B_NO_MORE_PORTS (-ENFILE, -23). */
+static void test_a_reused_pid_does_not_hold_a_slot_forever()
+{
+	/* The start token is what tells the two apart. For a live process it is stable. */
+	uint64 mine = k_pid_start(getpid());
+	CHECK(mine != 0);
+	CHECK(k_pid_start(getpid()) == mine);
+	CHECK(!k_owner_gone(getpid(), mine));
+
+	/* The same pid carrying a DIFFERENT token is a different process, so the slot is free even
+	 * though something is alive at that pid. This is the case the old pid-only test got wrong,
+	 * and it is the whole reason the table filled up. */
+	CHECK(k_owner_gone(getpid(), mine + 1));
+
+	/* A pid nothing is using is gone whatever the token says. */
+	team_id dead = 0;
+	for (team_id t = 4194303; t > 4000000; t--) {
+		if (kill(t, 0) < 0 && errno == ESRCH) { dead = t; break; }
+	}
+	CHECK(dead != 0);
+	CHECK(k_owner_gone(dead, 0));
+	CHECK(k_owner_gone(dead, 12345));
+
+	/* A slot with no token recorded falls back to the pid test, so a region written by an
+	 * older build is read the way that build meant it. */
+	CHECK(!k_owner_gone(getpid(), 0));
+
+	/* And the thing that matters: a real child's slot is reclaimed once it exits. */
+	int before = 0, after = 0;
+	port_id probe = create_port(1, "probe");
+	CHECK(probe >= 0);
+	before = probe;
+	pid_t kid = fork();
+	if (kid == 0) { create_port(1, "childport"); _exit(0); }
+	int st = 0; waitpid(kid, &st, 0);
+	/* The child's port is still marked taken; creating one reaps it. */
+	port_id again = create_port(1, "after");
+	CHECK(again >= 0);
+	after = again;
+	CHECK(before != after);
+	delete_port(probe);
+	delete_port(again);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc >= 5 && !strcmp(argv[1], "--child")) return child_main(argv);
 	char ns[64]; snprintf(ns, sizeof ns, "test-%d", getpid());
 	setenv("AURORA_KITS_NS", ns, 1);   // private namespace; children inherit it
+	RUN(test_a_reused_pid_does_not_hold_a_slot_forever);
 	RUN(test_port_roundtrip_local);
 	RUN(test_port_two_processes_fork);
 	RUN(test_exec_child_port_and_area);
