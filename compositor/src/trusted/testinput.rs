@@ -201,6 +201,8 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             // reason the cursor is -- an animation nothing can assert on is one that quietly
             // stops playing, and nobody notices for months.
             "arriving": state.shell.appearing.len(),
+            // Windows mid-close animation, for the same reason as `arriving`.
+            "leaving": state.fx.is_closing(),
         });
         return format!("ok {v}");
     }

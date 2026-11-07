@@ -46,6 +46,14 @@ pub struct Fx {
     pub switcher: switcher::Switcher,
     scratch: Option<Scratch>,
     cards: Vec<GlesTexture>,
+    /// Windows the user has asked to close, and the windows that are now leaving.
+    ///
+    /// A dead client has no pixels, so a window cannot be animated out of existence after the
+    /// fact. It has to be PHOTOGRAPHED while it is still alive, and the only moment we know one
+    /// is about to go is when we send it xdg_toplevel.close -- which is the user clicking the
+    /// close button, the gesture this animation exists for. A client that quits of its own
+    /// accord still vanishes in one frame, and that is a stated limit rather than a bug.
+    closing: std::collections::HashMap<String, Closing>,
     /// Count of successful theme (file or shader) loads; tests and logs read it.
     pub loads: u32,
     /// The theme text when there is no theme directory: edits live here, for the session only.
@@ -69,7 +77,7 @@ impl Fx {
     pub fn new(dir: Option<PathBuf>) -> Fx {
         Fx {
             theme: Theme::default(), files: dir.map(Files::new), initialised: false, next_poll: Instant::now(),
-            progs: Default::default(), switcher: Default::default(), scratch: None, cards: vec![], loads: 0, mem_text: None, phases: Default::default(),
+            progs: Default::default(), switcher: Default::default(), scratch: None, cards: vec![], closing: Default::default(), loads: 0, mem_text: None, phases: Default::default(),
         }
     }
 
@@ -266,7 +274,110 @@ impl Fx {
                 }
                 touched = union(touched, rect_of(bg));
             }
+            use smithay::backend::renderer::Texture as _;
+            // If the user has asked this window to close, keep a fresh picture of it. One blit
+            // for one window, only between the click and the client actually going.
+            if let Some(key) = crate::windeco::win_key(w) {
+                // ONCE, on the first frame after the close was asked for -- not every frame.
+                // Re-photographing looked like the careful choice (a client that puts up "save
+                // your work?" would otherwise be remembered from before the dialog), and it cost
+                // exactly the thing the animation is for: the LAST frame a dying client commits
+                // is a half-painted one, so the departure faded a torn window. One early picture
+                // of a healthy window beats a fresh picture of a broken one.
+                if self.closing.get(&key).is_some_and(|c| c.gone.is_none() && c.tex.is_none()) {
+                    // The picture is the CLIENT's surfaces, at the window's own size. Not the
+                    // title bar: the bar is the compositor's, it hangs above the window's
+                    // rectangle, and folding it in means reconciling two coordinate spaces for
+                    // a 130 ms fade. I tried and got it wrong twice before deciding a correct
+                    // simple departure beats an incorrect elaborate one. The window keeps its
+                    // chrome until the frame it leaves and then fades without it.
+                    // Sized and positioned exactly as the switcher sizes its cards, because the
+                    // switcher demonstrably produces correct pictures of windows. Deriving the
+                    // size from the SPACE's element geometry instead looked equivalent and was
+                    // not: the picture came out offset, so the departure faded a window with its
+                    // top row and left column cut off.
+                    let gsz: Size<i32, Physical> = w.geometry().size.to_physical_precise_round(scale);
+                    let csz: Size<i32, Physical> = (gsz.w.max(1), gsz.h.max(1)).into();
+                    let local = window_elements(r, w, smithay::utils::Point::<i32, smithay::utils::Logical>::from((0, 0)) - w.geometry().loc, scale);
+                    // ONLY when there is something to photograph. A window stays in the space
+                    // for a frame or two after its surface dies, and those frames have no
+                    // elements -- the first version of this took the good picture and then
+                    // overwrote it with a cleared texture on the very next frame, so the
+                    // departure animated a transparent rectangle. It drew, it logged, and
+                    // nothing was on screen.
+                    if !local.is_empty() {
+                        let need = self.closing[&key].tex.as_ref().map(|t| t.size()).map(|s| (s.w, s.h)) != Some((csz.w, csz.h));
+                        if need {
+                            self.closing.get_mut(&key).unwrap().tex = Some(make_tex(r, csz.w, csz.h)?);
+                        }
+                        let c = self.closing.get_mut(&key).unwrap();
+                        // Where that picture belongs on screen: the window's own rectangle.
+                        let at: smithay::utils::Point<i32, Physical> =
+                            space.element_location(w).unwrap_or_default().to_physical_precise_round(scale);
+                        c.geo = Rectangle::<i32, Physical>::new(at, csz);
+                        if let Some(tex) = c.tex.as_mut() {
+                            let mut t = r.bind(tex)?;
+                            let mut f = r.render(&mut t, csz, Transform::Normal)?;
+                            f.clear(Color32F::new(0.0, 0.0, 0.0, 0.0), &[Rectangle::from_size(csz)])?;
+                            draw_elements(&mut f, &local, scale)?;
+                            let sy = f.finish()?;
+                            wait(r, sy)?;
+                        }
+                    }
+                }
+            }
             s.mark_dirty(touched);
+        }
+
+        // Windows that have gone: their last picture, fading and shrinking where they were.
+        // Drawn after the live ones, because a window that is leaving was on top of whatever it
+        // was covering and should not suddenly fall behind it on its way out.
+        use smithay::backend::renderer::Texture as _;
+        // AURORA_SNAP_DEBUG draws every snapshot opaque over the window it was taken of. It is
+        // kept because it is what settled this: the departure LOOKED offset, and overlaying the
+        // picture on the live window showed it lining up exactly -- so the geometry was right
+        // all along and what I had been reading as a bug was the client's own last frame, drawn
+        // while it tore itself down.
+        let snap_debug = std::env::var_os("AURORA_SNAP_DEBUG").is_some();
+        let leaving: Vec<(Rectangle<i32, Physical>, f32, f32)> = self
+            .closing
+            .values()
+            .filter_map(|c| {
+                if snap_debug && c.tex.is_some() {
+                    return Some((c.geo, 1.0, 1.0));
+                }
+                let a = c.gone.as_ref()?;
+                let (alpha, k) = crate::shell::motion::window_departure(a.elapsed_ms())?;
+                c.tex.as_ref().map(|_| (c.geo, alpha, k))
+            })
+            .collect();
+        if !leaving.is_empty() {
+            let keys: Vec<String> = self.closing.keys().cloned().collect();
+            let sy = {
+                let mut t = r.bind(&mut s.scene)?;
+                let mut f = r.render(&mut t, size, Transform::Normal)?;
+                for k in &keys {
+                let Some(c) = self.closing.get(k) else { continue };
+                let (alpha, sc) = if snap_debug {
+                    (1.0f32, 1.0f32)
+                } else {
+                    let Some(a) = c.gone.as_ref() else { continue };
+                    let Some(v) = crate::shell::motion::window_departure(a.elapsed_ms()) else { continue };
+                    v
+                };
+                let Some(tex) = c.tex.as_ref() else { continue };
+                let dst = scale_about(c.geo, c.geo, sc);
+                let ts = tex.size();
+                let src = Rectangle::<f64, BufferCoords>::from_size((ts.w as f64, ts.h as f64).into());
+                f.render_texture_from_to(tex, src, dst, &[dst], &[], Transform::Normal, alpha, None, &[])?;
+            }
+                f.finish()?
+            };
+            self.phases.lap(Phase::Composite, &sy);
+            wait(r, sy)?;
+            for (g, _, _) in &leaving {
+                s.mark_dirty(rect_of(*g));
+            }
         }
         if let Some((tex, panel)) = shell.dock_draw(size) {
             let geo = Rectangle::<i32, Physical>::new((panel.x, panel.y).into(), (panel.w, panel.h).into());
@@ -377,6 +488,53 @@ pub fn make_tex_fmt(r: &mut GlesRenderer, f: Fourcc, w: i32, h: i32) -> Res<Gles
 pub fn wait(r: &mut GlesRenderer, sync: smithay::backend::renderer::sync::SyncPoint) -> Res<()> {
     r.wait(&sync)?;
     Ok(())
+}
+
+/// A window on its way out: the last picture taken of it, where it was, and when it started
+/// leaving.
+///
+/// `tex` is None until the first frame after the close was asked for -- the entry is created by
+/// an input handler, which has no renderer. `gone` is None while the window is still alive and
+/// being re-photographed; a client may take its time, or refuse entirely.
+pub struct Closing {
+    tex: Option<GlesTexture>,
+    geo: Rectangle<i32, Physical>,
+    gone: Option<crate::shell::motion::Appear>,
+}
+
+impl Fx {
+    /// The user asked this window to close. From now until it dies, keep a fresh picture of it.
+    ///
+    /// Re-photographed every frame rather than once, because a client is free to take its time:
+    /// one that puts up "save your work?" would otherwise leave behind a photograph of itself
+    /// from before the dialog, and fade THAT out when it finally went.
+    pub fn note_closing(&mut self, key: &str) {
+        self.closing.entry(key.to_string()).or_insert(Closing { tex: None, geo: Rectangle::default(), gone: None });
+    }
+
+    /// Windows that have died since the last call start leaving now; ones that never died and
+    /// are no longer closing (a client that refused) are forgotten.
+    pub fn reap_closing(&mut self, live: &std::collections::HashSet<String>) {
+        self.closing.retain(|k, c| {
+            match &c.gone {
+                // Leaving: keep it until its animation is over.
+                Some(a) => crate::shell::motion::window_departure(a.elapsed_ms()).is_some(),
+                None if live.contains(k) => true,            // still alive, still closing
+                // Gone, and we have a picture of it: start the departure.
+                None if c.tex.is_some() => {
+                    c.gone = Some(crate::shell::motion::Appear::new(crate::shell::motion::CLOSE_MS));
+                    true
+                }
+                // Gone before we ever got a picture. Nothing to animate.
+                // Gone before we ever got a picture: a client that quit faster than a frame.
+                None => false,
+            }
+        });
+    }
+
+    pub fn is_closing(&self) -> bool {
+        !self.closing.is_empty()
+    }
 }
 
 /// A window's surface elements. `loc` is the logical place of the window's

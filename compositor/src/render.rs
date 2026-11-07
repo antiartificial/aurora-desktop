@@ -162,6 +162,11 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     state.space.elements().for_each(|window| {
         window.send_frame(output, now, Some(Duration::ZERO), |_, _| Some(output.clone()))
     });
+    // Which windows are still alive, BEFORE refresh drops the dead ones: anything that was
+    // closing and is no longer here starts fading out now.
+    let live: std::collections::HashSet<String> =
+        state.space.elements().filter_map(crate::windeco::win_key).collect();
+    state.fx.reap_closing(&live);
     state.space.refresh();
     state.trusted_tick();
     state.shell.tick();

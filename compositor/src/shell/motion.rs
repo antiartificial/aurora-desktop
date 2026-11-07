@@ -26,6 +26,24 @@ pub const WINDOW_MS: u64 = 170;
 /// once when a session restores.
 pub const DOCK_ITEM_MS: u64 = 150;
 
+/// A window closing. Shorter than opening, and deliberately so: an arrival is worth watching and
+/// a departure is in the way. Past about 150 ms, closing a window feels like waiting for it.
+pub const CLOSE_MS: u64 = 130;
+
+/// How far a closing window shrinks before it is gone. It does not go to zero -- the last frames
+/// of a shrink to nothing are a sub-pixel smear, and stopping while it is still a window reads
+/// as it leaving rather than as it being crushed.
+pub const CLOSE_END_SCALE: f32 = 0.90;
+
+/// `(alpha, scale)` for a window `elapsed_ms` into leaving, or `None` once it is gone.
+pub fn window_departure(elapsed_ms: f32) -> Option<(f32, f32)> {
+    if elapsed_ms >= CLOSE_MS as f32 {
+        return None;
+    }
+    let t = ease_out_cubic(elapsed_ms / CLOSE_MS as f32);
+    Some((1.0 - t, 1.0 - (1.0 - CLOSE_END_SCALE) * t))
+}
+
 /// Where an opening WINDOW starts. Nearer its final size than chrome does, because a window is
 /// large: the same 0.94 on a 1200 px window is a 72 px leap, which reads as a lurch rather than
 /// as an arrival.
@@ -205,6 +223,21 @@ mod arrival_tests {
         // window forever, for every window ever opened, with nothing on screen looking wrong.
         assert!(window_arrival(WINDOW_MS as f32).is_none(), "done exactly at the end");
         assert!(window_arrival(WINDOW_MS as f32 * 4.0).is_none(), "and stays done");
+    }
+
+    #[test]
+    fn a_departure_fades_out_and_is_quicker_than_an_arrival() {
+        let (a0, s0) = window_departure(0.0).expect("just started");
+        assert_eq!(a0, 1.0, "it starts fully visible: it was on screen a moment ago");
+        assert_eq!(s0, 1.0, "and at its real size");
+
+        let (a1, s1) = window_departure(CLOSE_MS as f32 * 0.5).expect("mid-flight");
+        assert!(a1 < 0.5 && s1 < 1.0, "fading and shrinking: {a1} {s1}");
+        assert!(s1 > CLOSE_END_SCALE, "and not past where it stops");
+
+        assert!(window_departure(CLOSE_MS as f32).is_none());
+        // An arrival is worth watching; a departure is in the way.
+        assert!(CLOSE_MS < WINDOW_MS);
     }
 
     #[test]

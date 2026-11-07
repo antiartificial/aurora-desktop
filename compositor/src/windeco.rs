@@ -243,6 +243,12 @@ impl Aurora {
     /// Ask the client to close: `xdg_toplevel.close`, or `WM_DELETE_WINDOW` for X11. It is a request, not a
     /// kill: the client may refuse (a Haiku window turns it into `B_QUIT_REQUESTED`).
     pub fn close_window(&mut self, w: &Window) {
+        // From here until the client actually goes, keep a picture of it, so there is something
+        // to fade out when it does. This is the only moment anyone knows a window is about to
+        // leave: afterwards its buffers are gone and there is nothing left to photograph.
+        if let Some(k) = win_key(w) {
+            self.fx.note_closing(&k);
+        }
         if let Some(t) = w.toplevel() {
             t.send_close();
         } else if let Some(x) = w.x11_surface() {
