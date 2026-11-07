@@ -209,18 +209,21 @@ pub fn init_drm(
                 // From the theme now, rather than hard-coded. Each is attempted and the result
                 // ignored: libinput refuses what a device cannot do (a mouse has no tap), and a
                 // refusal is information about the device, not an error.
-                let i = &state.fx.theme.input;
-                if device.config_tap_finger_count() > 0 {
-                    let _ = device.config_tap_set_enabled(i.tap_to_click);
-                }
-                if device.config_scroll_has_natural_scroll() {
-                    let _ = device.config_scroll_set_natural_scroll_enabled(i.natural_scroll);
-                }
-                if device.config_accel_is_available() {
-                    let _ = device.config_accel_set_speed(i.pointer_speed.clamp(-1.0, 1.0));
-                }
-                if device.config_left_handed_is_available() {
-                    let _ = device.config_left_handed_set(i.left_handed);
+                let caps = PointerCaps {
+                    tap_fingers: device.config_tap_finger_count() as i32,
+                    natural_scroll: device.config_scroll_has_natural_scroll(),
+                    accel: device.config_accel_is_available(),
+                    left_handed: device.config_left_handed_is_available(),
+                };
+                for setting in pointer_settings(&caps, &state.fx.theme.input) {
+                    // The result is ignored on purpose: libinput refuses what a device cannot
+                    // do, and a refusal is information about the device rather than an error.
+                    match setting {
+                        PointerSetting::Tap(on) => { let _ = device.config_tap_set_enabled(on); }
+                        PointerSetting::NaturalScroll(on) => { let _ = device.config_scroll_set_natural_scroll_enabled(on); }
+                        PointerSetting::Accel(v) => { let _ = device.config_accel_set_speed(v); }
+                        PointerSetting::LeftHanded(on) => { let _ = device.config_left_handed_set(on); }
+                    }
                 }
             }
             InputEvent::Keyboard { event: k } => {
@@ -776,6 +779,104 @@ mod tests {
         let a = |x: usize, y: usize| px[(y * 64 + x) * 4 + 3];
         assert_eq!(a(1, 2), 255);
         assert_eq!(a(60, 60), 0);
+    }
+}
+
+/// What a pointer device admits it can do. Read from libinput, and the only thing
+/// `pointer_settings` is allowed to know about the device.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PointerCaps {
+    pub tap_fingers: i32,
+    pub natural_scroll: bool,
+    pub accel: bool,
+    pub left_handed: bool,
+}
+
+/// One setting to push at a device.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointerSetting {
+    Tap(bool),
+    NaturalScroll(bool),
+    Accel(f64),
+    LeftHanded(bool),
+}
+
+/// Which of the theme's pointer settings this device can actually take, in the order
+/// they are applied.
+///
+/// Pulled out of the `DeviceAdded` handler so it can be tested. The handler needs a live
+/// libinput `Device`, which needs the DRM backend, which needs a seat, so nothing in this
+/// file had ever executed. The device CALLS are still unrun, but the decisions are not:
+/// which settings are offered, which are skipped because the hardware cannot take them, and
+/// the clamp on a speed that a theme file can set to anything.
+pub fn pointer_settings(caps: &PointerCaps, i: &crate::fx::theme::Input) -> Vec<PointerSetting> {
+    let mut out = Vec::new();
+    // A mouse has no tap. Asking it to tap is not an error, but it is not a setting either.
+    if caps.tap_fingers > 0 {
+        out.push(PointerSetting::Tap(i.tap_to_click));
+    }
+    if caps.natural_scroll {
+        out.push(PointerSetting::NaturalScroll(i.natural_scroll));
+    }
+    if caps.accel {
+        // libinput's range is -1..=1 and it rejects anything outside it, which would lose the
+        // whole setting rather than part of it. The theme is a text file a person edits, so
+        // out of range is a thing that will happen.
+        out.push(PointerSetting::Accel(i.pointer_speed.clamp(-1.0, 1.0)));
+    }
+    if caps.left_handed {
+        out.push(PointerSetting::LeftHanded(i.left_handed));
+    }
+    out
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    use crate::fx::theme::Input;
+
+    fn theme(speed: f64) -> Input {
+        Input { tap_to_click: true, natural_scroll: true, pointer_speed: speed, left_handed: true, ..Default::default() }
+    }
+
+    #[test]
+    fn a_device_is_only_offered_what_it_can_take() {
+        // A plain three-button mouse: no tap, no natural-scroll toggle, no handedness.
+        let mouse = PointerCaps { tap_fingers: 0, natural_scroll: false, accel: true, left_handed: false };
+        assert_eq!(pointer_settings(&mouse, &theme(0.4)), vec![PointerSetting::Accel(0.4)]);
+
+        // A touchpad takes all four.
+        let pad = PointerCaps { tap_fingers: 3, natural_scroll: true, accel: true, left_handed: true };
+        assert_eq!(
+            pointer_settings(&pad, &theme(0.0)),
+            vec![
+                PointerSetting::Tap(true),
+                PointerSetting::NaturalScroll(true),
+                PointerSetting::Accel(0.0),
+                PointerSetting::LeftHanded(true),
+            ]
+        );
+
+        // A device that admits nothing gets nothing, rather than four refused calls.
+        assert!(pointer_settings(&PointerCaps::default(), &theme(0.5)).is_empty());
+    }
+
+    #[test]
+    fn a_speed_outside_libinputs_range_is_clamped_not_dropped() {
+        // The theme is a file a person edits, so this is a thing that will happen. libinput
+        // rejects out-of-range, which would lose the setting entirely.
+        let any = PointerCaps { accel: true, ..Default::default() };
+        for (set, want) in [(5.0, 1.0), (-5.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (0.25, 0.25)] {
+            assert_eq!(pointer_settings(&any, &theme(set)), vec![PointerSetting::Accel(want)], "speed {set}");
+        }
+    }
+
+    #[test]
+    fn a_tap_capable_device_with_one_finger_still_counts() {
+        // config_tap_finger_count is a COUNT, not a flag. Testing it as a bool would read 1 as
+        // true and 0 as false by luck, and any future "> 1" rule would be silently wrong.
+        let one = PointerCaps { tap_fingers: 1, ..Default::default() };
+        assert_eq!(pointer_settings(&one, &theme(0.0)), vec![PointerSetting::Tap(true)]);
     }
 }
 
