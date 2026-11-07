@@ -372,6 +372,9 @@ fn prepass_scene_with(share: bool, spots: &[(i32, i32)], decoration: &str) -> (I
     let t = Theme::new();
     t.append("[background]\nmode = \"gradient\"\ntop = [0.60, 0.0, 0.0]\nbottom = [0.25, 0.05, -0.05]\n[desktop]\nclock = false\nhostname = false\n");
     t.append(decoration);
+    // These counts are of glass surfaces and the scene is measured pixel for pixel: the Deskbar is a glass
+    // surface of its own that would appear with the first window, and it has its own tests (tests/deskbar.rs).
+    t.append("[deskbar]\nenabled = false\n");
     if !share { t.edit("share_prepass = true", "share_prepass = false"); }
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("s.csv");

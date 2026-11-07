@@ -12,7 +12,8 @@ use std::{
 
 fn settle() { std::thread::sleep(Duration::from_millis(700)); }
 
-const FLAT: &str = "[background]\nmode = \"solid\"\ntop = [0.30, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n";
+// [deskbar] off: these tests measure the usable area and exact client pixels; the Deskbar has tests of its own (tests/deskbar.rs).
+const FLAT: &str = "[background]\nmode = \"solid\"\ntop = [0.30, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n[deskbar]\nenabled = false\n";
 
 /// A bus that answers `registry.apps@v1` (to "registry") the way the controller does.
 fn fake_registry(dir: &Path, apps: &[(&str, &str)]) -> PathBuf {

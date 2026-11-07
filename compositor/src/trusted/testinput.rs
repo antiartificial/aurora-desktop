@@ -148,6 +148,8 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             "dock": {"enabled": t.dock.enabled, "edge": format!("{:?}", t.dock.edge).to_lowercase()},
             "font": {"family": t.font.family, "size": t.font.size},
             "windows": wins,
+            // Where the Deskbar is, device pixels, or null while it is not drawn (disabled, no windows, a fullscreen window).
+            "deskbar": state.shell.deskbar_rect().filter(|_| state.shell.deskbar.show).map(|r| [r.x, r.y, r.w, r.h]),
             "restored": state.persist.as_ref().map(|p| p.restored),
         });
         return format!("ok {v}");

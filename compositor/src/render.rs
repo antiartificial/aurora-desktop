@@ -35,6 +35,7 @@ pub fn render_and_capture(
     state.shell.sync(&state.fx.theme);
     let specs = if state.shell.deco_on() { state.deco_specs() } else { vec![] };
     state.shell.set_decos(specs);
+    state.deskbar_frame();
     state.apply_input_config();
     if state.overlay_up() {
         state.fx.switcher.open = false;
@@ -164,6 +165,7 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     state.space.refresh();
     state.trusted_tick();
     state.shell.tick();
+    state.deskbar_tick();
     state.persist_tick();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();

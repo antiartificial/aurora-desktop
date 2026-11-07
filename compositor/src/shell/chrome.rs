@@ -132,6 +132,8 @@ impl Shell {
         e.push(Entry::item(&format!("Move Dock to {name}"), Action::Edit(vec![Edit::s("dock", "edge", next)])));
         let on = self.dock.enabled;
         e.push(Entry::item(if on { "Hide Dock" } else { "Show Dock" }, Action::Edit(vec![Edit::new("dock", "enabled", Val::Bool(!on))])));
+        // The Deskbar floats over windows, so a way to put it away has to be one right-click from the desktop.
+        e.push(Entry::item(if self.deskbar_enabled { "Hide Deskbar" } else { "Show Deskbar" }, Action::Edit(vec![Edit::new("deskbar", "enabled", Val::Bool(!self.deskbar_enabled))])));
         let mut m = Menu::new(e);
         let s = self.scale as f32;
         let font = self.font.size;
@@ -534,6 +536,10 @@ impl Shell {
             };
             ChromeDraw { tex, dst, alpha }
         };
+        // The Deskbar is under the menu and the settings panel (a popup is above the box it opened from), over windows.
+        if let (Some((_, tex)), Some(r)) = (&self.deskbar.tex, self.deskbar.rect) {
+            v.push(ChromeDraw { tex, dst: r, alpha: 1.0 });
+        }
         if let (Some((_, tex)), Some(r), Some(st)) = (&self.settings_tex, self.settings_rect((size.w, size.h)), &self.settings) {
             let centre = (r.x as f64 + r.w as f64 / 2.0, r.y as f64 + r.h as f64 / 2.0);
             v.push(grow(r, centre, st.appear.frame(), tex));
