@@ -16,6 +16,7 @@
 #include <BusClient.h>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -924,6 +925,122 @@ int main() {
         w.Invalidate();
     };
 
+    // ---- copy, cut and paste ---------------------------------------------------------------------
+    //
+    // The clipboard holds PATHS, not bytes: that is what text/uri-list is and what every other
+    // file manager puts there, so a copy here can be pasted elsewhere and vice versa.
+    //
+    // A paste copies on a worker thread. Bytes take time proportional to the file, and a file
+    // manager that freezes while copying a video is one people kill. The thread reports through
+    // InvalidateThreadsafe, the same way the directory lister already does.
+    //
+    // Directories are refused rather than copied. A recursive copy needs progress, cancellation
+    // and a decision about what to do on a failure half way down a tree -- that is `copy@v1` in
+    // a domain, not a keystroke in a widget. Moving one is fine, because a move is a rename.
+    struct Pending {
+        std::vector<std::string> paths;
+        bool cut = false;
+    };
+    auto clip = std::make_shared<Pending>();
+
+    auto copy_file = [](const std::string& from, const std::string& to) -> std::string {
+        const int in = open(from.c_str(), O_RDONLY | O_CLOEXEC);
+        if (in < 0) return strerror(errno);
+        // O_EXCL: a paste never overwrites. The caller has already picked a free name; if
+        // something appeared there since, that is a reason to stop, not to clobber.
+        const int out = open(to.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        if (out < 0) {
+            const std::string e = strerror(errno);
+            close(in);
+            return e;
+        }
+        char buf[64 * 1024];
+        std::string err;
+        for (;;) {
+            const ssize_t n = read(in, buf, sizeof buf);
+            if (n == 0) break;
+            if (n < 0) { err = strerror(errno); break; }
+            for (ssize_t off = 0; off < n;) {
+                const ssize_t w = write(out, buf + off, (size_t)(n - off));
+                if (w <= 0) { err = strerror(errno); break; }
+                off += w;
+            }
+            if (!err.empty()) break;
+        }
+        close(in);
+        close(out);
+        if (!err.empty()) unlink(to.c_str());   // no half-written file left behind
+        return err;
+    };
+
+    auto paste_into = [&, clip, copy_file](const std::string& dest_dir) {
+        if (clip->paths.empty()) {
+            last_action.set("nothing to paste");
+            return;
+        }
+        const std::vector<std::string> src = clip->paths;
+        const bool cut = clip->cut;
+        if (cut) clip->paths.clear();           // a cut pastes once
+        std::thread([&w, &rows, &path, &status, &last_action, &show_hidden, &filter, src, cut, dest_dir, copy_file] {
+            int done = 0;
+            std::string err;
+            for (const std::string& from : src) {
+                const size_t slash = from.find_last_of('/');
+                const std::string leaf = slash == std::string::npos ? from : from.substr(slash + 1);
+                if (leaf.empty()) continue;
+                // A CUT pasted into the folder it came from is nothing at all. Checked before
+                // the collision rename below, or the file collides with ITSELF and gets moved
+                // to "source copy 2.txt" -- which is what the first version did: cut, paste in
+                // place, and the file quietly acquired a new name.
+                //
+                // A COPY in the same folder is different and is meant to duplicate.
+                if (cut && from == dest_dir + "/" + leaf) continue;
+                // Never overwrite. "notes.txt" pasted beside itself becomes "notes copy.txt",
+                // which is what a person means by pasting into the folder they copied from.
+                std::string name = leaf;
+                struct stat st;
+                if (lstat((dest_dir + "/" + name).c_str(), &st) == 0) {
+                    const size_t dot = leaf.find_last_of('.');
+                    const std::string stem = dot == std::string::npos || dot == 0 ? leaf : leaf.substr(0, dot);
+                    const std::string ext = dot == std::string::npos || dot == 0 ? "" : leaf.substr(dot);
+                    name = stem + " copy" + ext;
+                    for (int n = 2; lstat((dest_dir + "/" + name).c_str(), &st) == 0 && n < 1000; n++)
+                        name = stem + " copy " + std::to_string(n) + ext;
+                }
+                const std::string to = dest_dir + "/" + name;
+                if (from == to) continue;
+                if (cut) {
+                    if (rename(from.c_str(), to.c_str()) != 0) {
+                        err = errno == EXDEV ? "that is a different filesystem; a move across one is a verb"
+                                             : strerror(errno);
+                        continue;
+                    }
+                    done++;
+                    continue;
+                }
+                struct stat sf;
+                if (lstat(from.c_str(), &sf) == 0 && S_ISDIR(sf.st_mode)) {
+                    err = "copying a folder is copy@v1, not a keystroke";
+                    continue;
+                }
+                const std::string e = copy_file(from, to);
+                if (!e.empty()) { err = e; continue; }
+                done++;
+            }
+            std::string msg;
+            if (done) msg = (cut ? "moved " : "copied ") + std::to_string(done) + (done == 1 ? " item" : " items");
+            if (!err.empty()) msg += (msg.empty() ? "" : "; ") + ("refused: " + err);
+            last_action.set(msg.empty() ? "nothing to paste" : msg);
+            if (done) {
+                rows.Open(path.get());
+                rows.SetShowHidden(show_hidden.get());
+                rows.SetFilter(filter.get());
+                status.set(std::to_string(rows.Count()) + " items");
+            }
+            w.InvalidateThreadsafe();
+        }).detach();
+    };
+
     // ---- dragging files ------------------------------------------------------------------------
     //
     // A drag inside Atlas MOVES, by rename(2). It is deliberately not a copy and deliberately
@@ -1295,6 +1412,21 @@ int main() {
         }
         if (ctrl && (k.mods & AU_MOD_SHIFT) && rc == 'n') {               // Ctrl+Shift+N
             new_folder();
+            return true;
+        }
+        if (ctrl && (rc == 'c' || rc == 'x')) {                           // Ctrl+C, Ctrl+X
+            const std::vector<std::string> sel = selected_paths();
+            if (sel.empty()) return true;
+            clip->paths = sel;
+            clip->cut = rc == 'x';
+            // Also on the system clipboard, so the selection can be pasted into another app.
+            w.RequestCopy(DragData::uri_list(sel).bytes);
+            last_action.set((clip->cut ? "cut " : "copied ") + std::to_string(sel.size()) +
+                            (sel.size() == 1 ? " item" : " items"));
+            return true;
+        }
+        if (ctrl && rc == 'v') {                                          // Ctrl+V
+            paste_into(path.get());
             return true;
         }
         // Delete, and Shift+Delete is NOT a shortcut for destroying things here. Everything
