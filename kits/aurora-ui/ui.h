@@ -283,6 +283,31 @@ Desc Label(State<std::string>* bound);
 Desc Bold(std::string text);
 Desc Button(std::string label, std::function<void()> on_click);
 Desc Spacer();                                       // takes all the leftover space
+
+// ---- the small controls -------------------------------------------------------------------------
+
+// A checkbox and a switch are ONE widget with two drawings. The difference is a visual
+// convention and not a behaviour: a checkbox reads as "this option is on", a switch as "this
+// thing is running". Both toggle on Space -- not Enter, which every toolkit reserves for
+// "accept the dialog", and a checkbox that swallowed it would make a form unsubmittable from
+// the keyboard.
+Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
+Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
+
+// A slider over [lo, hi]. It takes the width it is given, because a slider's width IS its
+// resolution: a narrow one cannot express the values it claims to. Arrows move a twentieth of
+// the range and Page a fifth -- stepping by one unit would make a 0-to-1 slider take a hundred
+// presses to cross.
+Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> changed = nullptr);
+
+// A progress bar, 0 to 1. Not focusable and not clickable: it reports, it is not a control, and
+// a Tab stop that does nothing is a dead stop in a keyboard user's path.
+Desc Progress(State<float>* fraction);
+
+// Exclusive choice. A stack of checkboxes that agree to be exclusive rather than a new widget --
+// exclusivity is the only thing it adds.
+Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+                std::function<void(int)> changed = nullptr, bool horizontal = false);
 Desc VStack(std::vector<Desc> children, float gap_units = 0.5f);
 Desc HStack(std::vector<Desc> children, float gap_units = 0.5f);
 

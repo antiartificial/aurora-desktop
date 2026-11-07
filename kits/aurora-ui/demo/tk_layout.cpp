@@ -712,6 +712,83 @@ int main() {
         eq("and carries both", out.paths.size() == 2);
     }
 
+    // ---- the small controls ---------------------------------------------------------------------
+    {
+        State<bool> on(false);
+        int changes = 0;
+        Desc cb = Checkbox("Show hidden files", &on, [&](bool) { changes++; });
+        lay(cb, e, Rect{0, 0, 300, 40});
+
+        // A click toggles. Press-then-release, because a press alone must not commit: dragging
+        // off a checkbox you did not mean to hit is how people cancel.
+        cb->OnPressAt(10, 20, 1);
+        cb->OnRelease(true);
+        eq("a click turns it on", on.get() && changes == 1);
+        cb->OnPressAt(10, 20, 1);
+        cb->OnRelease(false);
+        eq("releasing outside does not toggle", on.get() && changes == 1);
+
+        // Space toggles; Enter does NOT, because Enter means "accept the dialog" and a checkbox
+        // that ate it would make a form unsubmittable from the keyboard.
+        au_key space{}; space.pressed = 1; space.utf8[0] = ' ';
+        eq("space is handled", cb->OnKey(space));
+        eq("and toggles", !on.get());
+        au_key enter{}; enter.pressed = 1; enter.raw_char = 0x0a;
+        eq("enter is left alone", !cb->OnKey(enter));
+        eq("and changed nothing", !on.get());
+        eq("a checkbox takes focus", cb->CanFocus());
+    }
+
+    {
+        State<float> v(0.5f);
+        int changes = 0;
+        Desc sl = Slider(&v, 0.0f, 1.0f, [&](float) { changes++; });
+        lay(sl, e, Rect{0, 0, 200, 40});
+        sl->Draw(nullptr, e);
+
+        // Dragging past either end clamps rather than running off.
+        sl->OnPressAt(-500, 20, 1);
+        near("dragging left of the track clamps to the low end", v.get(), 0.0f);
+        sl->OnDragTo(5000, 20);
+        near("and right of it to the high end", v.get(), 1.0f);
+
+        // Arrows move a twentieth of the range: a 0-to-1 slider crossed in 20 presses, not 100.
+        au_key left{}; left.pressed = 1; left.raw_char = 0x1c;
+        sl->OnKey(left);
+        near("left steps down a twentieth", v.get(), 0.95f);
+        au_key home{}; home.pressed = 1; home.raw_char = 0x01;
+        sl->OnKey(home);
+        near("home goes to the low end", v.get(), 0.0f);
+        sl->OnKey(left);
+        near("and stops there", v.get(), 0.0f);
+        eq("the app heard every real change", changes > 0);
+    }
+
+    {
+        // A progress bar reports; it is not a control. A Tab stop that does nothing is a dead
+        // stop in a keyboard user's path, and a click on it should fall through.
+        State<float> p(0.3f);
+        Desc pr = Progress(&p);
+        lay(pr, e, Rect{0, 0, 200, 20});
+        eq("progress takes no focus", !pr->CanFocus());
+        eq("and no clicks", pr->HitTest(10, 10) == nullptr);
+    }
+
+    {
+        // A radio group is exclusive: choosing one is choosing it, not adding it.
+        State<int> pick(0);
+        int last = -1;
+        Desc rg = RadioGroup({"Name", "Size", "Date"}, &pick, [&](int i) { last = i; });
+        lay(rg, e, Rect{0, 0, 300, 200});
+        std::vector<Node*> kids;
+        rg->Children(&kids);
+        eq("one option per label", kids.size() == 3);
+
+        kids[2]->OnPressAt(5, kids[2]->frame.y + 2, 1);
+        kids[2]->OnRelease(true);
+        eq("choosing the third selects it", pick.get() == 2 && last == 2);
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

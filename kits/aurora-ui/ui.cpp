@@ -259,6 +259,214 @@ public:
     bool Wants(float* w) override { *w = 1; return true; }
 };
 
+// ---- Checkbox and Switch ----------------------------------------------------------------------
+
+// One class for both, because they are the same control with two drawings and the difference is
+// a visual convention, not a behaviour: a checkbox reads as "this option is on", a switch as
+// "this thing is running". Splitting them into two classes would duplicate the focus handling,
+// the keyboard and the state binding to express a choice of shape.
+class ToggleNode : public Node {
+public:
+    ToggleNode(std::string label, State<bool>* on, bool as_switch, std::function<void(bool)> f)
+        : l_(std::move(label)), on_(on), sw_(as_switch), f_(std::move(f)) {
+        if (on_) on_->attach(this);
+    }
+
+    // The same, but the node OWNS the cell. RadioGroup needs one per option and has nowhere to
+    // keep them; a raw `new` there would leak one cell per option per tree.
+    ToggleNode(std::string label, std::unique_ptr<State<bool>> own, bool as_switch,
+               std::function<void(bool)> f)
+        : l_(std::move(label)), owned_(std::move(own)), sw_(as_switch), f_(std::move(f)) {
+        on_ = owned_.get();
+        if (on_) on_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints) override {
+        box_ = text_h(e, st_) + e.unit * 0.25f;
+        const float w = l_.empty() ? 0 : au_text_width(e.face(st_), e.sized(st_), l_.c_str(), -1);
+        const float lead = sw_ ? box_ * 1.9f : box_;
+        return Size{lead + (l_.empty() ? 0 : e.unit * 0.75f + w), std::max(box_, text_h(e, st_)) + e.unit * 0.5f};
+    }
+    void SetStyle(const TextStyle& st) override { st_ = st; }
+
+    void Draw(au_surface* s, const Env& e) override {
+        const bool on = on_ && on_->get();
+        const float cy = frame.y + frame.h * 0.5f;
+        if (sw_) {
+            // A track with a knob that slides. The knob is drawn at the end it is AT, with no
+            // animation: a switch that animated while the window was not would be the one
+            // moving thing on a still page.
+            const float w = box_ * 1.9f, h = box_ * 0.9f;
+            const au_rect track{frame.x, cy - h / 2, frame.x + w - 1, cy + h / 2 - 1};
+            au_fill_round_rect(s, track, h / 2, h / 2, on ? e.accent : e.surface_hi);
+            const float r = h * 0.40f;
+            const float kx = on ? frame.x + w - h / 2 : frame.x + h / 2;
+            au_fill_ellipse(s, au_rect{kx - r, cy - r, kx + r, cy + r}, on ? e.surface : e.fg);
+        } else {
+            const au_rect box{frame.x, cy - box_ / 2, frame.x + box_ - 1, cy + box_ / 2 - 1};
+            au_fill_round_rect(s, box, 4, 4, on ? e.accent : e.surface);
+            au_stroke_rect(s, box, on ? e.accent : e.surface_hi, 1);
+            if (on) {
+                // A drawn tick rather than a glyph: a check mark is a font's opinion and plenty
+                // of faces do not have one.
+                const float x0 = frame.x + box_ * 0.24f, x1 = frame.x + box_ * 0.44f,
+                            x2 = frame.x + box_ * 0.76f;
+                au_stroke_line(s, x0, cy, x1, cy + box_ * 0.20f, e.surface, 2);
+                au_stroke_line(s, x1, cy + box_ * 0.20f, x2, cy - box_ * 0.22f, e.surface, 2);
+            }
+        }
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        if (!l_.empty()) {
+            const float lead = sw_ ? box_ * 1.9f : box_;
+            au_text_draw(s, e.face(st_), e.sized(st_), l_.c_str(), -1,
+                         frame.x + lead + e.unit * 0.75f, baseline_in(e, frame, st_), e.ink(st_));
+        }
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+    void OnRelease(bool inside) override {
+        if (inside) flip();
+    }
+    bool OnKey(const au_key& k) override {
+        // Space only. Enter is "accept the dialog" in every toolkit, and a checkbox that
+        // swallowed it would make a form impossible to submit from the keyboard.
+        if (!k.pressed || k.utf8[0] != ' ') return false;
+        flip();
+        return true;
+    }
+
+private:
+    void flip() {
+        if (!on_) return;
+        on_->set(!on_->get());
+        if (f_) f_(on_->get());
+    }
+
+    std::string l_;
+    std::unique_ptr<State<bool>> owned_;   // set only by the owning constructor
+    State<bool>* on_ = nullptr;
+    bool sw_;
+    std::function<void(bool)> f_;
+    TextStyle st_;
+    float box_ = 14;
+    bool focused_ = false;
+};
+
+// ---- Slider -----------------------------------------------------------------------------------
+
+class SliderNode : public Node {
+public:
+    SliderNode(State<float>* v, float lo, float hi, std::function<void(float)> f)
+        : v_(v), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
+        if (v_) v_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        knob_ = text_h(e, st_) * 0.6f;
+        // As wide as it is given. A slider's width IS its resolution: a narrow one cannot
+        // express the values it claims to, so it takes the room rather than picking a number.
+        return Size{c.max_w >= 0 ? c.max_w : 160, knob_ * 2 + e.unit * 0.5f};
+    }
+    void SetStyle(const TextStyle& st) override { st_ = st; }
+
+    void Draw(au_surface* s, const Env& e) override {
+        const float cy = frame.y + frame.h * 0.5f;
+        const float x0 = frame.x + knob_, x1 = frame.x + frame.w - knob_;
+        au_fill_round_rect(s, au_rect{x0, cy - 2, x1, cy + 1}, 2, 2, e.surface_hi);
+        const float t = frac();
+        const float kx = x0 + (x1 - x0) * t;
+        au_fill_round_rect(s, au_rect{x0, cy - 2, kx, cy + 1}, 2, 2, e.accent);
+        au_fill_ellipse(s, au_rect{kx - knob_, cy - knob_, kx + knob_, cy + knob_},
+                        down_ || focused_ ? e.accent : e.fg);
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+
+    void OnPressAt(float x, float, int) override {
+        down_ = true;
+        set_from(x);
+    }
+    void OnDragTo(float x, float) override {
+        if (down_) set_from(x);
+    }
+    void OnRelease(bool) override { down_ = false; }
+
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed || !v_) return false;
+        // A twentieth of the range per press, a fifth on Page. Arrow keys that moved by one
+        // unit would make a 0-to-1 slider take a hundred presses to cross.
+        const float step = (hi_ - lo_) / 20.0f;
+        switch (k.raw_char) {
+            case 0x1c: case 0x1f: put(v_->get() - step); return true;   // left, down
+            case 0x1d: case 0x1e: put(v_->get() + step); return true;   // right, up
+            case 0x0b: put(v_->get() + (hi_ - lo_) / 5.0f); return true;
+            case 0x0c: put(v_->get() - (hi_ - lo_) / 5.0f); return true;
+            case 0x01: put(lo_); return true;
+            case 0x04: put(hi_); return true;
+            default: return false;
+        }
+    }
+
+private:
+    float frac() const {
+        if (!v_) return 0;
+        return std::max(0.0f, std::min(1.0f, (v_->get() - lo_) / (hi_ - lo_)));
+    }
+    void set_from(float x) {
+        const float x0 = frame.x + knob_, x1 = frame.x + frame.w - knob_;
+        const float t = x1 > x0 ? (x - x0) / (x1 - x0) : 0.0f;
+        put(lo_ + (hi_ - lo_) * std::max(0.0f, std::min(1.0f, t)));
+    }
+    void put(float nv) {
+        if (!v_) return;
+        nv = std::max(lo_, std::min(hi_, nv));
+        if (nv == v_->get()) return;
+        v_->set(nv);
+        if (f_) f_(nv);
+    }
+
+    State<float>* v_;
+    float lo_, hi_;
+    std::function<void(float)> f_;
+    TextStyle st_;
+    float knob_ = 7;
+    bool down_ = false, focused_ = false;
+};
+
+// ---- Progress ---------------------------------------------------------------------------------
+
+// Deliberately not focusable and not clickable. A progress bar reports; it is not a control, and
+// making it a Tab stop would put a dead stop in a keyboard user's path.
+class ProgressNode : public Node {
+public:
+    explicit ProgressNode(State<float>* v) : v_(v) {
+        if (v_) v_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        return Size{c.max_w >= 0 ? c.max_w : 160, e.unit * 0.75f};
+    }
+    void Draw(au_surface* s, const Env& e) override {
+        const float r = frame.h * 0.5f;
+        au_fill_round_rect(s, frame.box(), r, r, e.surface_hi);
+        const float t = v_ ? std::max(0.0f, std::min(1.0f, v_->get())) : 0.0f;
+        if (t <= 0.0f) return;
+        // At least as wide as it is tall, so a value just above zero is a dot rather than a
+        // sliver too thin to see: "barely started" and "not started" must not look the same.
+        const float w = std::max(frame.h, frame.w * t);
+        au_fill_round_rect(s, au_rect{frame.x, frame.y, frame.x + w - 1, frame.y + frame.h - 1}, r, r, e.accent);
+    }
+    Node* HitTest(float, float) override { return nullptr; }
+
+private:
+    State<float>* v_;
+};
+
 // ---- Stacks -----------------------------------------------------------------------------------
 
 class StackNode : public Node {
@@ -2554,6 +2762,37 @@ Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));
 }
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
+
+Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> f) {
+    return std::make_shared<ToggleNode>(std::move(label), on, false, std::move(f));
+}
+
+Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> f) {
+    return std::make_shared<ToggleNode>(std::move(label), on, true, std::move(f));
+}
+
+Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> f) {
+    return std::make_shared<SliderNode>(value, lo, hi, std::move(f));
+}
+
+Desc Progress(State<float>* fraction) { return std::make_shared<ProgressNode>(fraction); }
+
+Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+                std::function<void(int)> f, bool horizontal) {
+    // A radio group is a STACK of toggles that agree to be exclusive, not a new widget. The
+    // exclusivity is the only thing it adds, and it is one line per option.
+    std::vector<Desc> items;
+    for (size_t i = 0; i < labels.size(); i++) {
+        auto cell = std::make_unique<State<bool>>(chosen && chosen->get() == (int)i);
+        items.push_back(std::make_shared<ToggleNode>(labels[i], std::move(cell), false,
+            [chosen, f, i](bool on) {
+                if (!on || !chosen) return;
+                chosen->set((int)i);
+                if (f) f((int)i);
+            }));
+    }
+    return horizontal ? HStack(std::move(items), 1.0f) : VStack(std::move(items), 0.35f);
+}
 Desc VStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), true, gap);
 }
