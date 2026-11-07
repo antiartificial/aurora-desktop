@@ -169,7 +169,16 @@ waitfor "reload" 10 reloaded "$R"; sleep 0.5
 open_menu; menu_click 1; sleep 0.8   # "Settings..."
 for k in Down Right Right Right; do inj "key $k" >/dev/null; sleep 0.15; done   # Display page, row Scale: Auto -> 1 -> 1.25 -> 1.5
 waitfor "scale written" 10 theme_has 'scale = 1.5' && ok "settings panel (keyboard): output scale = 1.5 written" || bad "scale not written"
-inj "key Tab" >/dev/null; inj "key Tab" >/dev/null; sleep 0.2   # Dock & Text page
+# Tab until the Dock & Text page is actually up, rather than a fixed two Tabs. The count was
+# two and became wrong the moment a page was inserted before it (Network, 2026-11-07), which
+# has nothing to do with what this step is checking. The settings layout line names the rows
+# it drew, so "Dock" appearing in it is the page arriving.
+for _ in 1 2 3 4 5 6 7 8; do
+  grep -q 'settings: layout.*Dock_edge' "$CLOG" && break
+  inj "key Tab" >/dev/null; sleep 0.25
+done
+grep -q 'settings: layout.*Dock_edge' "$CLOG" || bad "Tab never reached the Dock & Text page"
+sleep 0.2
 for k in Down Down Left; do inj "key $k" >/dev/null; sleep 0.15; done   # row 'Dock': Left flips it off
 waitfor "dock hidden" 10 theme_has 'enabled = false' && ok "settings panel: dock hidden (enabled = false) written" || bad "dock visibility not written"
 for k in Down Down Down Right Right Right; do inj "key $k" >/dev/null; sleep 0.15; done   # Font size 14 -> 17
@@ -230,10 +239,17 @@ eq "$(jf "$AFTER" 'j["restored"]')" 0 "no placement applied yet"
 
 step "the layout is a placement memory: the same apps, restarted on their own, land where they were"
 CLIENTS=()
+# One at a time, each mapped before the next is started. The claim below is about the cascade
+# ORDER -- gamma takes the THIRD slot because alpha and beta took the first two -- and that is
+# only true if they map in that order. Started together, under load, gamma could map first and
+# land in slot one, which failed as "a window the layout never saw is NOT moved" and named
+# nothing about the race that caused it.
 spawn_client demo.alpha "Alpha" 200x150 220,60,60
+waitfor "alpha mapped" 10 nwin_is 1 || bad "alpha did not map"
 spawn_client demo.beta "Beta" 180x120 60,60,220
+waitfor "beta mapped" 10 nwin_is 2 || bad "beta did not map"
 spawn_client demo.gamma "Gamma" 100x100 60,220,60   # never seen before: no memory, so the default spot
-waitfor "three windows" 10 nwin_is 3 && ok "three client windows mapped" || bad "windows did not map"
+waitfor "three windows" 10 nwin_is 3 && ok "three client windows mapped, in order" || bad "windows did not map"
 sleep 1; frames 3
 RESTORED=$(inj state); WA=$(wins_of "$RESTORED"); echo "   windows after: $WA"
 has "$WA" "demo.alpha:Alpha@210,90" "alpha is back at 210,90"

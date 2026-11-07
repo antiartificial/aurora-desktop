@@ -226,7 +226,15 @@ check "--window and --root narrow it: the subtree under 'name' is smaller than t
 
 step "11. the server still served every opcode it was sent (the existing property), with the tree being kept"
 box menu0; FMX=$(( (L+R)/2 )); FMY=$(( (T+B)/2 )); BARBOT=$B
-ti "pointer $((FMX+14)) $FMY" press "sleep 0.5"; ti "pointer $((FMX+14)) $((BARBOT+60))" "sleep 0.2" "pointer $((FMX+14)) $((BARBOT+62))" "sleep 0.3" release
+# File is "Reset all", "Show alert", a separator, then "Quit": the fourth row down. The y below
+# aims at the middle of it rather than its edge, and the dwell after the press is long enough
+# for the dropdown to exist before the pointer moves into it. Under load it did not: the move
+# landed where no menu had opened yet, nothing was highlighted, and the release selected
+# nothing. The step then failed as "File > Quit did not quit the app", which named the symptom
+# and not the cause.
+QY=$((BARBOT+58))
+ti "pointer $((FMX+14)) $FMY" press "sleep 1.0"
+ti "pointer $((FMX+14)) $((BARBOT+20))" "sleep 0.3" "pointer $((FMX+14)) $QY" "sleep 0.5" "pointer $((FMX+14)) $((QY+1))" "sleep 0.4" release
 for _ in $(seq 60); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$APP_PID" 2>/dev/null; then bad "File > Quit did not quit the app"; kill "$APP_PID" 2>/dev/null; else ok "File > Quit ended the process"; fi
 wait "$APP_PID" 2>/dev/null

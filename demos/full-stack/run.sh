@@ -10,6 +10,12 @@ PNG="python3 -I $HERE/pngtool.py"; STEPS=0; UP=0
 CGDIR=/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/aurora-domains
 cgnames() { ls "$CGDIR" 2>/dev/null | grep '^app-' | sort; }
 CG0=$(cgnames)
+# The kits shared-memory namespaces that already existed. The check at the end compares
+# against this rather than against "any namespace named up*", which is what it used to do: a
+# file left behind by a previous aurora-up -- this machine has one from the night before --
+# failed a demo that had cleaned up after itself perfectly.
+shmnames() { ls /dev/shm 2>/dev/null | grep "aurora-kits-$(id -u)-up" | sort; }
+SHM0=$(shmnames)
 
 say()  { printf '%s\n' "$*"; }
 step() { STEPS=$((STEPS+1)); printf '\n== Step %s: %s\n   proving: %s\n' "$STEPS" "$1" "$2"; }
@@ -149,6 +155,6 @@ LEFT=$(pgrep -af "$RUN" | grep -v pgrep || true)
 [ -z "$LEFT" ] && ok "no process mentions $RUN" || fail "stray processes: $LEFT"
 need "run dir (sockets, domains, logs) removed" test ! -e "$RUN/bus.sock" -a ! -e "$RUN/domains"
 NEW=$(comm -13 <(echo "$CG0") <(cgnames)); [ -z "$NEW" ] && ok "no new aurora-domains cgroups" || fail "stray cgroups: $NEW"
-need "no kits shared-memory left for this stack" test -z "$(ls /dev/shm | grep "aurora-kits-$(id -u)-up")"
+need "no kits shared-memory left for this stack" test -z "$(comm -13 <(echo "$SHM0") <(shmnames))"
 say; say "captures in $HERE:"; ls -1 "$HERE"/*.png | sed 's/^/   /'
 say; say "FULL-STACK WALKTHROUGH PASSED ($STEPS steps)"

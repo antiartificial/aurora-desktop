@@ -139,7 +139,15 @@ chmod +x "$FX/probe/probe.sh" "$FX/crash/crash.sh"
 step "bring the stack up, and take a baseline" "nothing launched: no window, no indicator, and a frame and a capture to compare against"
 AURORA_APPS_EXTRA=$FX "$ROOT/aurora-up" --run "$RUN" --no-build --no-haiku --no-windows >"$RUN.up.log" 2>&1 & UPPID=$!; UP=1
 waitf "aurora-up ready" test -f "$RUN/ready"
-sed -i 's/^mode = "shader"/mode = "solid"/; s/^clock = true/clock = false/' "$RUN/theme/aurora-glass.toml"; sleep 1
+# The Deskbar off as well as the shader and the clock. This demo asserts "the window is all
+# there is": that the ONLY pixels a client capture gains are the window's own. The Deskbar is
+# in client captures by design (decision 0021) and it legitimately changes when a window
+# appears, from "No windows open" to a row for the app, which is ~15000 pixels outside the
+# window's rectangle. The demo predates the Deskbar and had been failing on it ever since.
+# Scoped to the [deskbar] section: five sections carry `enabled = true`, and turning off the
+# decorations this demo is about would be a quieter kind of wrong.
+sed -i 's/^mode = "shader"/mode = "solid"/; s/^clock = true/clock = false/' "$RUN/theme/aurora-glass.toml"
+sed -i '/^\[deskbar\]/,/^\[/ s/^enabled = true/enabled = false/' "$RUN/theme/aurora-glass.toml"; sleep 1
 source "$RUN/env"
 waitf "the indicator's bus thread" grep -q 'indicator: bus snapshot held=0 up=true' "$RUN/compositor.log"
 waitf "the dock to learn the apps" grep -q 'dock: registry.apps@v1 -> Ok' "$RUN/compositor.log"
@@ -346,6 +354,7 @@ step "the escape hatch" "--unsandboxed-windows runs the same dock launch as a ho
 "$ROOT/aurora-up" --run "$RUN2" --no-build --no-haiku --no-windows --unsandboxed-windows >"$RUN2.up.log" 2>&1 & UPPID=$!; UP=1
 waitf "the second stack" test -f "$RUN2/ready"
 sed -i 's/^mode = "shader"/mode = "solid"/; s/^clock = true/clock = false/' "$RUN2/theme/aurora-glass.toml"
+sed -i '/^\[deskbar\]/,/^\[/ s/^enabled = true/enabled = false/' "$RUN2/theme/aurora-glass.toml"
 source "$RUN2/env"
 grep -q 'WARNING: --unsandboxed-windows: windowed apps launch as HOST PROCESSES' "$RUN2/controllerd.log" && ok "controllerd said so at startup: $(grep -m1 'unsandboxed-windows' "$RUN2/controllerd.log" | sed 's/.*WARNING: //' | cut -c1-110)..." || fail "no startup warning"
 HR=$(controller launch $APP) || fail "launch failed: $HR"
