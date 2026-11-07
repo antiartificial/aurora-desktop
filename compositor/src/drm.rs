@@ -531,6 +531,80 @@ fn add_output(gpu: &mut Gpu, state: &mut Aurora, info: &connector::Info, crtc: c
     Ok(())
 }
 
+/// `--probe-drm`: read the connectors and say what would be driven, WITHOUT taking DRM master.
+///
+/// Enumerating connectors needs only an open device; becoming master needs a seat. Those are
+/// different permissions, and separating them means the connector half of the DRM path can be
+/// checked from inside a desktop session -- which is the only place anyone has been able to run
+/// this compositor so far.
+///
+/// It reports what `add_output` would decide: the preferred mode, the scale from the EDID's
+/// millimetre size, and where each display would be placed. It does not modeset, allocate a
+/// buffer or touch the cursor; those still need the VT.
+pub fn probe(path: Option<&std::path::Path>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::fd::{AsFd, BorrowedFd};
+
+    struct Card(std::fs::File);
+    impl AsFd for Card {
+        fn as_fd(&self) -> BorrowedFd<'_> { self.0.as_fd() }
+    }
+    use smithay::reexports::drm as libdrm;
+    impl libdrm::Device for Card {}
+    impl libdrm::control::Device for Card {}
+
+    let dev = match path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut found = None;
+            for e in std::fs::read_dir("/dev/dri")?.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with("card") {
+                    found = Some(e.path());
+                    break;
+                }
+            }
+            found.ok_or("no /dev/dri/card* found")?
+        }
+    };
+    let f = std::fs::OpenOptions::new().read(true).write(true).open(&dev)
+        .map_err(|e| format!("cannot open {}: {e}", dev.display()))?;
+    let card = Card(f);
+    let res = libdrm::control::Device::resource_handles(&card)?;
+
+    println!("device: {}", dev.display());
+    let mut at_x: i32 = 0;
+    let mut driven = 0usize;
+    for h in res.connectors() {
+        let Ok(info) = libdrm::control::Device::get_connector(&card, *h, false) else { continue };
+        let name = connector_name(&info);
+        if info.state() != connector::State::Connected {
+            println!("  {name:<12} {:?}", info.state());
+            continue;
+        }
+        let modes = info.modes();
+        let Some(m) = modes.iter().find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED)).or_else(|| modes.first()) else {
+            println!("  {name:<12} connected, but reports no modes");
+            continue;
+        };
+        let (w, h2) = m.size();
+        let (mm_w, mm_h) = info.size().map_or((0, 0), |(a, b)| (a as i32, b as i32));
+        let scale = auto_scale(w as i32, mm_w).max(auto_scale(h2 as i32, mm_h));
+        if driven >= MAX_OUTPUTS {
+            println!("  {name:<12} connected {}x{} -- beyond the {MAX_OUTPUTS}-display cap, would be left dark", w, h2);
+            continue;
+        }
+        println!(
+            "  {name:<12} connected {}x{}@{}Hz  {}x{}mm  scale {scale}  would map at x={at_x}",
+            w, h2, m.vrefresh(), mm_w, mm_h
+        );
+        at_x += w as i32;
+        driven += 1;
+    }
+    println!("{driven} display(s) would be driven, {}px wide in total", at_x);
+    println!("(connectors only: no modeset, no master. --drm on a text VT does the rest.)");
+    Ok(())
+}
+
 /// Scale from pixel density. `mm == 0` (unknown, as on VMs) means 1.0. Bogus
 /// EDID sizes are common (projectors, TVs), hence the clamp.
 fn auto_scale(px: i32, mm: i32) -> f64 {

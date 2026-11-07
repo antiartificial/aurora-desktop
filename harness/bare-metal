@@ -120,6 +120,14 @@ if [ -n "$HOLDERS" ]; then
   note "A compositor is still running. Stop it, or use a VT it is not on."
 fi
 
+
+# The connectors, read WITHOUT taking master. This works from inside a desktop session, so it
+# is checked here rather than discovered on the VT: a machine whose displays are already wrong
+# at this stage has a problem that a text login will not fix.
+echo
+echo "connectors (read-only, no modeset):"
+"$COMP" --probe-drm 2>&1 | sed 's/^/  /'
+
 echo
 if [ "$fail" != 0 ]; then
   echo "Pre-flight found problems above. Fix those first; nothing was launched."

@@ -35,6 +35,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parse_args before anything opens a socket: the DRM checks below must be
     // able to fail without having started a wayland display.
     let args = parse_args();
+    // The probe reads connectors and exits. It takes no seat and opens no socket, which is the
+    // point: it can run from inside a desktop session, where --drm cannot.
+    if let Some(card) = &args.probe_drm {
+        if let Err(e) = drm::probe(card.as_deref()) {
+            fail(&format!("--probe-drm: {e}"));
+        }
+        return Ok(());
+    }
     if args.drm.is_some() && args.headless.is_some() {
         fail("--drm and --headless are mutually exclusive: --drm drives a real display and input devices, --headless has none");
     }
@@ -293,6 +301,8 @@ struct Args {
     theme: Option<std::path::PathBuf>,
     legacy_scene: bool,
     freeze_time: bool,
+    /// `--probe-drm[=CARD]`: read the connectors and exit, without taking DRM master.
+    probe_drm: Option<Option<std::path::PathBuf>>,
     /// Extra headless outputs beyond the first, from `--headless=WxH,WxH`.
     extra_outputs: Vec<(i32, i32)>,
     /// `--scale F`: the output scale for headless (winit reads the host's).
@@ -339,6 +349,7 @@ fn default_drop_socket() -> Option<std::path::PathBuf> {
 
 fn parse_args() -> Args {
     let mut args = Args {
+        probe_drm: None,
         extra_outputs: vec![],
         headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
@@ -377,6 +388,8 @@ fn parse_args() -> Args {
                 let secs: u64 = it.next().and_then(|v| v.parse().ok()).filter(|s| *s > 0).expect("--quit-after wants a number of seconds");
                 args.quit_after = Some(std::time::Duration::from_secs(secs));
             }
+            "--probe-drm" => args.probe_drm = Some(None),
+            s if s.starts_with("--probe-drm=") => args.probe_drm = Some(Some(s["--probe-drm=".len()..].into())),
             "--headless" => args.headless = Some((1280, 800)),
             // `--headless=WxH` or `WxH,WxH`: more than one size makes more than one output,
             // laid out left to right. This is how multi-monitor is exercised without two

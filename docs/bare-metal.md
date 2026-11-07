@@ -34,7 +34,29 @@ would have sent someone chasing a group they do not need.
 The log lands in `harness/bare-metal-out/drm.log` whether the run succeeds or not. That file is
 what turns "it did not work" into a bug list.
 
-## Status: written and compiled, not yet run on a display
+## Reading the connectors without a seat
+
+    aurora-compositor --probe-drm
+
+Enumerating connectors needs only an open `/dev/dri/card*`; becoming DRM **master** needs a
+seat. Those are different permissions, and separating them means the connector half of the DRM
+path can be checked from inside a desktop session — the only place this compositor has ever
+been able to run.
+
+On this machine, 2026-11-07:
+
+    device: /dev/dri/card1
+      HDMI-A-1     Disconnected
+      DP-1         connected 3840x2160@60Hz  700x400mm  scale 1.5  would map at x=0
+      DP-2         Disconnected
+      DP-3         Disconnected
+
+So connector enumeration, preferred-mode selection, the EDID millimetre-to-scale rule and the
+left-to-right placement are **no longer unverified**: they ran against real hardware and the
+scale is arithmetically right (3840 / (700/25.4) = 139 dpi, /96 = 1.45, to the nearest quarter
+1.5). What still needs the VT is the modeset itself, the buffer, the cursor and libinput.
+
+## Status: the connector path runs here; everything past the modeset is unrun
 
 The author could not take the DRM master on the development machine (a KDE
 session holds it), so everything below the "Verified" line is untested.
