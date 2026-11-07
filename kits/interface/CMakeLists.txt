@@ -160,3 +160,9 @@ endif()
 
 add_executable(aurora_ui_spike ../aurora-ui/demo/spike.cpp)
 target_link_libraries(aurora_ui_spike PRIVATE aurora_ui)
+
+add_library(aurora_ui_tk STATIC ../aurora-ui/ui.cpp)
+target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
+
+add_executable(aurora_files ../aurora-ui/demo/files.cpp)
+target_link_libraries(aurora_files PRIVATE aurora_ui_tk)

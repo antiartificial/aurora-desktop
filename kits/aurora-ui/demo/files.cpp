@@ -1,0 +1,231 @@
+// The file explorer's first light, on aurora::ui. Stage 1 of docs/aurora-ui.md's build order:
+// the window, the chrome and the NAMES appear in the first frame; everything else arrives.
+//
+// The measurement this is built around: readdir over 3,000-5,000 entries costs 0.9-1.8 ms, while
+// lstat on every entry costs 13-43 ms -- about thirty times as much. Today's demos/browser does
+// both synchronously before showing anything, so a large directory spends up to three frames on
+// data that is not needed to draw the first screen. So: readdir on the UI thread, lstat on a
+// worker, and only for the rows the list is actually looking at.
+//
+// FILES_DIR=path     where to start (default $HOME)
+// FILES_FRAMES=n     stop after n frames, for scripted runs
+// FILES_REPORT=1     print the first-frame timing and what the list drew
+
+#include "../ui.h"
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+using namespace aurora::ui;
+
+namespace {
+
+struct Entry {
+    std::string name;
+    bool dir = false;
+    // Filled by the worker. `stated` is the only cross-thread flag and is the reason Cell() can
+    // read without a lock: it is written after the fields it guards.
+    std::atomic<bool> stated{false};
+    off_t size = 0;
+    time_t mtime = 0;
+};
+
+std::string human(off_t n) {
+    const char* u[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = (double)n;
+    int i = 0;
+    while (v >= 1024 && i < 4) { v /= 1024; i++; }
+    char b[32];
+    snprintf(b, sizeof b, i == 0 ? "%.0f %s" : "%.1f %s", v, u[i]);
+    return b;
+}
+
+std::string when(time_t t) {
+    char b[32];
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+    return b;
+}
+
+class DirRows : public Rows {
+public:
+    // readdir only. No lstat: that is the worker's job, and it is why the first frame is cheap.
+    double Open(const std::string& path) {
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            generation_++;
+            e_.clear();
+        }
+        DIR* d = opendir(path.c_str());
+        if (!d) return 0;
+        std::vector<std::unique_ptr<Entry>> fresh;
+        while (struct dirent* de = readdir(d)) {
+            if (!strcmp(de->d_name, ".")) continue;
+            auto en = std::make_unique<Entry>();
+            en->name = de->d_name;
+            // d_type is free when the filesystem gives it; it is NOT a stat.
+            en->dir = de->d_type == DT_DIR;
+            fresh.push_back(std::move(en));
+        }
+        closedir(d);
+        std::sort(fresh.begin(), fresh.end(),
+                  [](const std::unique_ptr<Entry>& a, const std::unique_ptr<Entry>& b) {
+                      if (a->dir != b->dir) return a->dir > b->dir;
+                      return strcasecmp(a->name.c_str(), b->name.c_str()) < 0;
+                  });
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            e_ = std::move(fresh);
+            path_ = path;
+        }
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+            .count();
+    }
+
+    int Count() const override {
+        std::lock_guard<std::mutex> g(mu_);
+        return (int)e_.size();
+    }
+    int Columns() const override { return 3; }
+    float ColumnWidth(int c) const override { return c == 0 ? 320 : (c == 1 ? 110 : 160); }
+    std::string ColumnTitle(int c) const override {
+        return c == 0 ? "Name" : (c == 1 ? "Size" : "Modified");
+    }
+
+    CellValue Cell(int row, int col) const override {
+        std::lock_guard<std::mutex> g(mu_);
+        if (row < 0 || row >= (int)e_.size()) return CellValue{};
+        const Entry& en = *e_[row];
+        if (col == 0) {
+            CellValue v;
+            v.state = CellState::Ready;        // the name came from readdir: always known
+            v.text = en.dir ? en.name + "/" : en.name;
+            return v;
+        }
+        if (!en.stated.load(std::memory_order_acquire)) return CellValue{};   // Pending
+        CellValue v;
+        v.state = CellState::Ready;
+        v.text = col == 1 ? (en.dir ? std::string("--") : human(en.size)) : when(en.mtime);
+        return v;
+    }
+
+    // The list tells us what it is looking at. A worker that finds the range has moved on simply
+    // stops: that is how navigating away cancels, with no cancellation token to forget to check.
+    void Want(int first, int last) override {
+        std::lock_guard<std::mutex> g(mu_);
+        want_first_ = first;
+        want_last_ = last;
+    }
+
+    void StartWorker() {
+        worker_ = std::thread([this] {
+            while (!stop_.load()) {
+                int f, l, gen;
+                std::string path;
+                {
+                    std::lock_guard<std::mutex> g(mu_);
+                    f = want_first_; l = want_last_; gen = generation_; path = path_;
+                }
+                bool did = false;
+                for (int i = f; i <= l; i++) {
+                    std::string name;
+                    {
+                        std::lock_guard<std::mutex> g(mu_);
+                        if (gen != generation_) break;          // navigated away: drop the work
+                        if (i < 0 || i >= (int)e_.size()) continue;
+                        if (e_[i]->stated.load(std::memory_order_relaxed)) continue;
+                        name = e_[i]->name;
+                    }
+                    struct stat st;
+                    const std::string full = path + "/" + name;
+                    const bool okst = lstat(full.c_str(), &st) == 0;
+                    {
+                        std::lock_guard<std::mutex> g(mu_);
+                        if (gen != generation_ || i >= (int)e_.size()) break;
+                        if (okst) { e_[i]->size = st.st_size; e_[i]->mtime = st.st_mtime; }
+                        e_[i]->stated.store(true, std::memory_order_release);
+                        stated_++;
+                    }
+                    did = true;
+                }
+                if (!did) std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            }
+        });
+    }
+    void Stop() {
+        stop_ = true;
+        if (worker_.joinable()) worker_.join();
+    }
+    int stated() const { std::lock_guard<std::mutex> g(mu_); return stated_; }
+
+private:
+    mutable std::mutex mu_;
+    std::vector<std::unique_ptr<Entry>> e_;
+    std::string path_;
+    int want_first_ = 0, want_last_ = 0, generation_ = 0, stated_ = 0;
+    std::atomic<bool> stop_{false};
+    std::thread worker_;
+};
+
+}  // namespace
+
+int main() {
+    const char* d = getenv("FILES_DIR");
+    std::string dir = d && *d ? d : (getenv("HOME") ? getenv("HOME") : "/");
+
+    DirRows rows;
+    const double readdir_ms = rows.Open(dir);
+
+    Window w("Files", 640, 420);
+    if (!w.ok()) {
+        fprintf(stderr, "files: no Wayland compositor reachable\n");
+        return 2;
+    }
+
+    int selected = -1;
+    State<std::string> status(dir + "  -  " + std::to_string(rows.Count()) + " items");
+    status.bind(&w);
+
+    w.SetRoot(VStack({
+        padding(HStack({
+                    Bold("Files"),
+                    Label(&status),
+                    Spacer(),
+                    Button("Home", [] {}),
+                }),
+                0.75f),
+        weight(ListView(&rows, &selected), 1),
+    }, 0));
+
+    rows.StartWorker();
+
+    const char* fr = getenv("FILES_FRAMES");
+    w.Run(fr ? atoi(fr) : 0);
+    rows.Stop();
+
+    if (getenv("FILES_REPORT")) {
+        const Window::Timing t = w.timing();
+        printf("FILES dir=%s entries=%d readdir_ms=%.2f\n", dir.c_str(), rows.Count(), readdir_ms);
+        printf("FILES frames=%zu draw_ms p50=%.3f p95=%.3f max=%.3f over_8ms=%zu\n",
+               t.frames, t.p50, t.p95, t.max, t.over_8ms);
+        printf("FILES stated=%d of %d (lstat is demand-driven: only what the list looked at)\n",
+               rows.stated(), rows.Count());
+        fflush(stdout);
+    }
+    return 0;
+}
