@@ -182,6 +182,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
 
+    // One frame, written once, on whatever backend is running. --test-input exists only with
+    // --headless, so without this a --drm run can only be reported in words.
+    if let Some((path, secs)) = args.dump_frame.clone() {
+        eprintln!("aurora-compositor: --dump-frame: writing {} after {secs}s", path.display());
+        event_loop.handle().insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(std::time::Duration::from_secs(secs)),
+            move |_, _, state: &mut Aurora| {
+                tracing::info!("--dump-frame: asking for a frame at {}", path.display());
+                state.indicator.dump = Some(path.clone());
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        )?;
+    }
+
     // Set WAYLAND_DISPLAY to our socket name, so child processes connect to Aurora rather
     // than the host compositor
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
@@ -291,6 +305,10 @@ struct Args {
     /// exercising the clean shutdown path, which otherwise only a window close
     /// can reach.
     quit_after: Option<std::time::Duration>,
+    /// `--dump-frame PATH[,SECONDS]`: write the compositor's own frame once, SECONDS after
+    /// start. Works on every backend, which is the point: on DRM there is no --test-input and
+    /// so no other way to get a picture of what a real display was actually showing.
+    dump_frame: Option<(std::path::PathBuf, u64)>,
     command: Option<String>,
     trusted_socket: Option<std::path::PathBuf>,
     trusted_uids: Option<Vec<u32>>,
@@ -351,7 +369,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         probe_drm: None,
         extra_outputs: vec![],
-        headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
+        headless: None, drm: None, quit_after: None, dump_frame: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
     };
@@ -384,6 +402,14 @@ fn parse_args() -> Args {
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),
             "--drm" => args.drm = Some(None),
             s if s.starts_with("--drm=") => args.drm = Some(Some(s["--drm=".len()..].into())),
+            "--dump-frame" => {
+                let v = it.next().unwrap_or_default();
+                let (p, secs) = match v.split_once(',') {
+                    Some((p, s)) => (p.to_string(), s.parse::<u64>().unwrap_or(5)),
+                    None => (v, 5),
+                };
+                args.dump_frame = Some((std::path::PathBuf::from(p), secs));
+            }
             "--quit-after" => {
                 let secs: u64 = it.next().and_then(|v| v.parse().ok()).filter(|s| *s > 0).expect("--quit-after wants a number of seconds");
                 args.quit_after = Some(std::time::Duration::from_secs(secs));

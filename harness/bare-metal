@@ -19,6 +19,16 @@ OUT="$ROOT/harness/bare-metal-out"
 COMP="$ROOT/compositor/target/release/aurora-compositor"
 mkdir -p "$OUT"
 LOG="$OUT/drm.log"
+SHOT="$OUT/frame.png"
+SYS="$OUT/system.txt"
+
+# First run holds the display for a fixed time and then gives it back by itself. A first attempt
+# that can only be ended by a key combination is a first attempt you might not be able to end:
+# if the modeset half-works, the screen is wrong and the keyboard may be going nowhere.
+#   harness/bare-metal          safe: 25 seconds, a frame captured, then it quits
+#   harness/bare-metal --stay   no timeout, for once it is known to work
+HOLD=25
+[ "${1:-}" = "--stay" ] && HOLD=0
 
 say()  { printf '  %-28s %s\n' "$1" "$2"; }
 fail=0
@@ -121,6 +131,31 @@ if [ -n "$HOLDERS" ]; then
 fi
 
 
+# The DRM driver, and for NVIDIA whether kernel modesetting is actually on.
+#
+# This matters more than anything else here on an NVIDIA machine: without
+# nvidia_drm.modeset=1 there is no atomic KMS and --drm cannot set a mode at all, which from a
+# VT looks exactly like a black screen and costs the whole trip. The parameter itself is
+# root-only (-r-------- root), so it cannot simply be read. A running Wayland compositor is the
+# proof that does not need root: one cannot exist on NVIDIA without KMS.
+DRV=$(for d in /sys/class/drm/card*/device/driver; do [ -e "$d" ] && basename "$(readlink -f "$d")"; done | sort -u | tr '\n' ' ')
+say "drm driver" "${DRV:-unknown}"
+case "$DRV" in
+  *nvidia*)
+    WLC=$(pgrep -a "kwin_wayland|gnome-shell|sway|wayfire|weston" 2>/dev/null | head -1 | cut -c1-48)
+    if [ -n "$WLC" ]; then
+      say "nvidia modeset" "on (a Wayland compositor is driving this display)"
+    elif [ -r /sys/module/nvidia_drm/parameters/modeset ] && [ "$(cat /sys/module/nvidia_drm/parameters/modeset)" = Y ]; then
+      say "nvidia modeset" "on"
+    else
+      say "nvidia modeset" "UNPROVEN"
+      note "On NVIDIA, --drm needs nvidia_drm.modeset=1 or there is no atomic KMS and the screen stays black.
+      Nothing here could prove it is on: the parameter is root-only and no Wayland compositor is
+      running to prove it by existing. Check with:  sudo cat /sys/module/nvidia_drm/parameters/modeset"
+    fi
+    ;;
+esac
+
 # The connectors, read WITHOUT taking master. This works from inside a desktop session, so it
 # is checked here rather than discovered on the VT: a machine whose displays are already wrong
 # at this stage has a problem that a text login will not fix.
@@ -140,8 +175,13 @@ Pre-flight is clean. Launching --drm.
   What to expect: the screen switches to Aurora's desktop (background, dock, clock).
   Alt-Tab is Flip 3D. Ctrl-Alt-Backspace quits. Ctrl-Alt-F<n> switches VT.
 
-  If the screen goes black and stays black, wait ten seconds, then Ctrl-Alt-Backspace,
-  then Ctrl-Alt-F<n> back to your desktop. The log is kept either way.
+  ${HOLD:+This run gives the display back by itself after ${HOLD}s. You do not have to do
+  anything, and you do not need the keyboard to work for it to end.}
+
+  A picture of what the display was actually showing is written to
+    $SHOT
+  which is the only way to tell "it drew the desktop" from "it drew something" without
+  being in the room. Paste that back along with the log.
 
   Log: $LOG
 INFO
@@ -150,11 +190,30 @@ sleep 3
 # Try logind first and fall back to seatd. From inside a desktop session logind answers
 # "Function not implemented" and seatd answers "Permission denied"; which one a machine gives
 # says which manager is actually in play, and trying both costs a second.
-RUST_BACKTRACE=1 "$COMP" --drm >"$LOG" 2>&1
+# What the machine was, recorded before the run: a failure that needs a second trip to
+# diagnose is a failure that cost two trips.
+{
+  echo "date:    $(date -Is)"
+  echo "kernel:  $(uname -srm)"
+  echo "seat:    ${XDG_SEAT:-unset}  session: ${XDG_SESSION_ID:-unset}  type: ${XDG_SESSION_TYPE:-unset}"
+  echo "vt:      $(tty 2>/dev/null || echo unknown)"
+  echo "groups:  $(id -nG)"
+  echo "drm:"; for c in /sys/class/drm/card*-*; do
+    [ -e "$c/status" ] && echo "  $(basename "$c"): $(cat "$c/status" 2>/dev/null)"
+  done
+  echo "driver:  $(for d in /sys/class/drm/card*/device/driver; do [ -e "$d" ] && basename "$(readlink -f "$d")"; done | sort -u | tr '\n' ' ')"
+  echo "input:   $(ls /dev/input/event* 2>/dev/null | wc -l) event devices"
+} > "$SYS" 2>&1
+echo "  system notes: $SYS"
+
+ARGS=(--drm --dump-frame "$SHOT,8")
+[ "$HOLD" != 0 ] && ARGS+=(--quit-after "$HOLD")
+
+RUST_BACKTRACE=1 "$COMP" "${ARGS[@]}" >"$LOG" 2>&1
 rc=$?
 if [ "$rc" != 0 ] && grep -q "cannot open a seat session" "$LOG"; then
   echo "  logind did not give us a session; trying seatd."
-  RUST_BACKTRACE=1 LIBSEAT_BACKEND=seatd "$COMP" --drm >>"$LOG" 2>&1
+  RUST_BACKTRACE=1 LIBSEAT_BACKEND=seatd "$COMP" "${ARGS[@]}" >>"$LOG" 2>&1
   rc=$?
 fi
 
@@ -162,6 +221,12 @@ echo
 echo "aurora-compositor exited with $rc. The log is at:"
 echo "  $LOG"
 echo
-echo "Worth pasting back: the last 40 lines, plus anything mentioning connector, mode, libinput or cursor."
+if [ -s "$SHOT" ]; then
+  echo "A frame was captured: $SHOT"
+else
+  echo "NO frame was captured. Either it never got far enough to draw, or it exited before ${HOLD}s."
+fi
+echo
+echo "Worth pasting back: $SYS, $SHOT, and the last 40 lines below."
 echo "---- tail ----"
 tail -40 "$LOG"

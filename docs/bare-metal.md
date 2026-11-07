@@ -56,6 +56,29 @@ left-to-right placement are **no longer unverified**: they ran against real hard
 scale is arithmetically right (3840 / (700/25.4) = 139 dpi, /96 = 1.45, to the nearest quarter
 1.5). What still needs the VT is the modeset itself, the buffer, the cursor and libinput.
 
+## What the one trip now produces
+
+`harness/bare-metal` holds the display for 25 seconds and gives it back by itself, so a first
+attempt cannot strand you: a half-working modeset is a wrong screen and possibly a keyboard
+going nowhere, and an attempt that can only be ended by a key combination is one you might not
+be able to end. `--stay` removes the timeout once it is known to work.
+
+It leaves three files rather than one:
+
+- `harness/bare-metal-out/drm.log`
+- `harness/bare-metal-out/frame.png`, written 8 seconds in by `--dump-frame`, which works on
+  every backend. `--test-input` exists only with `--headless`, so without it a `--drm` run can
+  only be reported in words, and "it drew the desktop" cannot be told from "it drew something".
+- `harness/bare-metal-out/system.txt`: kernel, seat, VT, groups, connector states, DRM driver,
+  input device count. Recorded before the run, because a failure needing a second trip to
+  diagnose has cost two trips.
+
+**This machine is NVIDIA**, which is the one driver where `--drm` can fail for a reason that has
+nothing to do with Aurora: without `nvidia_drm.modeset=1` there is no atomic KMS and the screen
+stays black. The parameter is root-only so it cannot simply be read, but KWin Wayland is driving
+this display, and a Wayland compositor cannot exist on NVIDIA without KMS. So modesetting works
+here, and the pre-flight now checks this rather than leaving it to be discovered on the VT.
+
 ## Status: the connector path runs here; everything past the modeset is unrun
 
 The author could not take the DRM master on the development machine (a KDE
