@@ -41,6 +41,7 @@ fn keycode(name: &str) -> Option<Keycode> {
         "Tab" => 15,
         "alt" => 56,
         "shift" => 42,
+        "ctrl" => 29,		// KEY_LEFTCTRL: needed to test any Ctrl shortcut at all
         "Up" => 103,
         "Left" => 105,
         "Right" => 106,

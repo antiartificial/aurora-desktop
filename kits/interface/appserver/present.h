@@ -62,6 +62,18 @@ void au_wl_win_extra_buttons(au_wl_win*, int on);
  * focus and exclusive pointer routing. OFF by default: the app_server's BMenu popups work
  * without one, and a grab changes what a click outside a popup does. */
 void au_wl_popups_grab(au_wl*, int on);
+
+/* ---- clipboard ---------------------------------------------------------------------------
+ * Plain UTF-8 text only. A toolkit text field needs copy and paste and nothing more; richer
+ * flavours are the compositor's clipboard story (ext_data_control and decision 0019's mediated
+ * access), not a presenter's.
+ *
+ * au_clipboard_get_text blocks for up to ~200 ms waiting for the owner to write the pipe, and
+ * returns the byte count, or 0 when there is no text offer. It is synchronous because a paste is
+ * synchronous from the user's side; 200 ms is chosen to be under the threshold where a person
+ * would read the delay as the program hanging rather than as the paste taking a moment. */
+int au_clipboard_get_text(au_wl*, char* buf, int cap);
+int au_clipboard_set_text(au_wl*, const char* utf8);
 void au_wl_popup_grab(au_wl_win*);
 int au_wl_win_present_damage(au_wl_win*, const uint32_t* argb, int px_w, int px_h,
                              int buffer_scale, const int* rects, int nrects);

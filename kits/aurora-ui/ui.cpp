@@ -968,6 +968,8 @@ public:
         au_clip_reset(s);
     }
 
+    void Attached(Window* w) override { win_ = w; }
+
     bool CanFocus() const override { return !o_.read_only; }
     void OnFocus(bool g) override {
         focused_ = g;
@@ -1011,12 +1013,34 @@ public:
         if (rc == 0x1b) { if (ca_) ca_(); return true; }                 // Escape
         if (rc == 0x0a || rc == 0x0d) { if (co_) co_(v); return true; }  // Enter
 
-        // Ctrl+A selects all. Every modern field does, and a user who cannot select all with the
-        // keyboard has to reach for the mouse to replace a value.
-        if (ctrl && (k.utf8[0] == 'a' || k.utf8[0] == 'A')) {
-            sel_ = 0;
-            caret_ = v.size();
-            return true;
+        // Ctrl+A, C, X and V.
+        //
+        // The letter comes from EVDEV, not from utf8: with ctrl held many layouts deliver a
+        // control character or nothing at all in utf8, so testing that would make the shortcuts
+        // work on some keyboards and not others.
+        if (ctrl) {
+            switch (k.evdev) {
+                case 30:                          // KEY_A: select all
+                    sel_ = 0;
+                    caret_ = v.size();
+                    return true;
+                case 46:                          // KEY_C: copy
+                case 45: {                        // KEY_X: cut
+                    if (sel_ == caret_) return true;
+                    const size_t a = std::min(sel_, caret_), b = std::max(sel_, caret_);
+                    if (win_) win_->RequestCopy(v.substr(a, b - a));
+                    if (k.evdev == 45 && !o_.read_only) {
+                        v.erase(a, b - a);
+                        caret_ = a;
+                        commit(v);
+                    }
+                    return true;
+                }
+                case 47:                          // KEY_V: paste
+                    if (!o_.read_only && win_) win_->RequestPaste(this);
+                    return true;
+                default: break;
+            }
         }
 
         if (o_.read_only) return rc == 0x1c || rc == 0x1d;   // navigable, not editable
@@ -1054,6 +1078,25 @@ public:
             return true;
         }
         return false;
+    }
+
+    void InsertText(const std::string& raw) override {
+        if (o_.read_only) return;
+        std::string in = raw;
+        // A single-line field takes one line. A pasted newline would otherwise be an invisible
+        // character in a filename, so everything after the first break is dropped rather than
+        // flattened silently into the name.
+        const size_t nl = in.find_first_of("\r\n");
+        if (nl != std::string::npos) in.resize(nl);
+        if (in.empty()) return;
+        std::string v = t_->get();
+        erase_selection(&v);
+        if (o_.max_len && v.size() + in.size() > o_.max_len)
+            in.resize(o_.max_len - std::min(o_.max_len, v.size()));
+        if (caret_ > v.size()) caret_ = v.size();
+        v.insert(caret_, in);
+        caret_ += in.size();
+        commit(v);
     }
 
 private:
@@ -1120,6 +1163,7 @@ private:
     size_t caret_ = 0, sel_ = 0;
     float h_ = 24, scroll_ = 0;
     bool focused_ = false, caret_on_ = true;
+    Window* win_ = nullptr;
 };
 
 // ---- Either -----------------------------------------------------------------------------------
@@ -1521,6 +1565,22 @@ void Window::Defer(std::function<void()> f) {
         deferred_.push_back(std::move(f));
     }
     dirty_ = true;      // wake the loop so it drains promptly
+}
+
+void Window::RequestCopy(const std::string& text) {
+    Defer([this, text] { au_clipboard_set_text(wl_, text.c_str()); });
+}
+
+void Window::RequestPaste(Node* target) {
+    Defer([this, target] {
+        char buf[4096];
+        const int n = au_clipboard_get_text(wl_, buf, sizeof buf);
+        if (n <= 0) return;
+        // Still in the tree? A rename field is gone once its edit commits.
+        if (std::find(all_.begin(), all_.end(), target) == all_.end()) return;
+        target->InsertText(std::string(buf, (size_t)n));
+        Invalidate(target->frame);
+    });
 }
 
 int Window::ShowMenu(float x, float y, std::vector<MenuItem> items, int max_ms) {

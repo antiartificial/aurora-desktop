@@ -173,6 +173,10 @@ public:
     // its own (the list's rename field does). Generic so the window never special-cases a type.
     virtual void Attached(Window* w) { (void)w; }
 
+    // Insert text at the caret, for a paste. Separate from OnKey because a paste cannot happen
+    // inside a key handler: see Window::RequestPaste.
+    virtual void InsertText(const std::string& t) { (void)t; }
+
     virtual void Retarget(bool motion_allowed) { (void)motion_allowed; }
     virtual bool Animating() const { return false; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
@@ -319,12 +323,15 @@ Desc Breadcrumb(State<std::string>* path,
 // `on_commit` fires on Enter and `on_cancel` on Escape. The State is the text, so the app reads
 // it without asking the widget anything.
 //
+// Ctrl+C, Ctrl+X and Ctrl+V work on plain UTF-8 text.
+//
 // What this does NOT do, stated rather than discovered later: there is no input-method editor.
 // Composed text -- the preedit a CJK or dead-key input method shows before committing -- needs
 // text_input_v3, which the compositor implements for its own clients but present_wl does not
 // speak. So this handles what a keyboard commits, including anything the layout produces with
 // shift, caps and AltGr, and cannot yet handle composition. Pasting is also absent: the
-// clipboard is a compositor capability and wiring it is its own piece of work.
+// clipboard carries only plain text here; a rich flavour is the compositor's story
+// (ext_data_control, and decision 0019's mediated access), not a text field's.
 struct FieldOpts {
     std::string placeholder;
     bool read_only = false;
@@ -514,6 +521,20 @@ public:
     // asks for anything that touches the display -- a menu, a dialog, a new window. The rule is
     // simple and absolute: handlers decide, the loop acts.
     void Defer(std::function<void()> f);
+
+    // Clipboard, from a key handler.
+    //
+    // Both of these MUST be deferred and the reason is the same deadlock the menu hit: a handler
+    // runs on present_wl's event thread while it holds the display mutex, and both clipboard
+    // calls take that mutex. Paste is worse than a lock inversion -- reading the selection needs
+    // the event thread to dispatch the owner's `send`, and when the owner is this same process
+    // that thread is the one blocked in the handler, so it waits for itself.
+    //
+    // RequestPaste checks the target is still in the tree before inserting: a rename field is
+    // destroyed when the edit commits, and a paste that arrived after that would write to freed
+    // memory.
+    void RequestCopy(const std::string& text);
+    void RequestPaste(Node* target);
     Node* focus() const { return focus_; }
     size_t focusable_count() const { return focusables_.size(); }
     size_t keys_seen() const { return keys_seen_; }

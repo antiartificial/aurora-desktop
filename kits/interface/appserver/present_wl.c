@@ -46,6 +46,11 @@ struct au_wl {
 	int wake;			/* eventfd: the event thread bumps it, au_wl_wait sleeps on it */
 	uint32_t last_serial;		/* most recent pointer/keyboard serial; xdg_popup.grab needs one */
 	int popup_grab;			/* when set, popups created next take a grab (au_wl_popups_grab) */
+	struct wl_data_device_manager* ddm;
+	struct wl_data_device* dd;
+	struct wl_data_offer* clip;	/* the current selection offer, when it has text */
+	int clip_text;			/* the offer above advertised a text flavour */
+	char* own;			/* text WE put on the clipboard, served back on request */
 	int running;
 	struct au_wl_win* focus;
 	int nwins;
@@ -339,8 +344,133 @@ static void reg_global(void* data, struct wl_registry* r, uint32_t name, const c
 	else if (!strcmp(iface, "wl_shm")) g->shm = wl_registry_bind(r, name, &wl_shm_interface, 1);
 	else if (!strcmp(iface, "xdg_wm_base")) { g->wm = wl_registry_bind(r, name, &xdg_wm_base_interface, 1); xdg_wm_base_add_listener(g->wm, &wm_listener, g); }
 	else if (!strcmp(iface, "wl_seat")) { g->seat = wl_registry_bind(r, name, &wl_seat_interface, ver < 5 ? ver : 5); wl_seat_add_listener(g->seat, &seat_listener, g); }
+	else if (!strcmp(iface, "wl_data_device_manager")) {
+		g->ddm = wl_registry_bind(r, name, &wl_data_device_manager_interface, ver < 3 ? ver : 3);
+	}
 	else if (!strcmp(iface, "wl_output") && !g->out) { g->out = wl_registry_bind(r, name, &wl_output_interface, ver < 2 ? ver : 2); wl_output_add_listener(g->out, &out_listener, g); }
 }
+/* ---- clipboard ------------------------------------------------------------------------------ */
+
+static int is_text_mime(const char* m)
+{
+	return m && (!strcmp(m, "text/plain;charset=utf-8") || !strcmp(m, "text/plain") ||
+		     !strcmp(m, "UTF8_STRING") || !strcmp(m, "STRING"));
+}
+
+static void offer_mime(void* d, struct wl_data_offer* o, const char* mime)
+{
+	au_wl* g = d;
+	(void)o;
+	if (is_text_mime(mime)) g->clip_text = 1;
+}
+static void offer_source_actions(void* d, struct wl_data_offer* o, uint32_t a) { (void)d; (void)o; (void)a; }
+static void offer_action(void* d, struct wl_data_offer* o, uint32_t a) { (void)d; (void)o; (void)a; }
+static const struct wl_data_offer_listener offer_listener = { offer_mime, offer_source_actions, offer_action };
+
+static void dd_data_offer(void* d, struct wl_data_device* dev, struct wl_data_offer* o)
+{
+	au_wl* g = d;
+	(void)dev;
+	/* A new offer: the flavours arrive next, on the offer itself. */
+	g->clip_text = 0;
+	wl_data_offer_add_listener(o, &offer_listener, g);
+}
+static void dd_selection(void* d, struct wl_data_device* dev, struct wl_data_offer* o)
+{
+	au_wl* g = d;
+	(void)dev;
+	if (g->clip && g->clip != o) wl_data_offer_destroy(g->clip);
+	g->clip = o;			/* NULL means the selection was cleared */
+	if (!o) g->clip_text = 0;
+}
+/* Drag and drop is the compositor's business (decision 0020); a text field needs none of it. */
+static void dd_enter(void* d, struct wl_data_device* v, uint32_t s, struct wl_surface* sf,
+		     wl_fixed_t x, wl_fixed_t y, struct wl_data_offer* o)
+{ (void)d; (void)v; (void)s; (void)sf; (void)x; (void)y; (void)o; }
+static void dd_leave(void* d, struct wl_data_device* v) { (void)d; (void)v; }
+static void dd_motion(void* d, struct wl_data_device* v, uint32_t t, wl_fixed_t x, wl_fixed_t y)
+{ (void)d; (void)v; (void)t; (void)x; (void)y; }
+static void dd_drop(void* d, struct wl_data_device* v) { (void)d; (void)v; }
+static const struct wl_data_device_listener dd_listener = {
+	dd_data_offer, dd_enter, dd_leave, dd_motion, dd_drop, dd_selection
+};
+
+static void src_send(void* d, struct wl_data_source* s, const char* mime, int32_t fd)
+{
+	au_wl* g = d;
+	(void)s;
+	if (g->own && is_text_mime(mime)) {
+		const size_t n = strlen(g->own);
+		ssize_t off = 0;
+		while ((size_t)off < n) {
+			const ssize_t w = write(fd, g->own + off, n - (size_t)off);
+			if (w <= 0) break;
+			off += w;
+		}
+	}
+	close(fd);
+}
+static void src_cancelled(void* d, struct wl_data_source* s)
+{
+	au_wl* g = d;
+	wl_data_source_destroy(s);
+	free(g->own);
+	g->own = NULL;
+}
+static void src_dnd_drop(void* d, struct wl_data_source* s) { (void)d; (void)s; }
+static void src_dnd_finished(void* d, struct wl_data_source* s) { (void)d; (void)s; }
+static void src_target(void* d, struct wl_data_source* s, const char* m) { (void)d; (void)s; (void)m; }
+static void src_action(void* d, struct wl_data_source* s, uint32_t a) { (void)d; (void)s; (void)a; }
+static const struct wl_data_source_listener src_listener = {
+	src_target, src_send, src_cancelled, src_dnd_drop, src_dnd_finished, src_action
+};
+
+int au_clipboard_get_text(au_wl* g, char* buf, int cap)
+{
+	if (!g || !buf || cap <= 1) return 0;
+	buf[0] = 0;
+	pthread_mutex_lock(&g->mu);
+	struct wl_data_offer* o = g->clip;
+	const int has = g->clip_text;
+	int fds[2] = { -1, -1 };
+	if (o && has && pipe(fds) == 0) {
+		wl_data_offer_receive(o, "text/plain;charset=utf-8", fds[1]);
+		wl_display_flush(g->dpy);
+	}
+	pthread_mutex_unlock(&g->mu);
+	if (fds[1] < 0) return 0;
+	close(fds[1]);
+	/* Read with a deadline. The owner may be slow or gone; a paste must not hang the loop. */
+	int total = 0;
+	for (int waited = 0; waited < 200 && total < cap - 1; waited += 10) {
+		struct pollfd pfd = { fds[0], POLLIN, 0 };
+		const int r = poll(&pfd, 1, 10);
+		if (r <= 0) continue;
+		const ssize_t n = read(fds[0], buf + total, (size_t)(cap - 1 - total));
+		if (n <= 0) break;
+		total += (int)n;
+	}
+	close(fds[0]);
+	buf[total] = 0;
+	return total;
+}
+
+int au_clipboard_set_text(au_wl* g, const char* utf8)
+{
+	if (!g || !g->ddm || !g->dd || !utf8) return 0;
+	pthread_mutex_lock(&g->mu);
+	free(g->own);
+	g->own = strdup(utf8);
+	struct wl_data_source* src = wl_data_device_manager_create_data_source(g->ddm);
+	wl_data_source_add_listener(src, &src_listener, g);
+	wl_data_source_offer(src, "text/plain;charset=utf-8");
+	wl_data_source_offer(src, "text/plain");
+	wl_data_device_set_selection(g->dd, src, g->last_serial);
+	wl_display_flush(g->dpy);
+	pthread_mutex_unlock(&g->mu);
+	return 1;
+}
+
 static void reg_remove(void* d, struct wl_registry* r, uint32_t n) { (void)d; (void)r; (void)n; }
 static const struct wl_registry_listener reg_listener = { reg_global, reg_remove };
 
@@ -394,6 +524,11 @@ au_wl* au_wl_connect(void)
 	wl_registry_add_listener(g->reg, &reg_listener, g);
 	wl_display_roundtrip(g->dpy);
 	wl_display_roundtrip(g->dpy);	/* seat caps and output scale arrive after the binds */
+	if (g->ddm && g->seat) {
+		g->dd = wl_data_device_manager_get_data_device(g->ddm, g->seat);
+		wl_data_device_add_listener(g->dd, &dd_listener, g);
+		wl_display_roundtrip(g->dpy);	/* the current selection arrives here */
+	}
 	if (!g->comp || !g->shm || !g->wm) {
 		fprintf(stderr, "present_wl: compositor lacks wl_compositor/wl_shm/xdg_wm_base\n");
 		wl_display_disconnect(g->dpy); free(g); return NULL;
