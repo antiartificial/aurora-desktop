@@ -116,6 +116,7 @@ impl Shell {
         });
         e.push(Entry::item("Settings\u{2026}", Action::OpenSettings));
         e.push(if windows > 0 { Entry::item("Window Switcher", Action::WindowSwitcher).note("Alt+Tab") } else { Entry::item("Window Switcher", Action::WindowSwitcher).disabled("no windows") });
+        e.push(self.desktop_entry(windows));
         e.push(Entry::Separator);
         e.push(Entry::Header("Background".into()));
         for (m, key, label) in [(BgMode::Shader, "shader", "Shader"), (BgMode::Image, "image", "Image"), (BgMode::Gradient, "gradient", "Gradient"), (BgMode::Solid, "solid", "Solid colour")] {
@@ -134,14 +135,53 @@ impl Shell {
         e.push(Entry::item(if on { "Hide Dock" } else { "Show Dock" }, Action::Edit(vec![Edit::new("dock", "enabled", Val::Bool(!on))])));
         // The Deskbar floats over windows, so a way to put it away has to be one right-click from the desktop.
         e.push(Entry::item(if self.deskbar_enabled { "Hide Deskbar" } else { "Show Deskbar" }, Action::Edit(vec![Edit::new("deskbar", "enabled", Val::Bool(!self.deskbar_enabled))])));
+        self.open_entries(e, (at.0 as f32, at.1 as f32), out);
+        tracing::info!("menu: open at {:.0},{:.0}", at.0, at.1);
+    }
+
+    /// Lay out and show a menu of `e` with its corner at `at` (logical). Every popup goes through here.
+    fn open_entries(&mut self, e: Vec<Entry>, at: (f32, f32), out: Out) {
         let mut m = Menu::new(e);
         let s = self.scale as f32;
         let font = self.font.size;
-        m.layout(&mut self.text, font, self.scale, (at.0 as f32, at.1 as f32), (out.0 as f32 / s, out.1 as f32 / s));
+        m.layout(&mut self.text, font, self.scale, at, (out.0 as f32 / s, out.1 as f32 / s));
         self.menu_seq += 1;
-        tracing::info!("menu: open at {:.0},{:.0} ({} entries); ease-out cubic, {} ms", at.0, at.1, m.entries.len(), super::motion::MENU_MS);
+        tracing::info!("menu: open ({} entries); ease-out cubic, {} ms", m.entries.len(), super::motion::MENU_MS);
         self.menu = Some(m);
         self.menu_tex = None;
+    }
+
+    /// Show Desktop, or what undoes it. Named for what the next click does, so the two states never read alike.
+    pub fn desktop_entry(&self, windows: usize) -> Entry {
+        if !self.hidden.is_empty() {
+            Entry::item("Restore Windows", Action::ShowDesktop).note(&format!("{} hidden", self.hidden.len()))
+        } else if windows > 0 {
+            Entry::item("Show Desktop", Action::ShowDesktop)
+        } else {
+            Entry::item("Show Desktop", Action::ShowDesktop).disabled("no windows")
+        }
+    }
+
+    /// The rows that act on windows that exist: Bring to Front and Close, for exactly the windows `ids` names
+    /// (one window, or all of an app's), the count in the label so a confirm shows what it will act on.
+    pub fn window_entries(&self, ids: &[String]) -> Vec<Entry> {
+        let n = ids.len();
+        let close = if n == 1 { "Close".to_string() } else { format!("Close All ({n})") };
+        vec![Entry::item("Bring to Front", Action::RaiseWindows(ids.to_vec())), Entry::item(&close, Action::CloseWindows(ids.to_vec()))]
+    }
+
+    /// A menu on one window or one app of the Deskbar: a header naming it, then its window rows, then Show Desktop.
+    pub fn open_window_menu(&mut self, title: &str, ids: Vec<String>, at: (f32, f32), out: Out) {
+        let mut e = vec![Entry::Header(display_name(title))];
+        e.extend(self.window_entries(&ids));
+        e.push(Entry::Separator);
+        e.push(self.desktop_entry(1));
+        self.open_entries(e, at, out);
+    }
+
+    /// The Deskbar's menu away from any application: Show Desktop alone.
+    pub fn open_desktop_menu(&mut self, windows: usize, at: (f32, f32), out: Out) {
+        self.open_entries(vec![self.desktop_entry(windows)], at, out);
     }
 
     /// A dock click: the verbs of the app in item `i`, as a menu beside the dock
@@ -162,20 +202,46 @@ impl Shell {
         self.open_verb_menu(i, out);
     }
 
-    pub fn open_verb_menu(&mut self, i: usize, out: Out) {
+    /// A secondary click on a dock item whose app has windows (`ids`, bottom to top): its window rows, and
+    /// then whatever the item offers on its own click, so nothing is taken away by the app running.
+    /// Anything not running is the plain click, as before.
+    pub fn dock_secondary_click(&mut self, i: usize, out: Out, ids: Vec<String>) {
+        if ids.is_empty() {
+            return self.dock_click(i, out);
+        }
         let Some(item) = self.items.get(i).filter(|it| it.clickable) else { return };
         let (id, label) = (item.id.clone(), item.label.clone());
+        let Some(at) = self.dock_menu_at(i, out) else { return };
+        let mut e = vec![Entry::Header(display_name(&label))];
+        e.extend(self.window_entries(&ids));
+        e.push(Entry::Separator);
+        if self.registry.apps.iter().any(|a| a.id == id && a.windowed && a.launchable) {
+            e.push(Entry::item("New Window", Action::NewWindow(id)));
+        } else {
+            e.extend(self.verb_entries(&id, &label).into_iter().skip(1));
+        }
+        self.open_entries(e, at, out);
+    }
+
+    fn dock_menu_at(&mut self, i: usize, out: Out) -> Option<(f32, f32)> {
         let l = self.layout(out.0, out.1);
-        let Some(r) = l.items.get(i).copied() else { return };
+        let r = l.items.get(i).copied()?;
         let s = self.scale as f32;
         let (px, py) = (l.panel.x as f32 / s, l.panel.y as f32 / s);
         let (pr, pb) = ((l.panel.x + l.panel.w) as f32 / s, (l.panel.y + l.panel.h) as f32 / s);
-        let at = match self.dock.edge {
+        Some(match self.dock.edge {
             DockEdge::Bottom => (r.x as f32 / s, py),
             DockEdge::Top => (r.x as f32 / s, pb),
             DockEdge::Left => (pr, r.y as f32 / s),
             DockEdge::Right => (px, r.y as f32 / s),
-        };
+        })
+    }
+
+    pub fn open_verb_menu(&mut self, i: usize, out: Out) {
+        let Some(item) = self.items.get(i).filter(|it| it.clickable) else { return };
+        let (id, label) = (item.id.clone(), item.label.clone());
+        let Some(at) = self.dock_menu_at(i, out) else { return };
+        let s = self.scale as f32;
         let entries = self.verb_entries(&id, &label);
         let mut m = Menu::new(entries);
         let font = self.font.size;

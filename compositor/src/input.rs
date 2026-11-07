@@ -39,6 +39,12 @@ impl Aurora {
             Action::RunVerb { app, verb } => {
                 self.shell.run_verb(&app, &verb);
             }
+            Action::RaiseWindows(ids) => self.raise_windows(&ids),
+            Action::CloseWindows(ids) => self.close_windows(&ids),
+            Action::ShowDesktop => self.toggle_desktop(),
+            Action::NewWindow(app) => {
+                self.shell.run_windowed(&app, "");
+            }
         }
     }
 
@@ -160,7 +166,8 @@ impl Aurora {
             let o = (out.w, out.h);
             // The Deskbar takes a press that lands on it (any button), unless a menu is open (its next click
             // dismisses it, below) or the point is under a popup that is above the box.
-            if self.shell.menu.is_none() && !self.shell.chrome_contains(at, o) && self.deskbar_press(at, button == BTN_LEFT) {
+            // A secondary press replaces an open menu rather than being swallowed by dismissing it.
+            if (self.shell.menu.is_none() || button == BTN_RIGHT) && !self.shell.chrome_contains(at, o) && self.deskbar_press(at, button == BTN_LEFT) {
                 self.chrome_buttons.insert(button);
                 return;
             }
@@ -199,7 +206,12 @@ impl Aurora {
             if button_state == ButtonState::Pressed {
                 let out = self.output_physical();
                 if let Some(i) = l.item_at(dp.x, dp.y) {
-                    self.shell.dock_click(i, (out.w, out.h));
+                    // A secondary press on a running app offers its windows; on anything else it is a click, as before.
+                    let ids = match (button == BTN_RIGHT, self.shell.item(i)) {
+                        (true, Some(it)) => self.app_window_ids(&it.id),
+                        _ => vec![],
+                    };
+                    self.shell.dock_secondary_click(i, (out.w, out.h), ids);
                 }
             }
             return;

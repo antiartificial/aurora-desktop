@@ -28,6 +28,7 @@ use std::{
 
 use smithay::{
     desktop::Window,
+    utils::IsAlive,
     reexports::wayland_server::Resource,
     wayland::{seat::WaylandFocus, shell::xdg::XdgToplevelSurfaceData},
 };
@@ -64,6 +65,9 @@ pub struct Deskbar {
     ease: HashMap<String, Ease>,
     /// The row under the pointer.
     pub hover: Option<Kind>,
+    /// Per application row (by group key): the name shown and the ids of its windows, hidden ones included.
+    /// What a menu on that row acts on, so it never acts on a different set than the row lists.
+    members: HashMap<String, (String, Vec<String>)>,
     /// The rows of the last raster, relative to the box.
     placed: Vec<Placed>,
     key: String,
@@ -75,12 +79,15 @@ struct Seen {
     app_id: String,
     title: String,
     focused: bool,
+    hidden: bool,
     dom: Dom,
 }
 
 impl Aurora {
     fn deskbar_seen(&mut self) -> (Vec<Seen>, bool) {
-        let wins: Vec<Window> = self.space.elements().cloned().collect();
+        self.shell.hidden.retain(|(w, _)| w.alive());
+        let hidden: Vec<Window> = self.shell.hidden.iter().map(|(w, _)| w.clone()).collect();
+        let wins: Vec<Window> = self.space.elements().cloned().chain(hidden.iter().cloned()).collect();
         let (mut out, mut fullscreen) = (vec![], false);
         let mut pids: HashMap<String, i32> = HashMap::new();
         for w in &wins {
@@ -93,7 +100,7 @@ impl Aurora {
                 fullscreen |= x.is_fullscreen();
                 // The client behind an X11 window's surface is Xwayland, whose cgroup says nothing about the
                 // application: its domain is unknown, and is said to be.
-                out.push(Seen { id, app_id: x.class(), title: x.title(), focused: self.is_focused(w), dom: Dom::Unknown("X11 window") });
+                out.push(Seen { id, app_id: x.class(), title: x.title(), focused: self.is_focused(w), hidden: hidden.contains(w), dom: Dom::Unknown("X11 window") });
                 continue;
             }
             let Some(t) = w.toplevel() else { continue };
@@ -109,7 +116,7 @@ impl Aurora {
                 }
                 None => Dom::None,
             };
-            out.push(Seen { id, app_id, title, focused: self.is_focused(w), dom });
+            out.push(Seen { id, app_id, title, focused: self.is_focused(w), hidden: hidden.contains(w), dom });
         }
         self.deskbar.pids = pids;
         (out, fullscreen)
@@ -225,7 +232,7 @@ impl Aurora {
                 None if s.app_id.is_empty() => "Unidentified".to_string(),
                 None => model::safe(&s.app_id),
             };
-            let win = Win { id: s.id.clone(), title: s.title, focused: s.focused };
+            let win = Win { id: s.id.clone(), title: s.title, focused: s.focused, hidden: s.hidden };
             if !self.deskbar.wseq.contains_key(&s.id) {
                 self.deskbar.next_seq += 1;
                 self.deskbar.wseq.insert(s.id, self.deskbar.next_seq);
@@ -246,6 +253,7 @@ impl Aurora {
         let keys: HashSet<&str> = groups.iter().map(|g| g.key.as_str()).collect();
         self.deskbar.gseq.retain(|k, _| keys.contains(k.as_str()));
         model::order(&mut groups, &self.deskbar.gseq, &self.deskbar.wseq);
+        self.deskbar.members = groups.iter().map(|g| (g.key.clone(), (g.label.clone(), g.wins.iter().map(|w| w.id.clone()).collect()))).collect();
         groups
     }
 
@@ -291,10 +299,13 @@ impl Aurora {
     }
 
     /// A button press at `dp`. True when the box took it, whichever button: no client sees the press or its release.
-    /// A left press on an application opens or closes it; on a window, raises and focuses that window.
+    /// A left press on an application opens or closes it; on a window, raises and focuses that window. A secondary
+    /// press opens a menu on what it landed on: an application's windows, one window, or (anywhere else on the
+    /// box) Show Desktop.
     pub fn deskbar_press(&mut self, dp: (f64, f64), left: bool) -> bool {
         let Some((_, hit)) = self.deskbar_row_at(dp) else { return false };
         if !left {
+            self.deskbar_menu(dp, hit);
             return true;
         }
         match hit {
@@ -306,15 +317,115 @@ impl Aurora {
                 tracing::info!("deskbar: {} {}", if open { "expand" } else { "collapse" }, key.replace('\u{1f}', " @ "));
             }
             Some(Kind::Win(id)) => {
-                let w = self.space.elements().find(|w| win_key(w).as_deref() == Some(id.as_str())).cloned();
-                if let Some(w) = w {
-                    tracing::info!("deskbar: raise window {id}");
-                    self.focus_and_activate(&w);
-                }
+                tracing::info!("deskbar: raise window {id}");
+                self.raise_windows(&[id]);
             }
             _ => {}
         }
         true
+    }
+
+    fn deskbar_menu(&mut self, dp: (f64, f64), hit: Option<Kind>) {
+        let s = self.shell.scale;
+        let at = ((dp.0 / s) as f32, (dp.1 / s) as f32);
+        let p = self.output_physical();
+        let out = (p.w, p.h);
+        match hit {
+            Some(Kind::Win(id)) => {
+                let title = self.deskbar.placed.iter().find(|r| r.kind == Kind::Win(id.clone())).map(|r| r.text.clone()).unwrap_or_default();
+                self.shell.open_window_menu(&title, vec![id], at, out);
+            }
+            Some(Kind::App(key)) => {
+                let Some((label, ids)) = self.deskbar.members.get(&key).cloned() else { return };
+                self.shell.open_window_menu(&label, ids, at, out);
+            }
+            _ => {
+                let n = self.space.elements().count() + self.shell.hidden.len();
+                self.shell.open_desktop_menu(n, at, out);
+            }
+        }
+    }
+
+    fn window_by_id(&self, id: &str) -> Option<Window> {
+        let hidden = self.shell.hidden.iter().map(|(w, _)| w);
+        self.space.elements().chain(hidden).find(|w| win_key(w).as_deref() == Some(id)).cloned()
+    }
+
+    /// The ids of every window of registry app `app`, visible or hidden, the way the Deskbar groups them:
+    /// by the app the launch domain was made for, else by the app id the client claims.
+    pub fn app_window_ids(&self, app: &str) -> Vec<String> {
+        let want = app_hash(app);
+        let hidden = self.shell.hidden.iter().map(|(w, _)| w);
+        self.space
+            .elements()
+            .chain(hidden)
+            .filter(|w| {
+                let by_domain = self.deskbar_peer(w).is_some_and(|p| launch_hash(&p.name) == Some(want.as_str()));
+                let claimed = w.toplevel().is_some_and(|t| {
+                    smithay::wayland::compositor::with_states(t.wl_surface(), |s| {
+                        s.data_map.get::<XdgToplevelSurfaceData>().and_then(|d| d.lock().ok()).is_some_and(|d| d.app_id.as_deref() == Some(app))
+                    })
+                });
+                by_domain || claimed
+            })
+            .filter_map(win_key)
+            .collect()
+    }
+
+    /// Bring `ids` to the front in the order given and focus the last. A window Show Desktop put away comes back
+    /// where it was first. Ids that no longer name a window are skipped.
+    pub fn raise_windows(&mut self, ids: &[String]) {
+        let mut last = None;
+        for id in ids {
+            let Some(w) = self.window_by_id(id) else { continue };
+            if let Some(i) = self.shell.hidden.iter().position(|(h, _)| *h == w) {
+                let (w, at) = self.shell.hidden.remove(i);
+                self.space.map_element(w.clone(), at, false);
+            }
+            self.space.raise_element(&w, true);
+            last = Some(w);
+        }
+        if let Some(w) = last {
+            self.focus_and_activate(&w);
+        }
+    }
+
+    /// Ask each of `ids` to close. A request: a client that ignores it keeps its window, and nothing here forces it.
+    pub fn close_windows(&mut self, ids: &[String]) {
+        for id in ids {
+            if let Some(w) = self.window_by_id(id) {
+                tracing::info!("deskbar: close requested of window {id}");
+                self.close_window(&w);
+            }
+        }
+    }
+
+    /// Hide every window, or, when some are hidden, bring them back in their old stacking order.
+    pub fn toggle_desktop(&mut self) {
+        if !self.shell.hidden.is_empty() {
+            let back = std::mem::take(&mut self.shell.hidden);
+            tracing::info!("desktop: restoring {} window(s)", back.len());
+            let mut top = None;
+            for (w, at) in back {
+                self.space.map_element(w.clone(), at, false);
+                top = Some(w);
+            }
+            if let Some(w) = top {
+                self.focus_and_activate(&w);
+            }
+            return;
+        }
+        let wins: Vec<Window> = self.space.elements().filter(|w| !w.x11_surface().is_some_and(|x| x.is_override_redirect())).cloned().collect();
+        tracing::info!("desktop: hiding {} window(s)", wins.len());
+        for w in wins {
+            let at = self.space.element_location(&w).unwrap_or_default();
+            self.space.unmap_elem(&w);
+            w.set_activated(false);
+            crate::xwayland::send_pending(&w);
+            self.shell.hidden.push((w, at));
+        }
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        self.seat.get_keyboard().unwrap().set_focus(self, Option::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>::None, serial);
     }
 }
 

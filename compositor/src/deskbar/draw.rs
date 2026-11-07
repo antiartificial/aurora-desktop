@@ -107,7 +107,7 @@ pub struct Style<'a> {
 enum Body {
     Header,
     App(usize),
-    Win { title: String, focused: bool },
+    Win { title: String, focused: bool, hidden: bool },
     Dom(String),
     Net { host: String, verdict: Verdict, count: u64 },
     Note { text: String, tone: Tone },
@@ -138,7 +138,7 @@ fn rows(v: &View, st: &Style) -> Vec<Row> {
             continue;
         }
         for w in &g.wins {
-            out.push(Row { kind: Kind::Win(w.id.clone()), h: WIN_H, e, body: Body::Win { title: safe(&w.title), focused: w.focused } });
+            out.push(Row { kind: Kind::Win(w.id.clone()), h: WIN_H, e, body: Body::Win { title: safe(&w.title), focused: w.focused, hidden: w.hidden } });
         }
         let Some(name) = dom else { continue };
         out.push(Row { kind: Kind::Info, h: SUB_H, e, body: Body::Dom(safe(name)) });
@@ -344,18 +344,25 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                     tri(&mut c, [(cx - s * 0.5, cy - s), (cx - s * 0.5, cy + s), (cx + s * 0.6, cy)], dim);
                 }
             }
-            Body::Win { title, focused } => {
+            Body::Win { title, focused, hidden } => {
                 // Sub-rows fade and settle as they open: `a` is the row's own ease, so the text is already
                 // legible at a third of the way (ease-out), and `y` centres it in the part that has opened.
                 let x = INDENT;
                 if *focused {
                     c.round_rect(d(INDENT - 10.0), top + d(5.0 * a), d(3.0), (rect.h - d(10.0 * a)).max(1), d(1.5) as f32, accent);
                 }
-                label = fit(t, title, &if *focused { bold.clone() } else { body.clone() }, st.scale, w - x - 12.0, Elide::Head);
+                // A window Show Desktop put away says so on the row, in the dim colour: it is running but not
+                // on the desktop, and the row must not read the same as one that is.
+                let tag_w = if *hidden { t.string_width("hidden", &tiny, st.scale) + 8.0 } else { 0.0 };
+                if *hidden {
+                    t.draw(&mut c, w - 12.0 - (tag_w - 8.0), mid(y, h, &mt), "hidden", &tiny, scaled(dim, a), st.scale);
+                    meta_text = "hidden".into();
+                }
+                label = fit(t, title, &if *focused { bold.clone() } else { body.clone() }, st.scale, w - x - 12.0 - tag_w, Elide::Head);
                 if label.is_empty() {
                     label = "(untitled)".into();
                 }
-                t.draw(&mut c, x, mid(y, h, &mb), &label, &if *focused { bold.clone() } else { body.clone() }, scaled(text, a), st.scale);
+                t.draw(&mut c, x, mid(y, h, &mb), &label, &if *focused { bold.clone() } else { body.clone() }, scaled(if *hidden { dim } else { text }, a), st.scale);
             }
             Body::Dom(name) => {
                 label = fit(t, &format!("in domain {name}"), &tiny, st.scale, w - INDENT - 12.0, Elide::Head);
@@ -409,7 +416,7 @@ mod tests {
     use model::{Win, Dom};
 
     pub(super) fn grp(key: &str, label: &str, dom: Dom, wins: &[(&str, &str, bool)]) -> Group {
-        Group { key: key.into(), label: label.into(), dom, wins: wins.iter().map(|(i, t, f)| Win { id: (*i).into(), title: (*t).into(), focused: *f }).collect() }
+        Group { key: key.into(), label: label.into(), dom, wins: wins.iter().map(|(i, t, f)| Win { id: (*i).into(), title: (*t).into(), focused: *f, hidden: false }).collect() }
     }
 
     pub(super) fn st(cfg: &theme::Deskbar, max_h: f32) -> Style<'_> {

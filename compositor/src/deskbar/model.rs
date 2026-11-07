@@ -31,6 +31,8 @@ pub struct Win {
     pub id: String,
     pub title: String,
     pub focused: bool,
+    /// Put away by Show Desktop: still running and still listed, but not on the desktop.
+    pub hidden: bool,
 }
 
 /// One row of applications. Grouped by (what the client calls itself, where it runs), NOT by name
@@ -422,7 +424,7 @@ mod tests {
 
     #[test]
     fn groups_keep_the_order_they_first_appeared_in_whatever_the_stacking_does() {
-        let mk = |k: &str, ws: &[&str]| Group { key: k.into(), label: k.into(), dom: Dom::None, wins: ws.iter().map(|w| Win { id: (*w).into(), title: String::new(), focused: false }).collect() };
+        let mk = |k: &str, ws: &[&str]| Group { key: k.into(), label: k.into(), dom: Dom::None, wins: ws.iter().map(|w| Win { id: (*w).into(), title: String::new(), focused: false, hidden: false }).collect() };
         let mut g = vec![mk("b", &["w3", "w2"]), mk("a", &["w1"])];
         let gs: HashMap<String, u64> = [("a".to_string(), 1), ("b".to_string(), 2)].into();
         let ws: HashMap<String, u64> = [("w1".to_string(), 1), ("w2".to_string(), 2), ("w3".to_string(), 3)].into();

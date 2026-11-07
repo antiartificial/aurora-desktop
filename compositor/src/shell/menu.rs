@@ -26,6 +26,15 @@ pub enum Action {
     CloseSettings,
     /// A dock click chose a verb: run `verb` of app `app` (names exactly as the manifest has them).
     RunVerb { app: String, verb: String },
+    /// Bring these windows (surface ids, bottom to top) to the front and focus the topmost; a window
+    /// hidden by Show Desktop is brought back first.
+    RaiseWindows(Vec<String>),
+    /// Ask these windows to close (`xdg_toplevel.close`): a request the client may refuse, not a kill.
+    CloseWindows(Vec<String>),
+    /// Hide every window, or, if they are already hidden, bring them back.
+    ShowDesktop,
+    /// Start another window of a windowed app (the dock item's own click).
+    NewWindow(String),
 }
 
 /// How loud a tag is. Effect classes map onto it: read is plain, write is

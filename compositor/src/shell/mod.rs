@@ -124,6 +124,9 @@ pub struct Shell {
     pub deskbar: DeskbarSlot,
     /// `[deskbar] enabled`, for the desktop menu's "Hide Deskbar" / "Show Deskbar".
     pub deskbar_enabled: bool,
+    /// Windows put away by Show Desktop, bottom to top, with where each was. They are unmapped from the
+    /// `Space` (so nothing draws, hits or focuses them) but still listed by the Deskbar, marked hidden.
+    pub hidden: Vec<(smithay::desktop::Window, smithay::utils::Point<i32, smithay::utils::Logical>)>,
     pub scale: f64,
     start: Instant,
     dock: Dock,
@@ -193,6 +196,7 @@ impl Shell {
             text,
             deskbar: DeskbarSlot::default(),
             deskbar_enabled: true,
+            hidden: vec![],
             scale: 1.0,
             start: Instant::now(),
             dock: Dock::default(),
