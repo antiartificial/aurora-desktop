@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if args.drm.is_some() {
         dnd::Choice::NoHost("--drm has no host compositor")
     } else if let Some(d) = state.host_display {
-        dnd::Choice::Winit(d)
+        dnd::Choice::Winit { display: d, surface: state.host_surface }
     } else {
         dnd::Choice::NoHost("the host window is not a Wayland window")
     };

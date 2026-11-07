@@ -484,3 +484,199 @@ fn an_app_that_declines_the_drop_is_granted_nothing() {
     assert!(d.ctl.requests().is_empty(), "the controller was asked to grant a file to an app that declined it: {:?}", d.ctl.requests());
     assert!(!read(&d.r.target).contains("data "), "{}", read(&d.r.target));
 }
+
+// ---------------------------------------------------------------------------------------------
+// GUEST TO HOST (decision 0020, "Guest to host"). The same two compositors, the other way round:
+// the source is an Aurora client, the target is a client of the host, and the drag is handed over
+// when the host's pointer leaves Aurora's window with the button still down.
+//
+// Two presses are injected, one per compositor, because the two compositors do not share an input
+// device: the host's press is the implicit grab `start_drag` needs on the host, the guest's press
+// is what makes the guest client start its drag. In production they are one physical click.
+// ---------------------------------------------------------------------------------------------
+
+/// A bridged host with a drop target on it, and a guest with a drag source inside it.
+struct OutRig {
+    host: Comp,
+    guest: Comp,
+    /// The `dndclient target` running on the HOST.
+    host_target: PathBuf,
+    /// The `dndclient source` running INSIDE Aurora.
+    source: PathBuf,
+}
+
+fn out_rig(guest_args: &[&str], items: &[&str]) -> OutRig {
+    let mut host = Comp::start(&[]);
+    let sock = host.dir.path().join(&host.display).to_str().unwrap().to_string();
+    let mut args = vec!["--host-dnd-display", sock.as_str()];
+    args.extend_from_slice(guest_args);
+    let mut guest = Comp::start(&args);
+    wait_for("dnd bridge up both ways", || guest.log().contains("host drag and drop bridging is on (wl_data_device on the host connection; both ways)"));
+    host.inject("move 0 100 100"); // the stand-in for Aurora's window: 640x400 at (100,100)
+    let host_target = host.example("dndclient", &["target", "--size", "400x300"]);
+    wait_for("host target mapped", || read(&host_target).contains("mapped"));
+    host.inject("move 1 800 100"); // out on the host desktop, beside Aurora's window
+    let mut a = vec!["source", "--size", "400x300"];
+    a.extend_from_slice(items);
+    let source = guest.example("dndclient", &a);
+    wait_for("guest source mapped", || read(&source).contains("mapped"));
+    guest.inject("move 0 0 0");
+    OutRig { host, guest, host_target, source }
+}
+
+/// Pick the drag up inside Aurora, with the host's button held over Aurora's window.
+fn pick_up_in_guest(r: &mut OutRig) {
+    // The two compositors have no shared input device, so the one physical pointer is injected on
+    // both, at the same place: host (300,250) IS Aurora's own (200,150), the stand-in being at
+    // (100,100).
+    r.host.inject("pointer 300 250");
+    r.host.inject("press");
+    r.guest.inject("pointer 200 150"); // over the guest source window
+    r.guest.inject("press");
+    wait_for("the guest client started a drag", || read(&r.source).contains("drag-started"));
+}
+
+/// Drag out of Aurora's window and over the host's target.
+///
+/// Two motions, with the hand-off waited for in between: the first takes the pointer out of
+/// Aurora's window, which is what hands the drag over; the second is the first motion the HOST's
+/// own drag sees, and a Wayland drag only tells a target it is there on a motion. A user moving a
+/// mouse sends hundreds of these; a test injecting two in the same millisecond does not.
+fn out_to_host(r: &mut OutRig) {
+    r.host.inject("pointer 900 200");
+    wait_for("the hand-off is decided", || {
+        let l = r.guest.log();
+        l.contains("the host now has it") || l.contains("not handed to the host")
+    });
+    r.host.inject("pointer 910 210");
+}
+
+#[test]
+fn a_guest_drag_that_leaves_the_window_is_handed_to_the_host_with_its_types_and_data() {
+    let mut r = out_rig(&[], &[&format!("{TXT}|hello from the guest"), "text/html|<b>guest</b>", "text/uri-list|file:///home/arti/in-aurora.txt\r\n"]);
+    pick_up_in_guest(&mut r);
+    // while the pointer is inside Aurora's window the host knows nothing of this drag
+    r.host.inject("pointer 400 300");
+    assert!(!read(&r.host_target).contains("enter"), "the host saw a drag that had not left Aurora: {}", read(&r.host_target));
+    out_to_host(&mut r);
+    wait_for("the host target sees the drag", || read(&r.host_target).contains("enter"));
+    let enter = lines(&r.host_target).into_iter().find(|l| l.starts_with("enter")).unwrap();
+    // every type the guest offered, in order: negotiated by the host target, not guessed by Aurora
+    assert!(enter.ends_with(&format!("types={TXT},text/html,text/uri-list")), "{enter}");
+    r.host.inject("release");
+    wait_for("the host target read the data", || read(&r.host_target).contains("finished"));
+    let t = read(&r.host_target);
+    // the bytes came out of the guest app, through the host, into the host's app
+    assert!(t.contains(&format!("data {TXT} len 20 fnv {:016x} text \"hello from the guest\"", fnv(b"hello from the guest"))), "{t}");
+    assert!(t.contains(&format!("data text/html len 12 fnv {:016x}", fnv(b"<b>guest</b>"))), "{t}");
+    assert!(t.contains("text \"file:///home/arti/in-aurora.txt"), "{t}");
+    // and the guest app was told what the host did with it
+    let s = read(&r.source);
+    assert!(s.contains(&format!("target {TXT}")), "the guest source was not told the host accepted: {s}");
+    assert!(s.contains("dropped") && s.contains("finished") && !s.contains("cancelled"), "{s}");
+    let log = r.guest.log();
+    assert!(log.contains("a guest drag left Aurora's window; the host now has it, offering"), "{log}");
+}
+
+#[test]
+fn a_drag_between_two_guest_windows_never_reaches_the_host() {
+    let mut r = out_rig(&[], &[&format!("{TXT}|stays inside")]);
+    let target = r.guest.example("dndclient", &["target", "--size", "200x150"]);
+    wait_for("guest target mapped", || read(&target).contains("mapped"));
+    r.guest.inject("move 1 420 120");
+    pick_up_in_guest(&mut r);
+    // Inside Aurora the whole way, with the host pointer moving in tandem as the real one does:
+    // guest (500,200) is host (600,300), well inside Aurora's window. The hand-off is decided from
+    // the host pointer, so a test that moved only the guest's would prove nothing about it.
+    r.guest.inject("pointer 500 200");
+    r.host.inject("pointer 600 300");
+    wait_for("the guest target sees the drag", || read(&target).contains("enter"));
+    r.host.inject("pointer 601 301");
+    r.guest.inject("release");
+    wait_for("the guest target read the data", || read(&target).contains("finished"));
+    assert!(read(&target).contains("text \"stays inside\""), "{}", read(&target));
+    // and the dragging app was told, while it dragged, that the window under the pointer would
+    // take it: without this a guest drag gives the app no answer at all (see `dnd::out::GuestDrag`)
+    assert!(read(&r.source).contains(&format!("target {TXT}")), "the dragging app was never told the target accepts: {}", read(&r.source));
+    assert!(!read(&r.host_target).contains("enter"), "the host saw a guest-to-guest drag: {}", read(&r.host_target));
+    assert!(!r.guest.log().contains("the host now has it"), "{}", r.guest.log());
+}
+
+/// The two directions in one compositor, in the order a user does them: a drop into Aurora, then a
+/// drag out of it. Each direction has its own test above; this is the pair, because the first one's
+/// leftovers are what can stop the second (they did: a dropped incoming drag leaves its session in
+/// place, and a live session is what declines a hand-off).
+#[test]
+fn a_drag_out_still_works_after_something_was_dropped_in() {
+    let mut r = out_rig(&[], &[&format!("{TXT}|out after in")]);
+    // in: a host app drags onto a target inside Aurora
+    let guest_target = r.guest.example("dndclient", &["target", "--size", "200x150"]);
+    wait_for("the guest target mapped", || read(&guest_target).contains("mapped"));
+    r.guest.inject("move 1 420 120");
+    let host_src = r.host.example("dndclient", &["source", "--size", "200x200", "text/plain;charset=utf-8|dropped in"]);
+    wait_for("the host source mapped", || read(&host_src).contains("mapped"));
+    r.host.inject("move 2 760 560");
+    r.host.inject("pointer 800 600");
+    r.host.inject("press");
+    wait_for("the host drag started", || read(&host_src).contains("drag-started"));
+    r.host.inject("pointer 600 300"); // over Aurora, on the guest target
+    wait_for("the guest target sees it", || read(&guest_target).contains("enter"));
+    r.host.inject("release");
+    wait_for("the guest target read it", || read(&guest_target).contains("finished"));
+    assert!(read(&guest_target).contains("text \"dropped in\""), "{}", read(&guest_target));
+    // out: now the other way, in the same compositor
+    pick_up_in_guest(&mut r);
+    out_to_host(&mut r);
+    wait_for("the host target sees the drag", || read(&r.host_target).contains("enter"));
+    r.host.inject("release");
+    wait_for("the host target read the data", || read(&r.host_target).contains("finished"));
+    assert!(read(&r.host_target).contains("text \"out after in\""), "{}", read(&r.host_target));
+}
+
+#[test]
+fn a_host_target_that_refuses_the_drag_tells_the_guest_app_so_and_cancels_it() {
+    let mut r = out_rig(&[], &[&format!("{TXT}|nobody wants this")]);
+    // the target on the host accepts nothing; the accepting one from the rig is moved out of the
+    // way, clear of both Aurora's window and where this drag goes
+    r.host.inject("move 1 0 500");
+    let rejecting = r.host.example("dndclient", &["target", "--size", "400x300", "--reject"]);
+    wait_for("the rejecting host target mapped", || read(&rejecting).contains("mapped"));
+    r.host.inject("move 2 800 100");
+    pick_up_in_guest(&mut r);
+    out_to_host(&mut r);
+    wait_for("the host target sees the drag", || read(&rejecting).contains("enter"));
+    wait_for("the guest app is told nothing will take it", || read(&r.source).contains("target none"));
+    r.host.inject("release");
+    wait_for("the guest app is told the drag failed", || read(&r.source).contains("cancelled"));
+    assert!(!read(&rejecting).contains("data "), "a rejected target was given data: {}", read(&rejecting));
+    assert!(!read(&r.source).contains("dropped"), "{}", read(&r.source));
+}
+
+#[test]
+fn a_client_in_a_domain_hands_the_host_everything_but_its_paths() {
+    let cg = my_cgroup();
+    let mut r = out_rig(&["--deny-cgroup", &cg], &["text/uri-list|file:///run/aurora/drops/1/photo.png\r\n", &format!("{TXT}|/run/aurora/drops/1/photo.png"), "image/png|PNGDATA"]);
+    pick_up_in_guest(&mut r);
+    out_to_host(&mut r);
+    wait_for("the host target sees the drag", || read(&r.host_target).contains("enter"));
+    let enter = lines(&r.host_target).into_iter().find(|l| l.starts_with("enter")).unwrap();
+    assert!(enter.ends_with("types=image/png"), "a domain path was offered to the host: {enter}");
+    r.host.inject("release");
+    wait_for("the host target read the data", || read(&r.host_target).contains("finished"));
+    let t = read(&r.host_target);
+    assert!(t.contains("data image/png len 7"), "{t}");
+    assert!(!t.contains("drops") && !t.contains("photo.png"), "a domain path reached the host: {t}");
+    assert!(r.guest.log().contains("withholding [text/uri-list, text/plain;charset=utf-8] from the host"), "{}", r.guest.log());
+}
+
+#[test]
+fn a_pure_file_drag_out_of_a_domain_is_never_handed_to_the_host() {
+    let cg = my_cgroup();
+    let mut r = out_rig(&["--deny-cgroup", &cg], &["text/uri-list|file:///run/aurora/drops/1/photo.png\r\n"]);
+    pick_up_in_guest(&mut r);
+    out_to_host(&mut r);
+    wait_for("the refusal is logged", || r.guest.log().contains("it is not handed to the host"));
+    r.host.inject("release");
+    let t = read(&r.host_target);
+    assert!(!t.contains("enter") && !t.contains("data "), "the host saw a drag it could not use: {t}");
+}

@@ -2,11 +2,13 @@
 //!
 //! # What exists
 //!
-//! **Host to guest**, with MIME types carried through and the data streamed lazily: dragging a
-//! file, text or image out of a host application and over an Aurora window is a normal
-//! `wl_data_device` drag for whichever Aurora client is under the pointer. Guest to guest already
-//! works through Smithay's `wl_data_device`. **Guest to host is not implemented**; see "What does
-//! not exist" below for the evidence and the plan.
+//! **Both ways.** Host to guest, with MIME types carried through and the data streamed lazily:
+//! dragging a file, text or image out of a host application and over an Aurora window is a normal
+//! `wl_data_device` drag for whichever Aurora client is under the pointer. Guest to host, by
+//! handing the drag to the host when the pointer leaves Aurora's window with the button still
+//! down: see `out.rs`, which is where that half lives. Guest to guest already works through
+//! Smithay's `wl_data_device` and is deliberately untouched -- a drag that stays inside Aurora
+//! never goes near the host.
 //!
 //! # What winit exposes (investigated, not assumed)
 //!
@@ -73,20 +75,18 @@
 //! The data request is checked again at `send`: a confined client that asks for a file type it was
 //! not offered gets end of file, and one that asks for the list before the drop gets end of file too.
 //!
-//! # What does not exist (guest to host)
+//! # Guest to host
 //!
-//! Not impossible, not done. A guest-started drag could be mirrored to the host with
-//! `wl_data_device.start_drag` on our queue, which needs the origin `wl_surface` (winit's, from
-//! raw-window-handle) and the serial of the pointer press (our own `wl_pointer` on the same queue
-//! hears the press with its serial). The unsolved part is *when*: the host takes the pointer away
-//! from Aurora the instant `start_drag` is called, so Aurora's own guest-to-guest drags would
-//! have to round-trip through the host, or the hand-off would have to happen at the window edge
-//! while the press is still held. Either needs a source wrapper that can be detached from a
-//! Smithay grab without cancelling. That is a design of its own and cannot be verified against a
-//! real host from here, so it is left out rather than shipped half-working.
+//! In `out.rs`, in full. The short version: our own `wl_pointer` on this connection gives the two
+//! facts winit does not (the serial of the press that is still held, and where the pointer is in
+//! the window), the window's own surface is wrapped as a proxy on our queue to be the drag's
+//! origin, and the guest's source is wrapped so that unsetting Smithay's grab at the hand-off does
+//! not tell the app its drag was cancelled. It needs `state.host_surface`, set from the window
+//! handle in `winit.rs`; without it the startup line says `host to guest only`.
 
 pub mod grant;
 pub mod host;
+pub mod out;
 pub mod policy;
 pub mod standin;
 pub mod uri;
@@ -114,16 +114,45 @@ const BTN_LEFT: u32 = 0x110;
 #[derive(Clone, Copy)]
 pub struct ForeignDisplay(pub *mut std::ffi::c_void);
 
+/// A `wl_surface*` that winit owns: the window a guest drag is handed to the host FROM. The host
+/// only grants `start_drag` to the surface holding the implicit grab, which is this one.
+#[derive(Clone, Copy)]
+pub struct ForeignSurface(pub *mut std::ffi::c_void);
+
 /// Where to listen for drags.
 pub enum Choice {
     /// `--no-host-dnd`.
     Disabled,
     /// No host exists (headless, DRM), or it is not Wayland.
     NoHost(&'static str),
-    /// winit's Wayland connection.
-    Winit(ForeignDisplay),
+    /// winit's Wayland connection and its window's surface (absent on an X11 host, and then a
+    /// guest drag cannot be handed out). The window's size is the output's, read per event: a
+    /// window the user resizes would make a cached one wrong, and the bounds are what decides
+    /// whether a drag is leaving.
+    Winit { display: ForeignDisplay, surface: Option<ForeignSurface> },
     /// `--host-dnd-display NAME`: open a stand-in window on that socket (tests point this at a second Aurora).
     StandIn(OsString),
+}
+
+/// How big Aurora's window on the host is.
+pub enum Window {
+    /// winit's window IS the output, so the output's logical size is the window's, whenever asked.
+    Output,
+    /// The test stand-in's window, which is its own fixed size and not the output's.
+    Fixed(f64, f64),
+}
+
+impl Window {
+    /// The window's size in the host's logical coordinates, now.
+    pub fn size(&self, state: &Aurora) -> (f64, f64) {
+        match *self {
+            Window::Output => {
+                let (p, s) = (state.output_physical(), state.output_scale());
+                (p.w as f64 / s, p.h as f64 / s)
+            }
+            Window::Fixed(w, h) => (w, h),
+        }
+    }
 }
 
 pub struct HostDnd {
@@ -131,22 +160,29 @@ pub struct HostDnd {
     standin: Option<standin::StandIn>,
     /// The drag in progress, if any.
     session: Option<Arc<Inner>>,
+    /// Where Aurora's window on the host ends, in the host's logical coordinates: leaving it with a
+    /// guest drag in flight is the hand-off to the host (`out.rs`).
+    window: Window,
+    /// The window's surface as a proxy on our queue: a guest drag's origin.
+    origin: Option<wayland_client::protocol::wl_surface::WlSurface>,
+    /// A drag of ours the host now owns.
+    out: Option<out::Out>,
 }
 
 /// Open the bridge if there is a host to bridge to. Logs the outcome once; never fails.
 pub fn start(state: &mut Aurora, handle: &LoopHandle<'static, Aurora>, choice: Choice) {
     const OFF: &str = "aurora-compositor: host drag and drop is off";
-    let (conn, standin) = match choice {
+    let (conn, standin, foreign_surface, window) = match choice {
         Choice::Disabled => return eprintln!("{OFF} (--no-host-dnd); guest-to-guest drag and drop still works"),
         Choice::NoHost(why) => return eprintln!("{OFF} ({why}); guest-to-guest drag and drop still works"),
-        Choice::Winit(d) => {
+        Choice::Winit { display, surface } => {
             // SAFETY: the pointer is winit's live wl_display, which outlives the event loop. A
             // foreign backend never disconnects it.
-            let backend = unsafe { Backend::from_foreign_display(d.0.cast()) };
-            (Connection::from_backend(backend), None)
+            let backend = unsafe { Backend::from_foreign_display(display.0.cast()) };
+            (Connection::from_backend(backend), None, surface, Window::Output)
         }
         Choice::StandIn(name) => match open_standin(&name) {
-            Ok(x) => x,
+            Ok((conn, standin, surface)) => (conn, standin, Some(surface), Window::Fixed(standin::SIZE.0 as f64, standin::SIZE.1 as f64)),
             Err(e) => return eprintln!("{OFF} ({e}); guest-to-guest drag and drop still works"),
         },
     };
@@ -158,7 +194,13 @@ pub fn start(state: &mut Aurora, handle: &LoopHandle<'static, Aurora>, choice: C
         Ok(f) => f,
         Err(e) => return eprintln!("{OFF} ({e}); guest-to-guest drag and drop still works"),
     };
-    state.host_dnd = Some(HostDnd { feeder, standin, session: None });
+    let origin = foreign_surface.and_then(|s| out::adopt_surface(&feeder.conn, s));
+    let out_direction = if origin.is_some() {
+        "both ways"
+    } else {
+        "host to guest only (the host window's surface is not known, so a guest drag cannot be handed out)"
+    };
+    state.host_dnd = Some(HostDnd { feeder, standin, session: None, window, origin, out: None });
     let inserted = handle.insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, state| {
         let Some(hd) = state.host_dnd.as_mut() else { return Ok(PostAction::Remove) };
         if let Some(s) = hd.standin.as_mut() {
@@ -180,10 +222,10 @@ pub fn start(state: &mut Aurora, handle: &LoopHandle<'static, Aurora>, choice: C
         state.host_dnd = None;
         return eprintln!("{OFF} (cannot watch the connection)");
     }
-    eprintln!("aurora-compositor: host drag and drop bridging is on (wl_data_device on the host connection; host to guest only)");
+    eprintln!("aurora-compositor: host drag and drop bridging is on (wl_data_device on the host connection; {out_direction})");
 }
 
-fn open_standin(name: &std::ffi::OsStr) -> Result<(Connection, Option<standin::StandIn>), String> {
+fn open_standin(name: &std::ffi::OsStr) -> Result<(Connection, Option<standin::StandIn>, ForeignSurface), String> {
     let path = std::path::Path::new(name);
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -194,11 +236,14 @@ fn open_standin(name: &std::ffi::OsStr) -> Result<(Connection, Option<standin::S
     let stream = std::os::unix::net::UnixStream::connect(&path).map_err(|e| format!("cannot connect to {}: {e}", path.display()))?;
     let first = Connection::from_socket(stream).map_err(|e| e.to_string())?;
     let standin = standin::open(first.clone())?;
-    // The same display, seen through a foreign backend: what production does with winit's.
+    // The same display, seen through a foreign backend: what production does with winit's. The
+    // stand-in's surface stands in for winit's window, pointer and all, so the guest-to-host
+    // hand-off runs the production code path (`out::adopt_surface`).
+    let surface = ForeignSurface(standin.surface_ptr());
     let ptr = first.backend().display_ptr();
     // SAFETY: `first` (kept alive inside the stand-in) owns the display.
     let backend = unsafe { Backend::from_foreign_display(ptr) };
-    Ok((Connection::from_backend(backend), Some(standin)))
+    Ok((Connection::from_backend(backend), Some(standin), surface))
 }
 
 /// Frame tick from the winit backend: winit's own reads can move our events into our queue
@@ -226,6 +271,8 @@ fn pump(state: &mut Aurora) {
             DragEvent::Drop => dropped(state, &mut hd),
         }
     }
+    // The host pointer may have left the window with a guest drag in flight.
+    out::check(state, &mut hd);
     let _ = hd.feeder.conn.flush();
     state.host_dnd = Some(hd);
 }
@@ -304,7 +351,7 @@ fn motion(state: &mut Aurora, inner: &Arc<Inner>, pos: (f64, f64)) {
 }
 
 /// Is this client not provably outside a domain? The clipboard's fail-closed answer.
-fn is_confined(state: &Aurora, s: &WlSurface) -> bool {
+pub fn is_confined(state: &Aurora, s: &WlSurface) -> bool {
     state
         .display_handle
         .get_client(s.id())
@@ -506,7 +553,7 @@ impl Inner {
     }
 }
 
-fn to_wl(a: DndAction) -> WlDndAction {
+pub(crate) fn to_wl(a: DndAction) -> WlDndAction {
     match a {
         DndAction::Copy => WlDndAction::Copy,
         DndAction::Move => WlDndAction::Move,

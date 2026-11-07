@@ -70,6 +70,13 @@ pub fn open(conn: Connection) -> Result<StandIn, String> {
 }
 
 impl StandIn {
+    /// The window's `wl_surface`, as a raw proxy: what raw-window-handle gives for winit's window.
+    /// The bridge wraps it on its own queue, exactly as it wraps winit's.
+    pub fn surface_ptr(&self) -> *mut std::ffi::c_void {
+        use wayland_client::Proxy;
+        self._keep.2.id().as_ptr().cast()
+    }
+
     /// Keep the stand-in window alive and acknowledging configures. Never blocks.
     pub fn dispatch(&mut self) {
         let _ = self.queue.dispatch_pending(&mut self.win);

@@ -2,9 +2,13 @@
 //! Connects via WAYLAND_DISPLAY and XDG_RUNTIME_DIR. It never touches anything but the compositor
 //! it is pointed at.
 //!
-//!   clipclient set   [--primary] MIME DATA     own the selection and serve DATA until killed
-//!                                              (prints `set`, `send MIME` per paste, `cancelled`)
+//!   clipclient set   [--primary] MIME DATA ... own the selection and serve DATA until killed; one
+//!                                              MIME|DATA pair per representation, so one copy can
+//!                                              offer several (prints `set`, `send MIME` per paste,
+//!                                              `cancelled`)
 //!   clipclient get   [--primary] MIME          print `data <DATA:?>` for the current selection, or `none`
+//!   clipclient types [--primary]               print `types=a,b,c`: every representation the current
+//!                                              selection offers, in the order it offered them
 //!   clipclient watch [--primary] SECONDS       print `sel <types>` / `sel none` per selection event
 //!   clipclient clear [--primary]               unset the selection
 
@@ -30,7 +34,7 @@ struct Offer(Mutex<Vec<String>>);
 struct App {
     primary: bool,
     verbose: bool,
-    serve: Option<(String, Vec<u8>)>,
+    serve: Vec<(String, Vec<u8>)>,
     current: Option<ExtDataControlOfferV1>,
     own: Option<ExtDataControlSourceV1>,
     events: u32,
@@ -68,11 +72,9 @@ impl Dispatch<ExtDataControlSourceV1, ()> for App {
         match e {
             ext_data_control_source_v1::Event::Send { mime_type, fd } => {
                 say(&format!("send {mime_type}"));
-                if let Some((m, data)) = &s.serve {
-                    if *m == mime_type {
-                        let mut f = std::fs::File::from(fd);
-                        let _ = f.write_all(data);
-                    }
+                if let Some((_, data)) = s.serve.iter().find(|(m, _)| *m == mime_type) {
+                    let mut f = std::fs::File::from(fd);
+                    let _ = f.write_all(data);
                 }
             }
             ext_data_control_source_v1::Event::Cancelled => { say("cancelled"); src.destroy(); if s.own.as_ref() == Some(src) { s.own = None; } }
@@ -99,21 +101,29 @@ fn main() {
     let mgr: ExtDataControlManagerV1 = globals.bind(&qh, 1..=1, ()).expect("no ext_data_control_manager_v1");
     let seat: WlSeat = globals.bind(&qh, 1..=1, ()).expect("no wl_seat");
     let dev = mgr.get_data_device(&seat, &qh, ());
-    let mut app = App { primary, verbose: mode == "watch", serve: None, current: None, own: None, events: 0 };
+    let mut app = App { primary, verbose: mode == "watch", serve: Vec::new(), current: None, own: None, events: 0 };
     q.roundtrip(&mut app).unwrap();
     q.roundtrip(&mut app).unwrap();
 
     match mode.as_str() {
         "set" => {
-            let (mime, data) = (rest[0].clone(), rest[1].clone());
+            assert!(rest.len() >= 2 && rest.len() % 2 == 0, "set wants MIME DATA pairs");
             let src = mgr.create_data_source(&qh, ());
-            src.offer(mime.clone());
+            for pair in rest.chunks(2) {
+                src.offer(pair[0].clone());
+                app.serve.push((pair[0].clone(), pair[1].clone().into_bytes()));
+            }
             if primary { dev.set_primary_selection(Some(&src)); } else { dev.set_selection(Some(&src)); }
-            app.serve = Some((mime, data.into_bytes()));
             app.own = Some(src);
             q.roundtrip(&mut app).unwrap();
             say("set");
             loop { q.blocking_dispatch(&mut app).unwrap(); }
+        }
+        "types" => {
+            match app.current.as_ref() {
+                Some(o) => say(&format!("types={}", o.data::<Offer>().unwrap().0.lock().unwrap().join(","))),
+                None => say("none"),
+            }
         }
         "get" => {
             let mime = rest[0].clone();

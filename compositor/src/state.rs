@@ -59,6 +59,12 @@ pub struct Aurora {
     pub drop_socket: Option<std::path::PathBuf>,
     /// winit's `wl_display`, when the host is Wayland: where the drag bridge listens.
     pub host_display: Option<crate::dnd::ForeignDisplay>,
+    /// winit's window `wl_surface`, when the host is Wayland: the origin a guest drag handed to the
+    /// host is started from (see `crate::dnd::out`).
+    pub host_surface: Option<crate::dnd::ForeignSurface>,
+    /// The drag a guest client started, wrapped so it can be handed to the host without being
+    /// cancelled (see `crate::dnd::out`).
+    pub guest_drag: Option<std::sync::Arc<crate::dnd::out::GuestDrag>>,
     pub popups: PopupManager,
     /// The surface of the client popup currently holding a pointer grab, if any. Kept so that
     /// the grab can be dropped once the popup is gone: see `Aurora::refocus_after_popup`.
@@ -202,6 +208,8 @@ impl Aurora {
             host_dnd: None,
             drop_socket: None,
             host_display: None,
+            host_surface: None,
+            guest_drag: None,
             popups,
             popup_grab_surface: None,
             cursor: Default::default(),

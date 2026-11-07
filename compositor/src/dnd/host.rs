@@ -18,13 +18,22 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
+        wl_compositor::WlCompositor,
         wl_data_device::{self, WlDataDevice},
         wl_data_device_manager::{DndAction as WlDndAction, WlDataDeviceManager},
         wl_data_offer::{self, WlDataOffer},
+        wl_pointer::{self, WlPointer},
         wl_registry::WlRegistry,
-        wl_seat::WlSeat,
+        wl_seat::{self, WlSeat},
+        wl_shm::WlShm,
+        wl_shm_pool::WlShmPool,
+        wl_surface::WlSurface,
+        wl_buffer::WlBuffer,
     },
 };
+
+/// `BTN_LEFT`, as `wl_pointer` spells it.
+pub const BTN_LEFT: u32 = 0x110;
 
 /// What the offer said about itself, filled in by `wl_data_offer` events before `enter`.
 #[derive(Default)]
@@ -52,9 +61,26 @@ pub enum DragEvent {
     Drop,
 }
 
+/// What the host's pointer is doing to Aurora's own window, heard on our own `wl_pointer`.
+///
+/// This is how a guest-to-host drag gets its two missing facts without winit: the serial of the
+/// press that is still held (`wl_data_device.start_drag` is only granted for an implicit grab) and
+/// where the pointer is in the window, so that leaving the window can be the hand-off.
+#[derive(Default, Clone, Copy)]
+pub struct Ptr {
+    /// Surface-local position of the last `enter` or `motion`: Aurora's own output coordinates.
+    pub pos: (f64, f64),
+    /// The serial of the left press, while it is held.
+    pub press: Option<u32>,
+}
+
 #[derive(Default)]
 pub struct DragClient {
     pub events: Vec<DragEvent>,
+    pub ptr: Ptr,
+    /// Set when the host finished or cancelled a drag we handed to it (see `out.rs`).
+    pub out_over: bool,
+    pointer: Option<WlPointer>,
 }
 
 /// Our `wl_data_device` and the queue it is dispatched on.
@@ -62,7 +88,11 @@ pub struct Feeder {
     pub conn: Connection,
     pub queue: EventQueue<DragClient>,
     pub client: DragClient,
-    _device: WlDataDevice,
+    pub device: WlDataDevice,
+    /// For a drag going the other way: the source and the drag icon are ours to create.
+    pub manager: WlDataDeviceManager,
+    pub compositor: WlCompositor,
+    pub shm: WlShm,
 }
 
 impl Feeder {
@@ -71,11 +101,18 @@ impl Feeder {
         let (globals, mut queue) = registry_queue_init::<DragClient>(&conn).map_err(|e| format!("host registry: {e}"))?;
         let qh = queue.handle();
         let manager: WlDataDeviceManager = globals.bind(&qh, 1..=3, ()).map_err(|_| "the host has no wl_data_device_manager".to_string())?;
-        let seat: WlSeat = globals.bind(&qh, 1..=1, ()).map_err(|_| "the host has no wl_seat".to_string())?;
+        // Up to 5 so the seat reports its capabilities: a `wl_pointer` may only be created once the
+        // host says it has one.
+        let seat: WlSeat = globals.bind(&qh, 1..=5, ()).map_err(|_| "the host has no wl_seat".to_string())?;
+        let compositor: WlCompositor = globals.bind(&qh, 1..=4, ()).map_err(|_| "the host has no wl_compositor".to_string())?;
+        let shm: WlShm = globals.bind(&qh, 1..=1, ()).map_err(|_| "the host has no wl_shm".to_string())?;
         let device = manager.get_data_device(&seat, &qh, ());
         let mut client = DragClient::default();
+        // Two roundtrips: the first brings the seat's capabilities, which is when the pointer is
+        // created; the second brings whatever the pointer has to say about the window already.
         queue.roundtrip(&mut client).map_err(|e| format!("host roundtrip: {e}"))?;
-        Ok(Feeder { conn, queue, client, _device: device })
+        queue.roundtrip(&mut client).map_err(|e| format!("host roundtrip: {e}"))?;
+        Ok(Feeder { conn, queue, client, device, manager, compositor, shm })
     }
 
     /// Read what the host sent and dispatch it. Never blocks.
@@ -134,8 +171,38 @@ impl Dispatch<WlDataOffer, OfferData> for DragClient {
     }
 }
 
+impl Dispatch<WlSeat, ()> for DragClient {
+    fn event(s: &mut Self, seat: &WlSeat, e: wl_seat::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(c) } = e {
+            if c.contains(wl_seat::Capability::Pointer) && s.pointer.is_none() {
+                s.pointer = Some(seat.get_pointer(qh, ()));
+            }
+        }
+    }
+}
+
+/// Our own view of the host pointer. We never act on it as input (winit's pointer is the input
+/// path); we only remember where it is and whether the left button is held, which is what starting
+/// a drag on the host needs.
+impl Dispatch<WlPointer, ()> for DragClient {
+    fn event(s: &mut Self, _: &WlPointer, e: wl_pointer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match e {
+            wl_pointer::Event::Enter { surface_x, surface_y, .. } => s.ptr.pos = (surface_x, surface_y),
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => s.ptr.pos = (surface_x, surface_y),
+            wl_pointer::Event::Button { serial, button: BTN_LEFT, state: WEnum::Value(st), .. } => {
+                s.ptr.press = (st == wl_pointer::ButtonState::Pressed).then_some(serial);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<WlRegistry, GlobalListContents> for DragClient {
     fn event(_: &mut Self, _: &WlRegistry, _: wayland_client::protocol::wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
 }
-delegate_noop!(DragClient: ignore WlSeat);
 delegate_noop!(DragClient: WlDataDeviceManager);
+delegate_noop!(DragClient: WlCompositor);
+delegate_noop!(DragClient: ignore WlShm);
+delegate_noop!(DragClient: WlShmPool);
+delegate_noop!(DragClient: ignore WlBuffer);
+delegate_noop!(DragClient: ignore WlSurface);

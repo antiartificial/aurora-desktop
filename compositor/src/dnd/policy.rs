@@ -43,6 +43,17 @@ pub fn for_grant(offered: &[String]) -> Vec<String> {
     offered.iter().filter(|m| is_uri_list(m) || (!names_files(m) && !(has_files && is_plain_text(m)))).cloned().collect()
 }
 
+/// The types a guest drag may offer the HOST (decision 0020, guest to host).
+///
+/// A client in a domain sees in-domain paths (`/run/aurora/drops/...`): a path the host cannot
+/// open, and the shape of the sandbox. So the same types the incoming direction withholds from a
+/// confined client are withheld from the host when the SOURCE is confined. An unconfined client's
+/// paths are real host paths and go out unchanged. Offering a type we cannot serve honestly is
+/// worse than not offering it, which is the whole rule here.
+pub fn for_host(offered: &[String], confined: bool) -> Vec<String> {
+    if confined { for_confined(offered) } else { offered.to_vec() }
+}
+
 /// The types of `offered` that a confined client may be shown.
 ///
 /// File-naming types are withheld. So is plain text when a file type is present: a file drag's
@@ -87,6 +98,15 @@ mod tests {
         assert_eq!(for_grant(&v(&["text/plain", "text/html"])), v(&["text/plain", "text/html"]));
         assert!(for_grant(&v(&["x-special/gnome-copied-files", "text/plain"])).is_empty());
         assert!(is_uri_list("text/uri-list") && !is_uri_list("application/x-kde4-urilist") && !is_uri_list("text/x-moz-url"));
+    }
+
+    #[test]
+    fn a_confined_client_cannot_hand_the_host_a_path_but_can_hand_it_text() {
+        let files = v(&["text/uri-list", "text/plain;charset=utf-8", "image/png"]);
+        assert_eq!(for_host(&files, true), v(&["image/png"]));
+        assert_eq!(for_host(&files, false), files);
+        let text = v(&["text/plain;charset=utf-8", "text/html"]);
+        assert_eq!(for_host(&text, true), text);
     }
 
     #[test]

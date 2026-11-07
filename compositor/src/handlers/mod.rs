@@ -125,6 +125,12 @@ impl WaylandDndGrabHandler for Aurora {
             GrabType::Pointer => {
                 let ptr = seat.get_pointer().unwrap();
                 let start_data = ptr.grab_start_data().unwrap();
+                // Whether this drag could be handed to the host, and what it may offer it, is
+                // decided by the client that started it: the surface the press landed on. A client
+                // in a domain may not hand the host a path only that domain can see. See
+                // `crate::dnd::out`.
+                let confined = start_data.focus.as_ref().map_or(true, |(s, _)| crate::dnd::is_confined(self, s));
+                let source = crate::dnd::out::wrap(self, source, confined);
 
                 // create a dnd grab to start the operation
                 let grab = DnDGrab::new_pointer(&self.display_handle, start_data, source, seat);

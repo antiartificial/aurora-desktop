@@ -1,7 +1,7 @@
 # 0020. Drag and drop between the host and Aurora's clients, and what a dropped file means inside a domain
 
-- **Status:** proposed (host to guest and the interim file policy are built; the grant and guest to host are not)
-- **Date:** 2026-11-06
+- **Status:** accepted (host to guest, the grant, and guest to host are built; see "Guest to host" for the one line of winit plumbing it depends on)
+- **Date:** 2026-11-06 (guest to host amended 2026-11-07)
 
 ## Context
 
@@ -24,7 +24,7 @@ And one Aurora-specific problem: a dragged file is `text/uri-list`, lines of `fi
 
 **Files into a domain (interim, built).** A client that is not provably outside a domain (the clipboard's fail-closed test: `ClientState::may_read_clipboard` false) is not offered path-bearing types: `text/uri-list` and its relatives (`x-special/gnome-copied-files`, `text/x-moz-url`, `application/vnd.portal.file*`), and `text/plain` and its X11 aliases when a file type is present (a file drag's text is the path). Other types still arrive. If nothing is left, the app sees no drag at all. The data request is checked again, so asking for a withheld type anyway gets EOF. Every refusal is logged with the types withheld. This never leaks a path and never pretends a drop worked, but it is a refusal, not a feature.
 
-## The grant (not built)
+## The grant (built; this section is the design it was built to)
 
 Dropping a file on a domain app should be a grant, by the same rule as the powerbox (0007, 0011): the user's gesture on exactly this file is the authority, for this app, mode and verb.
 
@@ -39,13 +39,25 @@ What it needs, in order:
 
 Open: whether the mount is per drop or per session (per drop is simpler and revocable; per session lets a re-drop reuse it); how an app that never asked for files is told a file arrived (it already handles `text/uri-list` as ordinary DnD, which is the point); and Haiku apps, whose drops arrive as `B_SIMPLE_DATA` messages with `refs` the shim would have to build from the in-domain path.
 
-## Guest to host (not built)
+## Guest to host (built, by hand-off at the window edge)
 
-Not impossible; not done, because the missing piece is a design and cannot be verified from here. `wl_data_device.start_drag` on our queue needs the origin `wl_surface` (winit's, from raw-window-handle) and the serial of the pointer press (a `wl_pointer` on our queue hears it with its serial). But the host takes the pointer from Aurora the instant `start_drag` is called, so either every guest drag, including guest-to-guest, would round-trip through the host, or the hand-off would have to happen at the window edge while the press is still held (valid: the implicit grab outlives the surface edge), with a source wrapper that can be detached from Smithay's `DnDGrab` without cancelling. Both change guest-to-guest behaviour for the sake of a case that, with a full-screen Aurora window, rarely arises. Decide that, then build it on this transport.
+The open question was *when*, because `start_drag` takes the pointer away from Aurora the instant it is called. **Decided: at the window edge, not at drag start.** A guest drag is an ordinary Smithay drag between guest windows; the host drag starts only when the pointer leaves Aurora's window with the button still down, which is the moment the user has said "out there, not in here". Guest-to-guest therefore never round-trips through the host, and a drag that stays inside behaves exactly as it did before. The alternative (mirror every guest drag to the host at once) would make every in-Aurora drag depend on the host and is rejected.
+
+The parts, and where each fact comes from:
+
+1. **The origin surface.** The host grants `start_drag` only to the surface holding the implicit grab: winit's window. `raw-window-handle` gives its `wl_surface` pointer, which is wrapped as a proxy on the bridge's own queue with `ObjectId::from_ptr` (`dnd::out::adopt_surface`). This needs one line in `winit.rs` to capture the window handle beside the display handle (`state.host_surface`); without it the bridge says `host to guest only` at startup and a guest drag stays inside. In tests the stand-in window's surface is adopted by the same function, so the production path is the tested path.
+2. **The serial of the press.** A `wl_pointer` of our own on the host connection hears the press with the same serial winit's pointer hears, because a compositor sends each pointer event to every `wl_pointer` of the client. No winit API is needed. The same pointer's surface-local position is what decides the hand-off: outside `[0,w) x [0,h)` of the window, with the left button still down.
+3. **Taking the drag from Smithay without cancelling it.** Unsetting a `DnDGrab` calls `Source::cancel`, and `wl_data_source.cancelled` means "destroy this source". A handed-off drag is not over, so the source the grab holds is a wrapper (`dnd::out::Wrapped`) that forwards everything to the guest's real source until the hand-off and swallows it after. From then on the host's `wl_data_source` events drive the guest source one for one: `target`, `send`, `action`, `dnd_drop_performed`, `dnd_finished`, `cancelled`. The guest's targets get `leave` and the synthetic button is released, so nothing is stuck inside Aurora.
+4. **Data.** Lazy and zero-copy, like the other direction: the host target's pipe is handed to the guest app's `wl_data_source.send`. Aurora never reads the bytes.
+5. **Paths out of a domain.** A confined client's `text/uri-list` names in-domain paths that mean nothing on the host, so path-bearing types (and the plain-text twin) are withheld from the host when the SOURCE is confined -- the mirror of the incoming rule. A drag with nothing left is not handed over at all. Mapping an in-domain path back to the host path it was granted from is possible in principle (the controller knows both) and is not done; a confined app's file drag out therefore does not work, loudly.
+6. **Feedback.** A translucent card (`dnd::out::icon`) is passed to `start_drag`, so the host has something to draw under the cursor. And `wl_data_source.target` is now sent to a dragging app in both directions: Smithay's `Source for WlDataSource` leaves `accepted` as the trait's no-op, so nothing ever sent it and an app dragging anywhere, guest-to-guest included, was never told whether the thing under the pointer would take the drop.
+
+Still not built: Aurora does not render a drag icon for its own clients' drags (the icon surface is accepted and given the role, then ignored by the renderer), and touch drags are not handed over (Aurora has no touch handling). As with the incoming direction, the hand-off is verified against Aurora-as-host, not against KWin, Mutter or wlroots; `demos/drag-drop/run.sh --manual` is the script for checking it against a real host by hand.
 
 ## Consequences
 
-- Host to guest drag and drop works for text, HTML, images and, outside domains, files, with no copy of the data through Aurora.
-- Inside a domain a file drop is refused loudly until the grant exists. Users will see a drag that "does not take" and a log line, which is the honest state.
+- Host to guest drag and drop works for text, HTML, images and files, with no copy of the data through Aurora; guest to host works for everything a guest source offers that is not a path only a domain can see.
+- Inside a domain a file drop is a grant when a controller is there to make one, and refused loudly when it is not.
+- A guest drag is handed to the host at the window edge, so a drag that is meant to stay inside and one that is meant to leave are told apart by where the user takes the pointer, with no modifier and no gesture to learn.
 - `--deny-cgroup PATH` now also makes clients at or below that cgroup count as confined for the clipboard and drag policy (it already did for the trusted socket). That only ever narrows access.
 - The drag bridge opens one more object on winit's connection and reads that socket; winit's own reads can move our events into our queue, so the winit backend ticks the bridge once per frame.

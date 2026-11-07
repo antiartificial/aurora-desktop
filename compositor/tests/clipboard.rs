@@ -44,12 +44,37 @@ fn eventually_get(c: &mut Comp, primary: bool, mime: &str, want: &str) {
 }
 
 fn set(c: &mut Comp, primary: bool, mime: &str, data: &str) -> PathBuf {
+    set_many(c, primary, &[(mime, data)])
+}
+
+/// One copy offering several representations, the way a real "rich" copy does.
+fn set_many(c: &mut Comp, primary: bool, items: &[(&str, &str)]) -> PathBuf {
     let mut args = vec!["set"];
     if primary { args.push("--primary"); }
-    args.extend([mime, data]);
+    for (m, d) in items { args.extend([*m, *d]); }
     let log = c.example("clipclient", &args);
     wait_for("clipclient set", || read(&log).lines().any(|l| l == "set"));
     log
+}
+
+/// What the current selection says it can be pasted as, in the order it offered them.
+fn types(c: &mut Comp, primary: bool) -> String {
+    let mut args = vec!["types"];
+    if primary { args.push("--primary"); }
+    let log = c.example("clipclient", &args);
+    wait_for("clipclient types", || !read(&log).is_empty());
+    read(&log).trim().to_string()
+}
+
+/// Poll `types` until it says `want`.
+fn eventually_types(c: &mut Comp, primary: bool, want: &str) {
+    let t = std::time::Instant::now();
+    loop {
+        let g = types(c, primary);
+        if g == want { return; }
+        assert!(t.elapsed().as_secs() < 10, "wanted {want}, last saw {g}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn watch(c: &mut Comp, primary: bool, secs: &str) -> PathBuf {
@@ -207,4 +232,52 @@ fn a_host_without_data_control_is_not_fatal() {
     set(&mut guest, false, TXT, "fine");
     eventually_get(&mut guest, false, TXT, "fine");
     let _ = h.join();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rich copy and paste: one copy, several representations, and the PASTING side chooses. This is
+// what "like macOS" means on Wayland -- there is no conversion anywhere, so what the receiver can
+// choose from is exactly what the sender offered, and a type offered but not served would be worse
+// than one never offered. Both directions, with every representation's bytes read back.
+// ---------------------------------------------------------------------------------------------
+
+/// The four representations a rich copy carries: plain text, HTML, a file and an image.
+fn rich() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (TXT, "Aurora"),
+        ("text/html", "<b>Aurora</b>"),
+        ("text/uri-list", "file:///tmp/aurora-note.txt\r\n"),
+        ("image/png", "\u{89}PNG-pretend"),
+    ]
+}
+
+#[test]
+fn a_rich_host_copy_offers_every_representation_to_a_guest_and_each_one_reads_back() {
+    let (mut host, mut guest) = bridged();
+    let items = rich();
+    set_many(&mut host, false, &items);
+    eventually_types(&mut guest, false, &format!("types={TXT},text/html,text/uri-list,image/png"));
+    for (m, d) in &items {
+        assert_eq!(get(&mut guest, false, m), format!("data {d:?}"), "{m} did not come through");
+    }
+}
+
+#[test]
+fn a_rich_guest_copy_offers_every_representation_to_the_host_and_each_one_reads_back() {
+    let (mut host, mut guest) = bridged();
+    let items = rich();
+    set_many(&mut guest, false, &items);
+    eventually_types(&mut host, false, &format!("types={TXT},text/html,text/uri-list,image/png"));
+    for (m, d) in &items {
+        assert_eq!(get(&mut host, false, m), format!("data {d:?}"), "{m} did not come through");
+    }
+}
+
+#[test]
+fn a_type_nobody_offered_is_not_served_as_something_else() {
+    let (mut host, mut guest) = bridged();
+    set_many(&mut host, false, &[(TXT, "plain only")]);
+    eventually_get(&mut guest, false, TXT, "plain only");
+    // No conversion: asking for HTML gets nothing, never the plain text in its place.
+    assert_eq!(get(&mut guest, false, "text/html"), "data \"\"", "a type that was never offered was answered with data");
 }

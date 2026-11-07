@@ -120,6 +120,12 @@ pub fn init_winit(
                 state.host_display = Some(crate::dnd::ForeignDisplay(w.display.as_ptr()));
             }
         }
+        // The window's own surface. A drag handed OUT to the host has to name it as the
+        // origin, because `start_drag` is granted only to the surface holding the implicit
+        // pointer grab, and on a winit host that is this window. Without it a guest drag can
+        // still happen, it just cannot leave Aurora, and the startup line says so.
+        // Decision 0020, "Guest to host".
+        state.host_surface = crate::dnd::out::surface_of(backend.window());
     }
     // TEST AFFORDANCE: AURORA_TEST_NO_SHARED_EGL=1 behaves as if context B could
     // not be created, so the direct fallback below can be exercised. Loud, and
