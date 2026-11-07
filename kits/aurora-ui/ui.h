@@ -699,6 +699,31 @@ private:
     // the only piece of window state a handler must not act on directly: everything else a
     // handler touches is a scalar or a damage rectangle, but a resize REPLACES the pixel buffer
     // the main thread is drawing into.
+    // ---- input arrives on another thread -------------------------------------------------------
+    //
+    // present_wl dispatches on its own thread, so every one of these callbacks used to run there
+    // and mutate window state -- hover, focus, the pressed node, the damage list, and for a while
+    // the pixel buffer itself -- while the main thread was reading it. The buffer was the one
+    // that crashed; the rest had simply not been caught yet.
+    //
+    // So the callbacks now only RECORD. One small struct per event goes on a queue under a
+    // mutex, and the loop drains it and dispatches on the main thread, where every node already
+    // lives. It is the same rule the menu, the clipboard and the resize each arrived at
+    // separately: handlers decide, the loop acts. This makes it the toolkit's shape rather than
+    // three special cases.
+    struct InputEvent {
+        int kind = 0;            // AU_EV_*, or kKey
+        int a = 0, b = 0;
+        au_key key{};
+        static const int kKey = -1;
+    };
+    std::mutex q_mu_;
+    std::vector<InputEvent> queue_;
+
+    void DrainInput();                       // main thread: dispatch what arrived
+    void HandleEvent(int kind, int a, int b);
+    void HandleKey(const au_key& k);
+
     std::atomic<bool> ext_dirty_{false};
     std::mutex size_mu_;
     int want_w_ = 0, want_h_ = 0;

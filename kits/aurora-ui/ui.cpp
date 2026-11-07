@@ -2799,9 +2799,57 @@ Window::DamageStats Window::damage_stats() const {
     return s;
 }
 
+// The present_wl callbacks. These run on ITS thread and do exactly one thing: record.
 void Window::Event(void* user, int kind, int a, int b) {
     Window* w = static_cast<Window*>(user);
     if (!w) return;
+    std::lock_guard<std::mutex> g(w->q_mu_);
+    // Pointer motion COALESCES. A pointer moving at 1000 Hz into a window drawing at 60 would
+    // otherwise build a queue of positions that are all stale but the last, and the cursor would
+    // lag behind the hand by however far behind the queue had fallen.
+    if (kind == AU_EV_POINTER_MOVE && !w->queue_.empty() &&
+        w->queue_.back().kind == AU_EV_POINTER_MOVE) {
+        w->queue_.back().a = a;
+        w->queue_.back().b = b;
+        return;
+    }
+    // A bound, so a wedged main loop cannot be made to eat memory by waggling the mouse. Dropping
+    // the OLDEST keeps the newest state, which is the one worth having.
+    if (w->queue_.size() > 4096) w->queue_.erase(w->queue_.begin());
+    InputEvent ev;
+    ev.kind = kind;
+    ev.a = a;
+    ev.b = b;
+    w->queue_.push_back(ev);
+}
+
+void Window::Key(void* user, const au_key* k) {
+    Window* w = static_cast<Window*>(user);
+    if (!w || !k) return;
+    std::lock_guard<std::mutex> g(w->q_mu_);
+    if (w->queue_.size() > 4096) w->queue_.erase(w->queue_.begin());
+    InputEvent ev;
+    ev.kind = InputEvent::kKey;
+    ev.key = *k;
+    w->queue_.push_back(ev);
+}
+
+// Main thread. Everything below here touches nodes, focus, damage and the surface, and is only
+// ever reached from the loop.
+void Window::DrainInput() {
+    std::vector<InputEvent> todo;
+    {
+        std::lock_guard<std::mutex> g(q_mu_);
+        todo.swap(queue_);
+    }
+    for (const InputEvent& ev : todo) {
+        if (ev.kind == InputEvent::kKey) HandleKey(ev.key);
+        else HandleEvent(ev.kind, ev.a, ev.b);
+    }
+}
+
+void Window::HandleEvent(int kind, int a, int b) {
+    Window* w = this;
     switch (kind) {
         case AU_EV_CLOSE:
             w->quit_ = true;
@@ -2938,9 +2986,9 @@ void Window::Event(void* user, int kind, int a, int b) {
     }
 }
 
-void Window::Key(void* user, const au_key* k) {
-    Window* w = static_cast<Window*>(user);
-    if (!w || !k) return;
+void Window::HandleKey(const au_key& kk) {
+    Window* w = this;
+    const au_key* k = &kk;
     w->keys_seen_++;
     // Tab moves focus. It is handled before the focused node sees the key, because a widget that
     // swallowed Tab would trap a keyboard user inside it.
@@ -3182,7 +3230,10 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                     .count() > max_ms)
             break;
-        // Drain deferred work BEFORE drawing. An event handler cannot create a surface -- it
+        // Input first: dispatch what the event thread recorded, on THIS thread, where the
+        // nodes live. Before the deferred queue, because a handler may defer something.
+        DrainInput();
+        // Then deferred work, BEFORE drawing. An event handler cannot create a surface -- it
         // runs on present_wl's event thread, which holds the display mutex, so au_wl_popup_create
         // would deadlock against it. Handlers decide; the loop acts.
         {
