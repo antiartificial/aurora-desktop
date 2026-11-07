@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <strings.h>
 #include <cctype>
@@ -624,7 +625,96 @@ private:
     bool focused_ = false, caret_on_ = true;
 };
 
+// ---- Reveal -----------------------------------------------------------------------------------
+
+class RevealNode : public Node {
+public:
+    RevealNode(State<bool>* shown, Desc child, Transition t)
+        : shown_(shown), c_(std::move(child)), t_(t) {
+        if (shown_) shown_->attach(this);
+        e_.target(shown_ && shown_->get() ? 1.0f : 0.0f, 0);   // start at the end state
+        e_.snap();
+    }
+
+    Size Measure(const Env& env, Constraints c) override {
+        nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
+        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        if (t_.motion == Motion::None) e_.snap();
+        return Size{nat_.w, nat_.h * e_.value()};
+    }
+
+    void Place(Rect r) override {
+        frame = r;
+        c_->parent = this;
+        // The child keeps its natural height and is clipped, so revealing never reflows its
+        // contents. A child that re-laid-out every frame of the animation would be the
+        // expensive, janky version of this.
+        c_->Place(Rect{r.x, r.y, r.w, nat_.h});
+    }
+
+    void Draw(au_surface* s, const Env& env) override {
+        if (e_.value() <= 0.001f) return;
+        au_clip_set(s, frame.box());
+        c_->Draw(s, env);
+        au_clip_reset(s);
+    }
+
+    // Hit testing follows the STATE, not the animation: the target state is live immediately.
+    Node* HitTest(float x, float y) override {
+        if (!shown_ || !shown_->get()) return nullptr;
+        return c_->HitTest(x, y);
+    }
+    void Children(std::vector<Node*>* out) override {
+        if (shown_ && shown_->get()) out->push_back(c_.get());
+    }
+
+    // While moving, ask for a frame at display rate. When settled, stop asking: an idle window
+    // must go back to sleeping.
+    int TickMs() const override { return e_.running() ? 16 : 0; }
+    void OnTick() override { e_.tick(); }
+
+    void Retarget(bool allowed) override {
+        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        if (!allowed || t_.motion == Motion::None) { e_.target(want_, 0); e_.snap(); return; }
+        e_.target(want_, t_.ms);
+    }
+    bool Animating() const override { return e_.running(); }
+
+private:
+    State<bool>* shown_;
+    Desc c_;
+    Transition t_;
+    Ease e_;
+    Size nat_{};
+    float want_ = 0;
+};
+
 }  // namespace
+
+// ---- Ease -------------------------------------------------------------------------------------
+
+void Ease::target(float t, uint32_t ms) {
+    if (t == want_ && running_) return;      // already heading there
+    from_ = cur_;                            // resume from where it got to, not from the start
+    want_ = t;
+    ms_ = ms;
+    t0_ = std::chrono::steady_clock::now();
+    running_ = ms > 0 && cur_ != want_;
+    if (!running_) cur_ = want_;
+}
+
+bool Ease::tick() {
+    if (!running_) return false;
+    const double el =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0_).count();
+    float p = ms_ > 0 ? (float)(el / ms_) : 1.0f;
+    if (p >= 1.0f) { cur_ = want_; running_ = false; return false; }
+    // Cubic ease-out. No ease-in anywhere in this toolkit: for anything the user initiated it
+    // reads as the program hesitating.
+    const float k = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);
+    cur_ = from_ + (want_ - from_) * k;
+    return true;
+}
 
 // ---- damage -----------------------------------------------------------------------------------
 
@@ -674,6 +764,10 @@ Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
 Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
+Desc Reveal(State<bool>* shown, Desc child, Transition t) {
+    return std::make_shared<RevealNode>(shown, std::move(child), t);
+}
+
 Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch,
                std::function<void(const std::string&)> co, std::function<void()> ca,
                FieldOpts o) {
@@ -715,6 +809,20 @@ void Window::Draw() {
 
     if (!laid_) { Layout(); CollectFocusables(); damage_.all(); }   // new layout: all of it
 
+    // Drive transitions. Retarget first, so a state change that happened since the last frame
+    // starts moving; then, if anything IS moving, lay out again -- an animating node's size is
+    // part of the layout, so the frame would otherwise show the old geometry.
+    const bool allow = motion_allowed();
+    bool moving = false;
+    for (Node* n : all_) {
+        n->Retarget(allow);
+        if (n->Animating()) moving = true;
+    }
+    if (moving) {
+        Layout();
+        damage_.all();        // a reveal moves everything below it; its own rect is not enough
+    }
+
     const bool full = damage_.is_all();
     const Rect clip = full ? Rect{0, 0, (float)lw_, (float)lh_} : damage_.bounds();
 
@@ -727,6 +835,15 @@ void Window::Draw() {
     if (root_) root_->Draw(sf_, env_);
     au_clip_reset(sf_);
 
+    // AURORA_UI_SLOW_MS burns that many milliseconds inside the draw. It exists to prove the
+    // budget gate fires: a safety mechanism nobody has watched trip is a mechanism that does not
+    // work. Nothing reads it in a normal run.
+    if (const char* sl = getenv("AURORA_UI_SLOW_MS")) {
+        const double want = atof(sl);
+        const std::chrono::steady_clock::time_point s0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0)
+                   .count() < want) {}
+    }
     draw_ms_.push_back(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 
@@ -755,6 +872,18 @@ void Window::Draw() {
     }
     damage_.clear();
     dirty_ = false;
+}
+
+bool Window::motion_allowed() const {
+    // The last eight frames decide. Eight is enough to notice sustained pressure and few enough
+    // that one slow frame does not switch motion off for a whole interaction.
+    const size_t n = draw_ms_.size();
+    if (n < 8) return true;
+    size_t over = 0;
+    for (size_t i = n - 8; i < n; i++)
+        if (draw_ms_[i] > 8.0) over++;
+    if (over >= 3) { motion_degraded_++; return false; }
+    return true;
 }
 
 Window::DamageStats Window::damage_stats() const {
@@ -893,6 +1022,7 @@ void Window::Key(void* user, const au_key* k) {
 
 void Window::CollectFocusables() {
     focusables_.clear();
+    all_.clear();
     if (!root_) return;
     // Depth-first in layout order, which is the order a reader's eye takes and therefore the
     // order Tab should follow.
@@ -906,6 +1036,7 @@ void Window::CollectFocusables() {
         n->Children(&kids);
         for (size_t i = kids.size(); i > 0; i--) stack.push_back(kids[i - 1]);
     }
+    all_ = order;
     for (Node* n : order)
         if (n->CanFocus()) focusables_.push_back(n);
     if (focus_ && std::find(focusables_.begin(), focusables_.end(), focus_) == focusables_.end())
@@ -978,13 +1109,24 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
         //
         // The timeout is a floor on responsiveness, not a tick: nothing animates yet. When the
         // animation driver lands it shortens this while a transition is running.
-        // Sleep no longer than the focused node's tick asks for. A caret blinks at 530 ms; an
-        // idle window with nothing animating still sleeps the full interval.
-        const int tick = focus_ ? focus_->TickMs() : 0;
-        const int wait = max_ms > 0 ? 20 : (tick > 0 ? tick : 100);
-        if (!au_wl_wait(wl_, wait) && tick > 0 && focus_) {
-            focus_->OnTick();
-            Invalidate(focus_->frame);
+        // Sleep no longer than the shortest tick anything asks for: a caret blinks at 530 ms, a
+        // running transition wants 16. An idle window with nothing animating sleeps the full
+        // interval, which is what keeps a desktop of open windows off the CPU.
+        int tick = 0;
+        for (Node* n : all_) {
+            const int t = n->TickMs();
+            if (t > 0 && (tick == 0 || t < tick)) tick = t;
+        }
+        if (focus_) {
+            const int t = focus_->TickMs();
+            if (t > 0 && (tick == 0 || t < tick)) tick = t;
+        }
+        const int wait = max_ms > 0 ? std::min(20, tick > 0 ? tick : 20)
+                                    : (tick > 0 ? tick : 100);
+        if (!au_wl_wait(wl_, wait) && tick > 0) {
+            for (Node* n : all_)
+                if (n->TickMs() > 0) { n->OnTick(); Invalidate(n->frame); }
+            if (focus_ && focus_->TickMs() > 0) { focus_->OnTick(); Invalidate(focus_->frame); }
         }
     }
     return 0;

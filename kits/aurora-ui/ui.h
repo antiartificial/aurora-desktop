@@ -127,9 +127,16 @@ public:
     virtual void OnDragTo(float x, float y) { (void)x; (void)y; }
 
     // A node that animates asks for a tick. 0 means "never wake me". The window uses the
-    // smallest interval any focused node asks for, so an idle window still sleeps.
+    // smallest interval any node asks for, so an idle window still sleeps.
     virtual int TickMs() const { return 0; }
     virtual void OnTick() {}
+
+    // Transitions, as virtuals so the window never needs to know a concrete animating type.
+    // Retarget is called each frame with whether motion is affordable; a node that animates
+    // its own geometry answers true from Animating while it moves, which tells the window to
+    // lay out again, because the node's size is part of the layout.
+    virtual void Retarget(bool motion_allowed) { (void)motion_allowed; }
+    virtual bool Animating() const { return false; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
 
     // Wheel and keys return true when handled. Unhandled events bubble to `parent`, which is
@@ -242,6 +249,47 @@ Desc TextField(State<std::string>* text,
                std::function<void()> on_cancel = nullptr,
                FieldOpts opts = FieldOpts{});
 
+// ---- transitions ------------------------------------------------------------------------------
+
+// A transition is a property of a state change, not an animation someone writes. See
+// docs/aurora-ui.md section 1 for the four rules; the two this type enforces are that the curve
+// is ease-out (there is no ease-in: it reads as sluggish for anything the user initiated) and
+// that motion is something the system opts INTO when it can afford it.
+enum class Motion : uint8_t { None, Reveal };   // Reveal: height 0 <-> natural. Fade needs alpha.
+enum class Curve : uint8_t { EaseOut, Linear };
+
+struct Transition {
+    Motion motion = Motion::Reveal;
+    uint32_t ms = 140;                 // matches the shell's chrome
+    Curve curve = Curve::EaseOut;
+};
+
+// Eased progress, and the one rule that makes a reversal not stutter: it resumes from where it
+// got to rather than from the start.
+class Ease {
+public:
+    void target(float t, uint32_t ms);
+    float value() const { return cur_; }
+    bool running() const { return running_; }
+    // Advance to now. Returns true while still moving.
+    bool tick();
+    void snap() { cur_ = want_; running_ = false; }
+
+private:
+    float cur_ = 0, from_ = 0, want_ = 0;
+    uint32_t ms_ = 140;
+    bool running_ = false;
+    std::chrono::steady_clock::time_point t0_{};
+};
+
+// A container that reveals its child: height animates between zero and the child's natural
+// height. The child is NOT measured differently -- it keeps its own layout -- so revealing does
+// not reflow the child's contents, which is what makes a reveal cheap and stable.
+//
+// The target state is live immediately: `shown` flips, hit testing follows it the same frame,
+// and only the pixels catch up. A transition that gated input would be a latency bug in costume.
+Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
+
 // ---- damage -----------------------------------------------------------------------------------
 
 // A bounded list of dirty rectangles in LAYOUT units.
@@ -325,6 +373,7 @@ private:
     void SetFocus(Node* n);
 
     std::vector<Node*> focusables_;
+    std::vector<Node*> all_;        // every node, from one walk; focusables_ is a subset
     Node* focus_ = nullptr;
     size_t keys_seen_ = 0;
     // Click counting, for double and triple clicks.
@@ -332,6 +381,7 @@ private:
     Node* last_node_ = nullptr;
     float last_x_ = 0, last_y_ = 0;
     int clicks_ = 0;
+    mutable size_t motion_degraded_ = 0;
 
     au_wl* wl_ = nullptr;
     au_wl_win* win_ = nullptr;
@@ -353,6 +403,12 @@ public:
     // What damage tracking actually saved, so the claim is measured rather than asserted.
     struct DamageStats { size_t full = 0, partial = 0; double mean_fraction = 1.0; };
     DamageStats damage_stats() const;
+
+    // Motion degrades rather than dropping frames: when the recent frames have run over
+    // budget, a new transition resolves to None and a running one snaps. Same rule the
+    // compositor uses for glass -- an effect is promoted into, never assumed.
+    bool motion_allowed() const;
+    size_t motion_degraded() const { return motion_degraded_; }
 };
 
 template <class T>

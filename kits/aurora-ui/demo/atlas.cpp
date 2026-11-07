@@ -227,8 +227,10 @@ int main() {
     int selected = -1;
     State<std::string> status(std::to_string(rows.Count()) + " items");
     State<std::string> filter("");
+    State<bool> filter_open(false);
     status.bind(&w);
     filter.bind(&w);
+    filter_open.bind(&w);
 
     // The filter narrows as you type. It is not a search box and it does not open a mode: it is
     // one of the three distinct things docs/aurora-ui.md separates -- type-ahead moves the
@@ -242,18 +244,33 @@ int main() {
         if (Node* n = w.FindNamed("files")) w.Invalidate(n->frame);
     };
 
+    // `/` opens the filter and focuses it; Escape clears it, closes it, and gives the keyboard
+    // back to the list. The bar is revealed rather than always present, which is what the
+    // transition is for and also what keeps the chrome out of the way when it is not in use.
+    auto close_filter = [&] {
+        filter.set("");
+        refilter("");
+        filter_open.set(false);
+        w.FocusNamed("files");
+    };
+
     w.SetRoot(VStack({
         padding(HStack({
                     Bold("Atlas"),
                     Label(&status),
                     Spacer(),
-                    named(TextField(&filter, refilter, nullptr,
-                                    [&] { filter.set(""); refilter(""); w.FocusNamed("files"); },
-                                    FieldOpts{"filter", false, 0, false}),
-                          "filter"),
                     Button("Home", [] {}),
                 }),
                 0.75f),
+        // Reveal: height animates 0 <-> natural on a cubic ease-out, 160 ms. The child keeps its
+        // own layout and is clipped, so revealing never reflows the field's contents.
+        named(Reveal(&filter_open,
+                     padding(named(TextField(&filter, refilter, nullptr, close_filter,
+                                             FieldOpts{"filter files", false, 0, false}),
+                                   "filter"),
+                             0.5f),
+                     Transition{Motion::Reveal, 160, Curve::EaseOut}),
+              "filterbar"),
         weight(named(ListView(&rows, &selected), "files"), 1),
     }, 0));
 
@@ -263,6 +280,13 @@ int main() {
     if (!w.FocusNamed("files")) fprintf(stderr, "atlas: could not focus the file list\n");
     // ATLAS_FOCUS=filter starts in the filter field, so a scripted run can type into it.
     if (const char* f = getenv("ATLAS_FOCUS")) w.FocusNamed(f);
+
+    // ATLAS_OPEN_FILTER=1 opens the bar at startup, so a scripted run can measure the reveal
+    // without a key injection race.
+    if (getenv("ATLAS_OPEN_FILTER")) {
+        filter_open.set(true);
+        w.FocusNamed("filter");
+    }
     rows.StartWorker();
 
     const char* fr = getenv("ATLAS_FRAMES");
@@ -283,8 +307,9 @@ int main() {
                ds.full, ds.partial, ds.mean_fraction);
         printf("ATLAS focusables=%zu focused=%s keys_seen=%zu\n", w.focusable_count(),
                w.focus() ? "yes" : "no", w.keys_seen());
-        printf("ATLAS filter=\"%s\" matched=%d of %d\n", filter.get().c_str(), rows.Count(),
-               rows.Total());
+        printf("ATLAS filter=\"%s\" matched=%d of %d open=%s\n", filter.get().c_str(),
+               rows.Count(), rows.Total(), filter_open.get() ? "yes" : "no");
+        printf("ATLAS motion_degraded=%zu\n", w.motion_degraded());
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);
