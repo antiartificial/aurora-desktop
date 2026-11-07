@@ -1,0 +1,27 @@
+# Which Haiku source Aurora compiles against.
+#
+# The Interface Kit is compiled IN PLACE from this checkout, never copied (decisions 0004 and
+# 0008). That keeps us from owning a 1.2-million-line vendored fork and from merging every
+# upstream fix by hand -- but it also means the build depends on whatever that working tree is
+# checked out to, which nothing recorded until now. Switching a branch over there silently
+# changed what Aurora built.
+#
+# So: this file is the pin. `kits/haiku-compat/CMakeLists.txt` compares it against the checkout
+# and warns, loudly, naming both commits. It warns rather than fails because this tree is
+# actively developed by the same author, and a hard error would block that work for no safety
+# gain -- the risk here is a silent difference, not a dangerous one.
+#
+# To move the pin: update COMMIT and BRANCH, rebuild, and re-run `cd kits && ctest --test-dir
+# build` plus demos/interface-kit and demos/kitchen-sink. Those are what actually exercise the
+# Haiku code, and a changed Interface Kit is exactly the kind of change their pixel assertions
+# are there to catch.
+
+REPO=github.com/antiartificial/Vitruvian
+BRANCH=test/gbm-with-fixes
+COMMIT=3145eee8bb77113d6506d487eadd8ad5be2bfedf
+DATE=2026-04-04
+
+# What is compiled from it. The dirty-tree check covers exactly these paths, and nothing else:
+# the checkout normally carries CMake build output at its top level, and warning about that
+# would be noise that teaches the reader to ignore the warning that matters.
+PATHS=src/kits headers src/system/libroot2
