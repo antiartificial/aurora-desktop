@@ -360,6 +360,20 @@ void OnListActivate(const Desc& list, std::function<void(int)> f);
 void OnListSelect(const Desc& list, std::function<void(int)> f);
 void OnIconsSelect(const Desc& icons, std::function<void(int)> f);
 
+// ---- selecting more than one row ---------------------------------------------------------------
+
+// Ctrl-click adds or removes a row; Shift-click sweeps a range from the anchor; Shift+arrows do
+// the same from the keyboard; Ctrl+A takes everything; a click on empty space below the rows
+// clears it, the way every file manager does.
+//
+// `selected` -- the int a ListView was built with -- keeps its old meaning: it is the CURSOR,
+// the row the keyboard is on and the one a preview pane follows. The set is what is highlighted.
+// They are the same single row almost always, and they come apart exactly where a file manager
+// needs them to. Keeping both means every existing caller still works and a list that never
+// multi-selects pays nothing.
+void OnListSelectionChanged(const Desc& list, std::function<void(const std::vector<int>&)> f);
+std::vector<int> ListSelection(const Desc& list);
+
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
 
 // ---- dragging out of, and into, a list --------------------------------------------------------
@@ -737,6 +751,7 @@ private:
     void HandleEvent(int kind, int a, int b);
     void HandleKey(const au_key& k);
 
+    uint32_t mods_ = 0;
     std::atomic<bool> ext_dirty_{false};
     std::mutex size_mu_;
     int want_w_ = 0, want_h_ = 0;
@@ -780,6 +795,11 @@ public:
     // asks for anything that touches the display -- a menu, a dialog, a new window. The rule is
     // simple and absolute: handlers decide, the loop acts.
     void Defer(std::function<void()> f);
+
+    // Which modifier keys are held right now (AU_MOD_*). A press carries where and how many
+    // clicks; what was HELD comes from here, which is what lets a list tell a plain click from
+    // a Ctrl-click without every node growing a new handler signature.
+    uint32_t mods() const { return mods_; }
 
     // Clipboard, from a key handler.
     //

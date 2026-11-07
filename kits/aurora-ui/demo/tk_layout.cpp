@@ -576,6 +576,99 @@ int main() {
         eq("past the last column sorts nothing", src.sorts == before);
     }
 
+    // ---- selecting more than one row -----------------------------------------------------------
+    // Without a Window there are no live modifiers, so the mouse paths that need Ctrl and Shift
+    // are driven through the keyboard, which carries its own mods. What is checked here is the
+    // model: what ends up selected, and where the cursor is left.
+    {
+        ManyRows src(10);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+
+        std::vector<int> last;
+        int calls = 0;
+        OnListSelectionChanged(list, [&](const std::vector<int>& v) { last = v; calls++; });
+
+        au_key down{}; down.pressed = 1; down.raw_char = 0x1f;
+        list->OnKey(down);                       // row 0
+        eq("one row selected", ListSelection(list).size() == 1);
+        eq("and it is the cursor", selected == 0 && ListSelection(list)[0] == 0);
+        eq("the app heard about it", calls > 0 && last.size() == 1);
+
+        // Shift+Down sweeps from the anchor rather than moving a single selection.
+        au_key sdown = down; sdown.mods = AU_MOD_SHIFT;
+        list->OnKey(sdown);
+        list->OnKey(sdown);
+        const std::vector<int> three = ListSelection(list);
+        eq("shift+arrow extends the range", three.size() == 3);
+        eq("the range runs from the anchor", !three.empty() && three.front() == 0 && three.back() == 2);
+        eq("and the cursor is at the far end", selected == 2);
+
+        // A plain arrow collapses back to one, which is what makes shift feel like a mode you
+        // leave rather than one you are stuck in.
+        list->OnKey(down);
+        eq("a plain arrow collapses the selection", ListSelection(list).size() == 1);
+        eq("to where the cursor now is", selected == 3 && ListSelection(list)[0] == 3);
+
+        // Ctrl+A takes everything.
+        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.utf8[0] = 'a';
+        list->OnKey(ctrl_a);
+        eq("ctrl+A selects every row", (int)ListSelection(list).size() == src.Count());
+    }
+
+    // A multi-row drag carries every selected row, not the one under the pointer. Anything else
+    // loses files on the way to a folder.
+    {
+        ManyRows src(10);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+        OnListDragPaths(list, [](int row) {
+            return std::vector<std::string>{"/tmp/row" + std::to_string(row)};
+        });
+
+        au_key down{}; down.pressed = 1; down.raw_char = 0x1f;
+        au_key sdown = down; sdown.mods = AU_MOD_SHIFT;
+        list->OnKey(down);                       // row 0
+        list->OnKey(sdown);                      // rows 0..1
+        eq("two rows are selected", ListSelection(list).size() == 2);
+
+        // Start the drag ON a selected row.
+        const float y = list->frame.y + 40;
+        DragData out;
+        eq("the drag starts", list->OnDragStart(100, y, &out));
+        eq("and carries both rows", out.paths.size() == 2);
+    }
+
+    // ---- a bound label's width is its text -----------------------------------------------------
+    // Setting the State invalidated the node's OLD, narrower frame; the window clips to the
+    // damage it is given; and the longer string came out cut off. "3 of 4 selected  9.3 KB"
+    // rendered as "3 of 4 s", which reads as the program being confused rather than the label
+    // being short of room.
+    {
+        State<std::string> text("short");
+        Desc label = Label(&text);
+        lay(label, e, box);
+        eq("settled after layout", !label->Animating());
+        const float narrow = label->Measure(e, Constraints{1000, 600}).w;
+
+        text.set("a considerably longer run of text than before");
+        eq("new text leaves the layout stale", label->Animating());
+        lay(label, e, box);
+        eq("settled again", !label->Animating());
+        const float wide = label->Measure(e, Constraints{1000, 600}).w;
+        eq("and it measured wider", wide > narrow);
+
+        // A label that is not bound to a State never changes under the window's feet, so it must
+        // not claim to: answering true forever would lay out every frame.
+        Desc fixed = Label(std::string("constant"));
+        lay(fixed, e, box);
+        eq("a plain label never asks for a relayout", !fixed->Animating());
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

@@ -244,6 +244,16 @@ public:
         rebuild_view_locked();
     }
 
+    // The size of one row, for a selection total. Zero when the lstat has not landed, which is
+    // honest: a running total that counted unknown rows as something would be a wrong number
+    // shown confidently.
+    off_t RowSize(int row) const {
+        std::lock_guard<std::mutex> g(mu_);
+        const int i = map(row);
+        if (i < 0) return 0;
+        return e_[i]->stated.load(std::memory_order_acquire) && !e_[i]->dir ? e_[i]->size : 0;
+    }
+
     int stated() const { std::lock_guard<std::mutex> g(mu_); return stated_; }
     int Total() const { std::lock_guard<std::mutex> g(mu_); return (int)e_.size(); }
 
@@ -642,6 +652,20 @@ int main() {
     });
     OnIconsSelect(icons, [&](int row) { load_preview(row); });
 
+    // The status line says what is selected, because a multi-selection you cannot count is one
+    // you cannot trust before pressing Delete.
+    OnListSelectionChanged(list, [&](const std::vector<int>& v) {
+        const int n = rows.Count();
+        if (v.size() > 1) {
+            off_t total = 0;
+            for (int r : v) total += rows.RowSize(r);
+            status.set(std::to_string(v.size()) + " of " + std::to_string(n) + " selected  " +
+                       human(total));
+        } else {
+            status.set(std::to_string(n) + " items");
+        }
+    });
+
     OnListRename(list, [&](int row, const std::string& to) -> bool {
         std::string from = rows.Cell(row, 0).text;
         if (!from.empty() && from.back() == '/') from.pop_back();
@@ -877,7 +901,6 @@ int main() {
     w.SetRoot(VStack({
         padding(HStack({
                     styled(Bold("Atlas"), TextStyle{1.35f, true}),
-                    styled(Label(&status), TextStyle{0.9f, false, true}),
                     Spacer(),
                     Button("Back", [&] {
                         if (history.empty()) return;
@@ -942,6 +965,17 @@ int main() {
                       }, 0),
                       &sidebar, SplitOpts{9, 16, 0.5f, 3}),
                1),
+        // A status bar along the bottom, which is where Dolphin and Finder put it and where it
+        // has room. It used to sit beside the title, between a 1.35x heading and four buttons,
+        // and "3 of 4 selected 9.3 KB" came out as "3 of 4 s" -- a count you cannot read is
+        // worse than no count, because it looks like the program is confused rather than the
+        // label being short of room.
+        padding(HStack({
+                    styled(Label(&status), TextStyle{0.9f, false, true}),
+                    Spacer(),
+                    styled(Label(&last_action), TextStyle{0.85f, false, true}),
+                }),
+                Insets(0.75f, 0.35f)),
     }, 0));
 
     // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because

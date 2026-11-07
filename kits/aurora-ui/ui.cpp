@@ -167,9 +167,21 @@ public:
     const std::string& str() const { return s_ ? s_->get() : t_; }
 
     Size Measure(const Env& e, Constraints) override {
+        laid_ = str();
         return Size{au_text_width(e.face(st_), e.sized(st_), str().c_str(), -1) + pad.l + pad.r,
                     text_h(e, st_) + pad.t + pad.b};
     }
+
+    // A bound label's WIDTH is its text, so new text is a new layout.
+    //
+    // Without this, setting the State invalidated the node's old, narrower frame, the window
+    // clipped the frame to the damage it was given, and the longer string came out cut off:
+    // "3 of 4 selected  9.3 KB" rendered as "3 of 4 s". It looks like the program is confused
+    // rather than like a label short of room, which is the worst kind of wrong.
+    //
+    // The same mistake as Split, Either and Reveal: a state change that alters the LAYOUT and
+    // only asks for a repaint.
+    bool Animating() const override { return s_ && str() != laid_; }
     void Draw(au_surface* s, const Env& e) override {
         const Rect in = inner();
         au_text_draw(s, e.face(st_), e.sized(st_), str().c_str(), -1, in.x,
@@ -184,6 +196,7 @@ public:
 
 private:
     std::string t_;
+    std::string laid_;            // the text the last layout measured
     State<std::string>* s_ = nullptr;
     TextStyle st_;
 };
@@ -425,17 +438,23 @@ public:
                 edit_field_->Draw(s, e);
                 continue;
             }
-            if (sel_ && *sel_ == i)
+            const bool picked = is_selected(i);
+            if (picked)
                 au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
                              e.accent);
+            else if (sel_ && *sel_ == i && focused_)
+                // The cursor without the selection: it happens after a Ctrl-click that
+                // DESELECTED a row, and losing sight of where the keyboard is would make the
+                // next Shift-click a guess.
+                au_stroke_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
+                               e.surface_hi, 1);
             float cx = frame.x;
             for (int col = 0; col < r_->Columns() && cx <= edge; col++) {
                 const CellValue v = r_->Cell(i, col);
                 const char* txt = v.state == CellState::Unknown ? "unknown" : v.text.c_str();
                 if (v.state == CellState::Pending) txt = "";
-                const au_color c = (sel_ && *sel_ == i)
-                                       ? au_color{24, 26, 34, 255}
-                                       : (v.state == CellState::Ready ? e.fg : e.dim);
+                const au_color c = picked ? au_color{24, 26, 34, 255}
+                                          : (v.state == CellState::Ready ? e.fg : e.dim);
                 au_clip_set(s, au_rect{cx, ry, std::min(cx + r_->ColumnWidth(col) - 6, edge),
                                        ry + row_h_ - 1});
                 au_text_draw(s, e.font, e.size, txt, -1, cx + e.unit * 0.75f,
@@ -471,11 +490,21 @@ public:
         if (sb_.dragging) { sb_.dragging = false; return; }
         if (on_bar_) { on_bar_ = false; return; }   // a press on the bar is never a row click
         if (!inside || !sel_) return;
-        const int i = top_ + (int)((click_y_ - frame.y - head_h_ - 1) / row_h_);
-        if (i < 0 || i >= r_->Count()) return;
-        select(i);
-        if (clicks_ >= 2 && on_act_) on_act_(i);      // double-click activates
+        const int i = row_at(click_y_);
+        if (i < 0) {
+            // Empty space below the rows clears the selection, the way every file manager does.
+            // Not with a modifier held: that is someone part-way through building a selection.
+            if (!(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) set_only(-1);
+            return;
+        }
+        const uint32_t m = mods_now();
+        if (m & AU_MOD_CTRL) toggle_one(i);
+        else if (m & AU_MOD_SHIFT) extend_to(i);
+        else select(i);
+        if (clicks_ >= 2 && on_act_ && !(m & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
     }
+
+    uint32_t mods_now() const { return win_ ? win_->mods() : 0u; }
     void OnPressAt(float x, float y, int clicks) override {
         click_y_ = y;
         clicks_ = clicks;
@@ -528,7 +557,16 @@ public:
         if (!drag_paths_ || sb_.hit(x, y)) return false;
         const int row = row_at(y);
         if (row < 0) return false;
-        const std::vector<std::string> p = drag_paths_(row);
+        // Dragging a row that is part of a selection drags the WHOLE selection; dragging one
+        // outside it drags just that row. Anything else loses files on the way to a folder.
+        std::vector<int> rows;
+        if (is_selected(row) && multi_.size() > 1) rows = selection();
+        else rows.push_back(row);
+        std::vector<std::string> p;
+        for (int r : rows) {
+            const std::vector<std::string> one = drag_paths_(r);
+            p.insert(p.end(), one.begin(), one.end());
+        }
         if (p.empty()) return false;
         *out = DragData::uri_list(p);
         return true;
@@ -622,15 +660,88 @@ public:
     void SetSelectHandler(std::function<void(int)> f) { on_sel_ = std::move(f); }
 
     // Every path that moves the selection goes through here, so a listener cannot miss one.
+    // ---- selection ----
+    //
+    // `*sel_` stays what it always was: the CURSOR, the row the keyboard is on and the one a
+    // preview pane follows. The set is what is highlighted. They are usually the same single
+    // row, and they come apart exactly when a file manager needs them to -- Ctrl-click adds a
+    // row without moving the cursor's meaning, Shift-click sweeps a range from the anchor.
+    //
+    // Keeping the old int rather than replacing it with the set is deliberate: every existing
+    // caller, every preview pane and every activate handler keeps working, and a widget that
+    // never multi-selects pays nothing.
     void select(int row) {
-        if (!sel_ || *sel_ == row) return;
-        const int before = *sel_;
-        *sel_ = row;
-        rows_dirty_.push_back(before);
+        set_only(row);
+        anchor_ = row;
+    }
+
+    void set_only(int row) {
+        const bool same = sel_ && *sel_ == row && multi_.size() == 1 && multi_.count(row);
+        if (same) return;
+        mark_all_dirty();
+        multi_.clear();
+        if (row >= 0) multi_.insert(row);
+        if (sel_) {
+            const int before = *sel_;
+            *sel_ = row;
+            rows_dirty_.push_back(before);
+        }
         rows_dirty_.push_back(row);
         dirty_ = true;
         if (on_sel_) on_sel_(row);
+        if (on_multi_) on_multi_(selection());
     }
+
+    // Ctrl-click: add or remove one row, leaving the rest alone.
+    void toggle_one(int row) {
+        if (row < 0) return;
+        if (multi_.count(row)) multi_.erase(row);
+        else multi_.insert(row);
+        // The cursor follows the row you touched even when you have just DESELECTED it, because
+        // the next Shift-click has to sweep from somewhere and that somewhere is here.
+        if (sel_) *sel_ = row;
+        anchor_ = row;
+        rows_dirty_.push_back(row);
+        dirty_ = true;
+        if (on_sel_) on_sel_(row);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    // Shift-click: everything between the anchor and here, replacing what was selected.
+    void extend_to(int row) {
+        if (row < 0) return;
+        if (anchor_ < 0) anchor_ = row;
+        mark_all_dirty();
+        multi_.clear();
+        const int lo = std::min(anchor_, row), hi = std::max(anchor_, row);
+        for (int i = lo; i <= hi && i < r_->Count(); i++)
+            if (i >= 0) multi_.insert(i);
+        if (sel_) *sel_ = row;
+        dirty_ = true;
+        if (on_sel_) on_sel_(row);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    void select_all() {
+        mark_all_dirty();
+        multi_.clear();
+        for (int i = 0; i < r_->Count(); i++) multi_.insert(i);
+        dirty_ = true;
+        if (on_multi_) on_multi_(selection());
+    }
+
+    std::vector<int> selection() const { return std::vector<int>(multi_.begin(), multi_.end()); }
+    bool is_selected(int row) const { return multi_.count(row) != 0; }
+    void SetMultiHandler(std::function<void(const std::vector<int>&)> f) { on_multi_ = std::move(f); }
+
+private:
+    void mark_all_dirty() {
+        // A change that can touch any highlighted row cannot name them one by one cheaply, and
+        // the rows that LOSE their highlight are as dirty as the ones that gain it.
+        whole_ = true;
+    }
+
+public:
     void Attached(Window* w) override { win_ = w; }
 
     bool OnKey(const au_key& k) override {
@@ -661,9 +772,18 @@ public:
             case 0x04: next = n - 1; break;                                         // end
             default: next = cur; break;
         }
+        // Ctrl+A is the one shortcut a list owes a keyboard user, and it is checked before the
+        // arrows because 'a' is also a type-ahead character.
+        if ((k.mods & AU_MOD_CTRL) && (k.utf8[0] == 'a' || k.utf8[0] == 'A' || k.raw_char == 1)) {
+            select_all();
+            return true;
+        }
         if (next != cur) {
             const int before_top = top_;
-            select(next);
+            // Shift+arrow sweeps from the anchor instead of moving a single selection, which is
+            // how a keyboard user selects a run of files without touching the mouse.
+            if (k.mods & AU_MOD_SHIFT) extend_to(next);
+            else select(next);
             Reveal(next);
             ahead_.clear();
             if (top_ != before_top) whole_ = true;        // it scrolled: every row moved
@@ -747,6 +867,9 @@ private:
     int top_ = 0, rows_drawn_ = 0;
     Scroller sb_;
     bool on_bar_ = false;
+    std::set<int> multi_;
+    int anchor_ = -1;
+    std::function<void(const std::vector<int>&)> on_multi_;
     std::function<std::vector<std::string>(int)> drag_paths_;
     std::function<bool(int, const DragData&)> on_drop_;
     int drop_row_ = -1;
@@ -2367,6 +2490,15 @@ void OnIconsSelect(const Desc& d, std::function<void(int)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetSelectHandler(std::move(f));
 }
 
+void OnListSelectionChanged(const Desc& list, std::function<void(const std::vector<int>&)> f) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetMultiHandler(std::move(f));
+}
+
+std::vector<int> ListSelection(const Desc& list) {
+    ListNode* l = dynamic_cast<ListNode*>(list.get());
+    return l ? l->selection() : std::vector<int>();
+}
+
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetRenameHandler(std::move(f));
 }
@@ -2889,6 +3021,12 @@ void Window::HandleEvent(int kind, int a, int b) {
     switch (kind) {
         case AU_EV_CLOSE:
             w->quit_ = true;
+            break;
+        case AU_EV_MODS:
+            // Which modifiers are held, kept so a PRESS can know. OnPressAt carries where and
+            // how many clicks, not what was held, and a file manager needs Ctrl-click and
+            // Shift-click to mean different things from a plain one.
+            w->mods_ = (uint32_t)a;
             break;
         case AU_EV_RESIZE:
             // RECORD it; the loop applies it. This handler runs on present_wl's event thread,
