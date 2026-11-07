@@ -1284,7 +1284,7 @@ public:
             const int row = (i - first) / c;
             const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
             if (t.y > frame.y + frame.h) break;
-            const bool is_sel = sel_ && *sel_ == i;
+            const bool is_sel = is_selected(i);
             if (is_sel)
                 au_fill_round_rect(s, au_rect{t.x + 3, t.y + 3, t.x + t.w - 4, t.y + t.h - 4}, 8, 8,
                                    e.accent);
@@ -1360,7 +1360,20 @@ public:
             return;
         }
         const int i = index_at(x, y);
-        if (i < 0) return;
+        const uint32_t m = mods_now();
+        if (i < 0) {
+            // Empty space clears, unless a modifier is held: that is someone mid-selection.
+            if (!(m & (AU_MOD_CTRL | AU_MOD_SHIFT))) set_only(-1);
+            return;
+        }
+        if (m & AU_MOD_CTRL) {
+            toggle_one(i);
+            return;
+        }
+        if (m & AU_MOD_SHIFT) {
+            extend_to(i);
+            return;
+        }
         select(i);
         if (clicks >= 2 && on_act_) on_act_(i);
     }
@@ -1384,6 +1397,12 @@ public:
         if (!k.pressed || !sel_) return false;
         const int n = r_->Count();
         if (n == 0) return false;
+        // Before the switch: the switch's default returns, so anything checked after it is
+        // never reached. Ctrl+A is a letter, and a letter is exactly what that default catches.
+        if ((k.mods & AU_MOD_CTRL) && (k.utf8[0] == 'a' || k.utf8[0] == 'A' || k.raw_char == 1)) {
+            select_all();
+            return true;
+        }
         const int c = cols();
         const int cur = *sel_ < 0 ? -1 : *sel_;
         int next = cur;
@@ -1401,7 +1420,8 @@ public:
             default: return false;
         }
         if (next == cur) return true;
-        select(next);
+        if (k.mods & AU_MOD_SHIFT) extend_to(next);
+        else select(next);
         // Keep it on screen, scrolling by whole tile rows.
         const int r = next / c;
         if (r < top_row_) top_row_ = r;
@@ -1412,10 +1432,77 @@ public:
     void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
     void SetContextHandler(std::function<void(int, float, float)> f) { on_ctx_ = std::move(f); }
     void SetSelectHandler(std::function<void(int)> f) { on_sel_ = std::move(f); }
+    void SetMultiHandler(std::function<void(const std::vector<int>&)> f) { on_multi_ = std::move(f); }
+    void SetDragPaths(std::function<std::vector<std::string>(int)> f) { drag_paths_ = std::move(f); }
+
+    // The same model the list uses, for the same reason: a grid you cannot rubber-band or
+    // Ctrl-click is a grid you have to leave to do anything with more than one file. `*sel_`
+    // stays the cursor; the set is what is highlighted.
+    bool is_selected(int i) const { return multi_.count(i) != 0; }
+    std::vector<int> selection() const { return std::vector<int>(multi_.begin(), multi_.end()); }
+
     void select(int i) {
-        if (!sel_ || *sel_ == i) return;
-        *sel_ = i;
+        set_only(i);
+        anchor_ = i;
+    }
+
+    void set_only(int i) {
+        if (sel_ && *sel_ == i && multi_.size() == 1 && multi_.count(i)) return;
+        multi_.clear();
+        if (i >= 0) multi_.insert(i);
+        if (sel_) *sel_ = i;
         if (on_sel_) on_sel_(i);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    void toggle_one(int i) {
+        if (i < 0) return;
+        if (multi_.count(i)) multi_.erase(i);
+        else multi_.insert(i);
+        if (sel_) *sel_ = i;
+        anchor_ = i;
+        if (on_sel_) on_sel_(i);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    void extend_to(int i) {
+        if (i < 0) return;
+        if (anchor_ < 0) anchor_ = i;
+        multi_.clear();
+        // A grid's range is by INDEX, not by rectangle: Shift-clicking the tile below picks up
+        // the whole row between, which is what a reading order means and what every icon view
+        // does. A rectangular block would be a different gesture (a rubber band).
+        for (int k = std::min(anchor_, i); k <= std::max(anchor_, i) && k < r_->Count(); k++)
+            if (k >= 0) multi_.insert(k);
+        if (sel_) *sel_ = i;
+        if (on_sel_) on_sel_(i);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    void select_all() {
+        multi_.clear();
+        for (int k = 0; k < r_->Count(); k++) multi_.insert(k);
+        if (on_multi_) on_multi_(selection());
+    }
+
+    uint32_t mods_now() const { return win_ ? win_->mods() : 0u; }
+    void Attached(Window* w) override { win_ = w; }
+
+    bool OnDragStart(float x, float y, DragData* out) override {
+        if (!drag_paths_) return false;
+        const int i = index_at(x, y);
+        if (i < 0) return false;
+        std::vector<int> rows;
+        if (is_selected(i) && multi_.size() > 1) rows = selection();
+        else rows.push_back(i);
+        std::vector<std::string> p;
+        for (int r : rows) {
+            const std::vector<std::string> one = drag_paths_(r);
+            p.insert(p.end(), one.begin(), one.end());
+        }
+        if (p.empty()) return false;
+        *out = DragData::uri_list(p);
+        return true;
     }
 
 private:
@@ -1424,6 +1511,11 @@ private:
     Env env_;
     std::function<void(int)> on_sel_;
     Scroller sb_;
+    std::set<int> multi_;
+    Window* win_ = nullptr;
+    int anchor_ = -1;
+    std::function<void(const std::vector<int>&)> on_multi_;
+    std::function<std::vector<std::string>(int)> drag_paths_;
     float tile_w_ = 96, tile_h_ = 84;
     int top_row_ = 0;
     bool focused_ = false;
@@ -2486,6 +2578,19 @@ void OnListActivate(const Desc& list, std::function<void(int)> f) {
 void OnListSelect(const Desc& list, std::function<void(int)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetSelectHandler(std::move(f));
 }
+void OnIconsSelectionChanged(const Desc& d, std::function<void(const std::vector<int>&)> f) {
+    if (IconsNode* i = dynamic_cast<IconsNode*>(d.get())) i->SetMultiHandler(std::move(f));
+}
+
+std::vector<int> IconsSelection(const Desc& d) {
+    IconsNode* i = dynamic_cast<IconsNode*>(d.get());
+    return i ? i->selection() : std::vector<int>();
+}
+
+void OnIconsDragPaths(const Desc& d, std::function<std::vector<std::string>(int)> f) {
+    if (IconsNode* i = dynamic_cast<IconsNode*>(d.get())) i->SetDragPaths(std::move(f));
+}
+
 void OnIconsSelect(const Desc& d, std::function<void(int)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetSelectHandler(std::move(f));
 }

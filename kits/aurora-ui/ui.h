@@ -360,6 +360,16 @@ void OnListActivate(const Desc& list, std::function<void(int)> f);
 void OnListSelect(const Desc& list, std::function<void(int)> f);
 void OnIconsSelect(const Desc& icons, std::function<void(int)> f);
 
+// The grid selects the same way the list does: Ctrl-click, Shift-click, Shift+arrows, Ctrl+A,
+// click-empty-to-clear, and a drag of a selected tile carries the whole selection. A grid you
+// cannot multi-select in is one you have to leave to do anything with more than one file.
+//
+// Shift in a GRID takes a range by index, not a rectangle: shift-clicking the tile below picks
+// up the row between, which is what reading order means and what every icon view does.
+void OnIconsSelectionChanged(const Desc& icons, std::function<void(const std::vector<int>&)> f);
+std::vector<int> IconsSelection(const Desc& icons);
+void OnIconsDragPaths(const Desc& icons, std::function<std::vector<std::string>(int)> f);
+
 // ---- selecting more than one row ---------------------------------------------------------------
 
 // Ctrl-click adds or removes a row; Shift-click sweeps a range from the anchor; Shift+arrows do

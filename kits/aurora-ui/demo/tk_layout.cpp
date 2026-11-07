@@ -669,6 +669,49 @@ int main() {
         eq("a plain label never asks for a relayout", !fixed->Animating());
     }
 
+    // ---- the grid selects like the list ---------------------------------------------------------
+    {
+        ManyRows src(12);
+        int selected = -1;
+        Desc grid = IconView(&src, &selected);
+        lay(grid, e, Rect{0, 0, 400, 600});
+        grid->Draw(nullptr, e);
+
+        std::vector<int> last;
+        OnIconsSelectionChanged(grid, [&](const std::vector<int>& v) { last = v; });
+        OnIconsDragPaths(grid, [](int row) {
+            return std::vector<std::string>{"/tmp/tile" + std::to_string(row)};
+        });
+
+        au_key right{}; right.pressed = 1; right.raw_char = 0x1d;
+        grid->OnKey(right);
+        eq("one tile selected", IconsSelection(grid).size() == 1);
+
+        au_key sright = right; sright.mods = AU_MOD_SHIFT;
+        grid->OnKey(sright);
+        grid->OnKey(sright);
+        const std::vector<int> three = IconsSelection(grid);
+        eq("shift+arrow extends across the grid", three.size() == 3);
+        eq("as a run of indices, not a rectangle",
+           three.size() == 3 && three[1] == three[0] + 1 && three[2] == three[1] + 1);
+        eq("and the app heard", last.size() == 3);
+
+        au_key ctrl_a{}; ctrl_a.pressed = 1; ctrl_a.mods = AU_MOD_CTRL; ctrl_a.utf8[0] = 'a';
+        grid->OnKey(ctrl_a);
+        eq("ctrl+A takes the whole grid", (int)IconsSelection(grid).size() == src.Count());
+
+        // A drag from inside the selection carries all of it. The press puts the cursor on the
+        // tile the drag will start from, which is the point -- dragging a tile OUTSIDE the
+        // selection must carry only that one.
+        grid->OnPressAt(10, 10, 1);               // tile 0, no modifier: just it
+        eq("the press selected one tile", IconsSelection(grid).size() == 1);
+        grid->OnKey(sright);                      // tiles 0 and 1
+        eq("two tiles selected", IconsSelection(grid).size() == 2);
+        DragData out;
+        eq("the grid drags", grid->OnDragStart(10, 10, &out));
+        eq("and carries both", out.paths.size() == 2);
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

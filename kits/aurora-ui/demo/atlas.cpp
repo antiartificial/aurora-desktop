@@ -690,11 +690,9 @@ int main() {
                    preview_text.get().size(), preview_text.get().c_str()),
                 fflush(stdout);
     });
-    OnIconsSelect(icons, [&](int row) { load_preview(row); });
-
-    // The status line says what is selected, because a multi-selection you cannot count is one
-    // you cannot trust before pressing Delete.
-    OnListSelectionChanged(list, [&](const std::vector<int>& v) {
+    // One place decides what the status bar says about a selection, so the two views cannot
+    // disagree about it.
+    auto report_selection = [&](const std::vector<int>& v) {
         const int n = rows.Count();
         if (v.size() > 1) {
             off_t total = 0;
@@ -704,7 +702,24 @@ int main() {
         } else {
             status.set(std::to_string(n) + " items");
         }
+    };
+    OnIconsSelect(icons, [&](int row) { load_preview(row); });
+
+    // The grid is a drag source and reports its selection, exactly like the list. A view that
+    // could only do half of what the other does would make switching views a decision rather
+    // than a preference.
+    OnIconsDragPaths(icons, [&](int row) -> std::vector<std::string> {
+        std::string name = rows.Cell(row, 0).text;
+        if (name.empty()) return {};
+        if (name.back() == '/') name.pop_back();
+        const std::string base = path.get() == "/" ? "" : path.get();
+        return {base + "/" + name};
     });
+    OnIconsSelectionChanged(icons, [&](const std::vector<int>& v) { report_selection(v); });
+
+    // The status line says what is selected, because a multi-selection you cannot count is one
+    // you cannot trust before pressing Delete.
+    OnListSelectionChanged(list, [&](const std::vector<int>& v) { report_selection(v); });
 
     OnListRename(list, [&](int row, const std::string& to) -> bool {
         std::string from = rows.Cell(row, 0).text;
