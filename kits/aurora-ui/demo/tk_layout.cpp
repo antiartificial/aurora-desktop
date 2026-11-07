@@ -895,6 +895,26 @@ int main() {
         eq("Ctrl+A selects nothing more", ListSelection(single) == std::vector<int>{2});
     }
 
+    // ---- the app clears the selection by writing -1 ---------------------------------------------
+    // Atlas does it on every directory it opens, and the picker does it on every folder. The rows that were
+    // highlighted must not stay highlighted in a listing they were never chosen from.
+    {
+        ManyRows src(10);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+        list->OnKey(pressing(0x1f));
+        list->OnKey(pressing(0x1f));
+        eq("a row is selected", selected == 1 && ListSelection(list) == std::vector<int>{1});
+
+        selected = -1;                       // the app opens another directory
+        list->Draw(nullptr, e);
+        eq("the highlight goes with it", ListSelection(list).empty());
+        list->OnKey(pressing(0x1f));
+        eq("and the next selection starts clean", selected == 0 && ListSelection(list) == std::vector<int>{0});
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

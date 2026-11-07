@@ -590,6 +590,14 @@ public:
         // their column, not to the list, so a list placed at zero width went on painting its
         // header and rows across whatever was beside it.
         if (frame.w <= 0 || frame.h <= 0) return;
+        // The app clears the selection by writing -1 into the int it gave us, as Atlas does when it opens a directory.
+        // The list's own set of highlighted rows has to follow, or the old row NUMBERS stay lit in the new listing
+        // while nothing is selected: the screen would show a choice that the app does not hold. The list itself never
+        // leaves the cursor at -1 with rows highlighted (set_only(-1) clears both), so this state is only ever the app's.
+        if (sel_ && *sel_ < 0 && !multi_.empty()) {
+            multi_.clear();
+            anchor_ = -1;
+        }
         au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
 
         // Column widths come from the Rows source and have nothing to do with how much room the
