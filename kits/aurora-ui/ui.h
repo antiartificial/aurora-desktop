@@ -682,6 +682,13 @@ private:
     void drag_motion(float x, float y);
     void drag_finish(float x, float y);
 
+    // A resize the event thread has asked for and the loop has not applied yet. The size is
+    // the only piece of window state a handler must not act on directly: everything else a
+    // handler touches is a scalar or a damage rectangle, but a resize REPLACES the pixel buffer
+    // the main thread is drawing into.
+    std::mutex size_mu_;
+    int want_w_ = 0, want_h_ = 0;
+
     DragData drag_;
     Node* drag_src_ = nullptr;      // where it started, so a drop on the source is a no-op
     Node* drag_tgt_ = nullptr;      // what is currently highlighted

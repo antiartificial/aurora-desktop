@@ -2682,6 +2682,25 @@ void Window::Layout() {
 
 void Window::Draw() {
     if (!sf_) return;
+    // Apply a resize the event thread asked for. Here, because this is the main thread and the
+    // surface belongs to it; before the damage check, because a resize is always a full frame.
+    {
+        int nw = 0, nh = 0;
+        {
+            std::lock_guard<std::mutex> g(size_mu_);
+            nw = want_w_;
+            nh = want_h_;
+            want_w_ = want_h_ = 0;
+        }
+        if (nw > 0 && nh > 0 && (nw != lw_ || nh != lh_)) {
+            lw_ = nw;
+            lh_ = nh;
+            au_surface_resize(sf_, nw, nh, scale_);   // keeps the pixels; no white flash
+            laid_ = false;
+            damage_.all();
+            dirty_ = true;
+        }
+    }
     if (damage_.empty()) { dirty_ = false; return; }   // nothing asked to be redrawn
     const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 
@@ -2785,12 +2804,20 @@ void Window::Event(void* user, int kind, int a, int b) {
             w->quit_ = true;
             break;
         case AU_EV_RESIZE:
+            // RECORD it; the loop applies it. This handler runs on present_wl's event thread,
+            // and it used to call au_surface_resize here -- reallocating the pixel buffer while
+            // the main thread was drawing into it. At scale 1 the sizes were benign enough to
+            // get away with; at the 1.45 a real display asks for, Atlas aborted inside
+            // Canvas::FillRect on the first fill of Window::Draw, indexing the vector that had
+            // just been replaced underneath it.
+            //
+            // This is the same rule the menu and the clipboard already follow and it is the
+            // third time it has been learned: handlers decide, the loop acts.
             if (a > 0 && b > 0) {
-                w->lw_ = a;
-                w->lh_ = b;
-                au_surface_resize(w->sf_, a, b, w->scale_);   // keeps the pixels; no white flash
-                w->laid_ = false;
-                w->Invalidate();                              // new geometry: the whole frame
+                std::lock_guard<std::mutex> g(w->size_mu_);
+                w->want_w_ = a;
+                w->want_h_ = b;
+                w->dirty_ = true;
             }
             break;
         case AU_EV_POINTER_MOVE: {

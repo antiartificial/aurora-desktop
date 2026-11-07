@@ -3,6 +3,7 @@
 //! `--test-input PATH` opens a Unix socket (0600, same euid only) taking one
 //! command per line: `key <name>` (press then release), `down <name>`,
 //! `up <name>`, `pointer X Y` (logical), `click`, `rclick` (right button), `move N X Y`,
+//! `resize N W H` (configure the Nth window, so a client's resize path can be tested),
 //! `frame N` (the reply is held until N more frames have been rendered, so a test
 //! can step the compositor deterministically; see `Aurora::frame_waiters`) and
 //! `state` (shell state and window layout as JSON), `stats [N]` (the `--frame-stats` summary over the last N frames; reads, injects nothing). Events enter through `Aurora::keyboard_input`, the same function
@@ -143,6 +144,23 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         return match (w, v.as_slice()) {
             (Some(w), [_, x, y]) => { state.space.relocate_element(&w, (*x, *y)); "ok".into() }
             _ => "err bad move".into(),
+        };
+    }
+    if cmd.starts_with("resize ") {
+        // `resize N W H`: configure the Nth window in stacking order to W x H logical. A client
+        // resize is the one window event a test could not reach, and it is where several bugs
+        // have lived, because it is the only path that reallocates a surface while the client
+        // may be drawing from it.
+        let v: Vec<i32> = it.skip(1).filter_map(|t| t.parse().ok()).collect();
+        let w = v.first().and_then(|&n| state.space.elements().nth(n as usize).cloned());
+        return match (w, v.as_slice()) {
+            (Some(w), [_, cw, ch]) if *cw > 0 && *ch > 0 => {
+                let Some(xdg) = w.toplevel().cloned() else { return "err not an xdg toplevel".into() };
+                xdg.with_pending_state(|st| st.size = Some((*cw, *ch).into()));
+                xdg.send_pending_configure();
+                "ok".into()
+            }
+            _ => "err bad resize (want: resize N W H)".into(),
         };
     }
     if cmd == "state" {
