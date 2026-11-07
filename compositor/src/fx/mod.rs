@@ -322,6 +322,15 @@ impl Fx {
                             draw_elements(&mut f, &local, scale)?;
                             let sy = f.finish()?;
                             wait(r, sy)?;
+                            drop(t);
+                            if let Some(dir) = std::env::var_os("AURORA_SNAP_DUMP") {
+                                let p = std::path::Path::new(&dir).join("snapshot.png");
+                                if let Err(e) = crate::trusted::dump::write_texture(r, self.closing[&key].tex.as_ref().unwrap(), csz, &p) {
+                                    tracing::error!("snapshot dump failed: {e}");
+                                } else {
+                                    tracing::info!("snapshot dumped to {}", p.display());
+                                }
+                            }
                         }
                     }
                 }
@@ -369,7 +378,12 @@ impl Fx {
                 let dst = scale_about(c.geo, c.geo, sc);
                 let ts = tex.size();
                 let src = Rectangle::<f64, BufferCoords>::from_size((ts.w as f64, ts.h as f64).into());
-                f.render_texture_from_to(tex, src, dst, &[dst], &[], Transform::Normal, alpha, None, &[])?;
+                // The damage rect is RELATIVE TO dst, not absolute. Passing the absolute
+                // rectangle clipped the drawing by exactly dst's own offset -- which is why a
+                // closing window lost a strip off its left and top the size of wherever it
+                // happened to be on screen. draw_elements, four hundred lines below, has always
+                // passed `from_size(dst.size)`; I did not read it closely enough.
+                f.render_texture_from_to(tex, src, dst, &[Rectangle::from_size(dst.size)], &[], Transform::Normal, alpha, None, &[])?;
             }
                 f.finish()?
             };

@@ -11,7 +11,7 @@ use std::path::Path;
 use smithay::{
     backend::{
         allocator::Fourcc,
-        renderer::{ExportMem, TextureMapping, gles::{GlesRenderer, GlesTarget}},
+        renderer::{ExportMem, TextureMapping, gles::{GlesRenderer, GlesTarget, GlesTexture}},
     },
     utils::{Buffer as BufferCoords, Physical, Rectangle, Size},
 };
@@ -34,6 +34,37 @@ pub fn write_frame(
     }
     for a in rows.chunks_exact_mut(4) {
         a[3] = 255;
+    }
+    let tmp = path.with_extension("tmp.png");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(&rows)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Write a TEXTURE as a PNG, the same way `write_frame` writes the framebuffer.
+///
+/// For looking at an intermediate the compositor made rather than at what it put on screen. It
+/// exists because the window-close animation drew its snapshot visibly wrong and no amount of
+/// staring at the composited frame could say whether the picture or its placement was at fault;
+/// the only way to know is to look at the picture on its own.
+pub fn write_texture(
+    renderer: &mut GlesRenderer,
+    tex: &GlesTexture,
+    size: Size<i32, Physical>,
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let region = Rectangle::<i32, BufferCoords>::from_size((size.w, size.h).into());
+    let m = renderer.copy_texture(tex, region, Fourcc::Abgr8888)?;
+    let flipped = m.flipped();
+    let px = renderer.map_texture(&m)?.to_vec();
+    let (w, h) = (size.w as usize, size.h as usize);
+    let mut rows: Vec<u8> = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        let sy = if flipped { y } else { h - 1 - y };
+        rows.extend_from_slice(&px[sy * w * 4..(sy + 1) * w * 4]);
     }
     let tmp = path.with_extension("tmp.png");
     let mut enc = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?), w as u32, h as u32);
