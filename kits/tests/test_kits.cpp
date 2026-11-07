@@ -345,6 +345,45 @@ static void test_a_reused_pid_does_not_hold_a_slot_forever()
 	CHECK(before != after);
 	delete_port(probe);
 	delete_port(again);
+
+	/* Handing a port to another team must move its start token with it. Transferring to our
+	 * OWN pid cannot show this, because both tokens are then the same; it needs a different
+	 * live team, and it needs enough pressure on the table to make a reap pass run. */
+	/* The start token comes from /proc/<pid>/stat, which counts CLOCK TICKS, so a process and a
+	 * child forked in the same tick share a token. That is harmless for the bug this guards --
+	 * a pid is reused seconds or hours later, never inside 10 ms -- but it would make the fork
+	 * below indistinguishable from its parent, so wait out the tick first. */
+	usleep(40000);
+	int hold[2];
+	CHECK(pipe(hold) == 0);
+	pid_t keeper = fork();
+	if (keeper == 0) { close(hold[1]); char c; ssize_t r = read(hold[0], &c, 1); (void)r; _exit(0); }
+	close(hold[0]);
+
+	port_id moved = create_port(1, "moved");
+	CHECK(moved >= 0);
+	CHECK(set_port_owner(moved, keeper) == B_OK);
+
+	/* Fill the table so create_port's second pass reaps. With the token left behind, `moved`
+	 * looks owned by a live pid whose start time does not match, so it is reclaimed and the
+	 * team that was just given it loses it. */
+	enum { kSlots = 128 };   /* K_MAX_PORTS, not included here: see the extern "C" note above */
+	port_id filler[kSlots];
+	int nf = 0;
+	while (nf < kSlots) {
+		port_id f = create_port(1, "filler");
+		if (f < 0) break;
+		filler[nf++] = f;
+	}
+	port_info pi;
+	status_t still = get_port_info(moved, &pi);
+	for (int i = 0; i < nf; i++) delete_port(filler[i]);
+	CHECK(still == B_OK);
+	if (still == B_OK) CHECK(pi.team == keeper);
+	delete_port(moved);
+
+	close(hold[1]);
+	int kst = 0; waitpid(keeper, &kst, 0);
 }
 
 int main(int argc, char **argv)

@@ -212,7 +212,10 @@ status_t set_port_owner(port_id id, team_id team)
 	if (team <= 0 || k_pid_dead(team)) return B_BAD_TEAM_ID;
 	k_lock();
 	kport *p = lookup(id);
-	if (p) p->team = team;
+	/* The start token has to move with the owner. Leaving the old one behind would make
+	 * k_owner_gone() true the moment the transfer completed, and the slot would be reaped out
+	 * from under the team that had just been given it. */
+	if (p) { p->team = team; p->team_start = k_pid_start(team); }
 	k_unlock();
 	return p ? B_OK : B_BAD_PORT_ID;
 }
