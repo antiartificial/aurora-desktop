@@ -213,7 +213,9 @@ fn the_reserved_area_constrains_maximised_and_new_windows() {
 #[test]
 fn background_shader_animates_and_hot_reloads() {
     let t = Theme::new();
-    t.append("[desktop]\nclock = false\nhostname = false\n[dock]\nenabled = false\n");
+    // [deskbar] off for the same reason the dock is: this counts distinct colours in the
+    // background, and any chrome of its own would be counted as the shader animating.
+    t.append("[desktop]\nclock = false\nhostname = false\n[dock]\nenabled = false\n[deskbar]\nenabled = false\n");
     let c = Comp::start_shell(&["--theme", t.path()]);
     settle();
     let (a, b) = (c.capture("a.png"), { std::thread::sleep(Duration::from_millis(1500)); c.capture("b.png") });

@@ -6,7 +6,11 @@ mod common;
 use common::*;
 use std::{path::Path, process::Command, time::Duration};
 
-const BASE: &str = "[background]\nmode = \"gradient\"\ntop = [0.34, 0.0, 0.0]\nbottom = [0.18, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n";
+// [deskbar] off: these tests diff whole frames of the menu and the settings panel, and the
+// Deskbar is a glass box of its own that is drawn whenever it is enabled -- including with no
+// windows open, since it reports "No windows open" and the machine's load. It has its own
+// tests in tests/deskbar.rs. No assertion here is relaxed; the subject is just isolated.
+const BASE: &str = "[background]\nmode = \"gradient\"\ntop = [0.34, 0.0, 0.0]\nbottom = [0.18, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n[deskbar]\nenabled = false\n";
 const SCALES: [&str; 2] = ["1", "1.45"];
 
 fn comp(t: &Theme, scale: &str, extra: &[&str]) -> Comp {

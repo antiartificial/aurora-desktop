@@ -12,7 +12,10 @@ use std::{
     time::Duration,
 };
 
-const FLAT: &str = "[background]\nmode = \"solid\"\ntop = [0.30, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n";
+// [deskbar] off: this file diffs frames of the dock and the verb menu. The Deskbar draws
+// whenever enabled, with no windows included, so it would appear in every before/after pair.
+// Its own tests are in tests/deskbar.rs; nothing here is relaxed to accommodate it.
+const FLAT: &str = "[background]\nmode = \"solid\"\ntop = [0.30, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n[deskbar]\nenabled = false\n";
 const SCALES: [&str; 2] = ["1", "1.45"];
 const LUMEN: &str = "org.aurora.lumen";
 
