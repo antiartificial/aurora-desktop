@@ -43,6 +43,80 @@ float baseline_in(const Env& e, Rect r) {
     return r.y + (r.h + m.ascent - m.descent) / 2;
 }
 
+// ---- the scrollbar ----------------------------------------------------------------------------
+//
+// A VALUE, not a widget. Four things scroll here -- the list, the icon grid, the text view and
+// the tree -- and they differ only in what a unit is: a row, a grid row, a wrapped line. Each
+// owns a Scroller, lays it out from (total, visible, top) and routes a press to it before its
+// own hit handling. Making it a widget instead would mean a container around every scrollable
+// thing, and the scrollable thing is the only one that knows what a unit is anyway.
+//
+// It overlays the right edge rather than taking width from the content. That is the modern
+// convention and it is also the only one that works here: taking width would mean the content's
+// measured size changed when a directory grew past the last visible row, which is a layout that
+// depends on its own result.
+//
+// It draws only when there is something to scroll. A track with a full-length thumb is furniture
+// that says nothing, and a list that fits is a list with nowhere to go.
+struct Scroller {
+    Rect track;
+    float thumb_y = 0, thumb_h = 0;
+    float grab = 0;
+    bool shown = false, dragging = false, hot = false;
+
+    static constexpr float kWidth = 9;
+    static constexpr float kMinThumb = 24;
+
+    // Lay out inside `box` for `n` units of which `vis` are visible, starting at `top`.
+    void set(Rect box, int n, int vis, int top) {
+        shown = n > vis && vis > 0;
+        if (!shown) return;
+        track = Rect{box.x + box.w - kWidth, box.y, kWidth, box.h};
+        const float frac = (float)vis / (float)n;
+        thumb_h = std::max(kMinThumb, track.h * frac);
+        const float room = std::max(0.0f, track.h - thumb_h);
+        const float at = n - vis > 0 ? (float)top / (float)(n - vis) : 0.0f;
+        thumb_y = track.y + room * std::max(0.0f, std::min(1.0f, at));
+    }
+
+    void draw(au_surface* s, const Env& e) const {
+        if (!shown) return;
+        au_fill_rect(s, track.box(), au_color{34, 37, 48, 255});
+        const au_color c = (hot || dragging) ? e.accent : e.surface_hi;
+        au_fill_round_rect(s, au_rect{track.x + 2, thumb_y, track.x + track.w - 3,
+                                      thumb_y + thumb_h - 1},
+                           3, 3, c);
+    }
+
+    bool hit(float x, float y) const { return shown && track.has(x, y); }
+
+    // A press. On the thumb it starts a drag from where it was grabbed; on the track it pages
+    // toward the click, which is the behaviour people expect from a track and which a jump-to-
+    // position would break -- a track click is "a bit further", not "go here".
+    int press(float y, int n, int vis, int top) {
+        if (!shown) return top;
+        if (y >= thumb_y && y < thumb_y + thumb_h) {
+            dragging = true;
+            grab = y - thumb_y;
+            return top;
+        }
+        dragging = false;
+        const int page = std::max(1, vis - 1);
+        return clamp(y < thumb_y ? top - page : top + page, n, vis);
+    }
+
+    int drag(float y, int n, int vis, int top) const {
+        if (!dragging || !shown) return top;
+        const float room = std::max(1.0f, track.h - thumb_h);
+        const float at = (y - grab - track.y) / room;
+        return clamp((int)std::lround(at * (n - vis)), n, vis);
+    }
+
+    static int clamp(int top, int n, int vis) {
+        return std::max(0, std::min(top, std::max(0, n - vis)));
+    }
+};
+
 // ---- Text -------------------------------------------------------------------------------------
 
 class TextNode : public Node {
@@ -305,11 +379,17 @@ public:
             }
         }
         rows_drawn_ = last >= first ? (last - first + 1) : 0;
+        // Below the header, so the thumb measures the rows and not the chrome.
+        sb_.set(Rect{frame.x, frame.y + head_h_ + 1, frame.w, frame.h - head_h_ - 1}, n,
+                visible(), top_);
+        sb_.draw(s, e);
     }
 
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     void OnPress() override {}
     void OnRelease(bool inside) override {
+        if (sb_.dragging) { sb_.dragging = false; return; }
+        if (on_bar_) { on_bar_ = false; return; }   // a press on the bar is never a row click
         if (!inside || !sel_) return;
         const int i = top_ + (int)((click_y_ - frame.y - head_h_ - 1) / row_h_);
         if (i < 0 || i >= r_->Count()) return;
@@ -317,9 +397,17 @@ public:
         if (clicks_ >= 2 && on_act_) on_act_(i);      // double-click activates
     }
     void OnPressAt(float x, float y, int clicks) override {
-        (void)x;
         click_y_ = y;
         clicks_ = clicks;
+        on_bar_ = sb_.hit(x, y);
+        if (!on_bar_) return;
+        const int to = sb_.press(y, r_->Count(), visible(), top_);
+        if (to != top_) { top_ = to; whole_ = true; dirty_ = true; }
+    }
+    void OnDragTo(float, float y) override {
+        if (!sb_.dragging) return;
+        const int to = sb_.drag(y, r_->Count(), visible(), top_);
+        if (to != top_) { top_ = to; whole_ = true; dirty_ = true; }
     }
     void SetClickY(float y) { click_y_ = y; }
     void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
@@ -510,6 +598,8 @@ private:
     Rows* r_;
     int* sel_;
     int top_ = 0, rows_drawn_ = 0;
+    Scroller sb_;
+    bool on_bar_ = false;
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;
@@ -666,18 +756,22 @@ public:
             au_text_draw(s, e.font, e.size, lines_[i].c_str(), -1, frame.x + e.unit * 0.75f, y,
                          e.fg);
         }
-        // A scroll hint, so a long document does not look like a short one.
-        if ((int)lines_.size() > vis) {
-            const float frac = (float)vis / (float)lines_.size();
-            const float pos = (float)first / (float)lines_.size();
-            au_fill_round_rect(s,
-                               au_rect{frame.x + frame.w - 5, frame.y + 2 + pos * (frame.h - 4),
-                                       frame.x + frame.w - 3,
-                                       frame.y + 2 + (pos + frac) * (frame.h - 4)},
-                               1, 1, e.dim);
-        }
+        // The same bar the list and the tree use, rather than the hint this drew before: a hint
+        // tells you there is more, and a bar lets you go there.
+        sb_.set(frame, (int)lines_.size(), vis, first);
+        sb_.draw(s, e);
         au_clip_reset(s);
     }
+
+    void OnPressAt(float x, float y, int clicks) override {
+        (void)clicks;
+        if (!sb_.hit(x, y)) return;
+        top_ = sb_.press(y, (int)lines_.size(), visible(), top_);
+    }
+    void OnDragTo(float, float y) override {
+        if (sb_.dragging) top_ = sb_.drag(y, (int)lines_.size(), visible(), top_);
+    }
+    void OnRelease(bool) override { sb_.dragging = false; }
 
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     bool CanFocus() const override { return true; }
@@ -704,9 +798,10 @@ public:
     int line_count() const { return (int)lines_.size(); }
 
 private:
+    int visible() const { return std::max(1, (int)(frame.h / line_h_)); }
+
     void scroll(int by) {
-        const int vis = std::max(1, (int)(frame.h / line_h_));
-        top_ = std::max(0, std::min(top_ + by, std::max(0, (int)lines_.size() - vis)));
+        top_ = Scroller::clamp(top_ + by, (int)lines_.size(), visible());
     }
 
     // Split and wrap once per (text, width). A scroll must not re-measure the document, which is
@@ -772,6 +867,7 @@ private:
     std::vector<std::string> lines_;
     std::string cached_;
     float cached_w_ = -1, line_h_ = 16;
+    Scroller sb_;
     int top_ = 0;
     bool focused_ = false, lines_valid_ = false;
 };
@@ -963,8 +1059,13 @@ public:
             au_text_draw(s, e.font, e.size - 1, shown.c_str(), -1, t.x + (t.w - tw) / 2,
                          t.y + t.h - 14, is_sel ? au_color{24, 26, 34, 255} : e.fg);
         }
+        // A unit here is a tile ROW, not an item: the thumb has to measure what a scroll moves.
+        sb_.set(frame, grid_rows(), visible_rows(), top_row_);
+        sb_.draw(s, e);
         au_clip_reset(s);
     }
+
+    int grid_rows() const { return (r_->Count() + cols() - 1) / std::max(1, cols()); }
 
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     bool CanFocus() const override { return true; }
@@ -980,6 +1081,10 @@ public:
     }
 
     void OnPressAt(float x, float y, int clicks) override {
+        if (sb_.hit(x, y)) {
+            top_row_ = sb_.press(y, grid_rows(), visible_rows(), top_row_);
+            return;
+        }
         const int i = index_at(x, y);
         if (i < 0) return;
         select(i);
@@ -993,11 +1098,14 @@ public:
         return true;
     }
     bool OnWheel(float dy) override {
-        const int rows_total = (r_->Count() + cols() - 1) / cols();
-        top_row_ = std::max(0, std::min(top_row_ + (dy > 0 ? 2 : -2),
-                                        std::max(0, rows_total - visible_rows())));
+        top_row_ = Scroller::clamp(top_row_ + (dy > 0 ? 2 : -2), grid_rows(), visible_rows());
         return true;
     }
+
+    void OnDragTo(float, float y) override {
+        if (sb_.dragging) top_row_ = sb_.drag(y, grid_rows(), visible_rows(), top_row_);
+    }
+    void OnRelease(bool) override { sb_.dragging = false; }
     bool OnKey(const au_key& k) override {
         if (!k.pressed || !sel_) return false;
         const int n = r_->Count();
@@ -1041,6 +1149,7 @@ private:
     int* sel_;
     Env env_;
     std::function<void(int)> on_sel_;
+    Scroller sb_;
     float tile_w_ = 96, tile_h_ = 84;
     int top_row_ = 0;
     bool focused_ = false;
@@ -1479,6 +1588,8 @@ public:
                 au_text_draw(s, e.font, e.size - 2, "...", -1, frame.x + frame.w - e.unit * 2,
                              ry + row_h_ * 0.74f, e.dim);
         }
+        sb_.set(frame, (int)flat_.size(), vis, first);
+        sb_.draw(s, e);
         au_clip_reset(s);
     }
 
@@ -1488,13 +1599,25 @@ public:
 
     bool OnWheel(float dy) override {
         const int before = top_;
-        top_ = std::max(0, std::min(top_ + (dy > 0 ? 3 : -3),
-                                    std::max(0, (int)flat_.size() - visible())));
+        top_ = Scroller::clamp(top_ + (dy > 0 ? 3 : -3), (int)flat_.size(), visible());
+        if (top_ != before) whole_ = true;
         return top_ != before;
     }
 
+    void OnDragTo(float, float y) override {
+        if (!sb_.dragging) return;
+        const int to = sb_.drag(y, (int)flat_.size(), visible(), top_);
+        if (to != top_) { top_ = to; whole_ = true; }
+    }
+    void OnRelease(bool) override { sb_.dragging = false; }
+
     void OnPressAt(float x, float y, int clicks) override {
         ensure();
+        if (sb_.hit(x, y)) {
+            const int to = sb_.press(y, (int)flat_.size(), visible(), top_);
+            if (to != top_) { top_ = to; whole_ = true; }
+            return;
+        }
         const int i = top_ + (int)((y - frame.y) / row_h_);
         if (i < 0 || i >= (int)flat_.size()) return;
         cur_ = i;
@@ -1695,6 +1818,7 @@ private:
     std::set<std::string> open_, pending_;
     std::vector<int> dirty_rows_;
     std::function<void(const std::string&)> on_sel_, on_act_;
+    Scroller sb_;
     float row_h_ = 16, unit_ = 8;
     int top_ = 0, cur_ = -1;
     bool focused_ = false, flat_valid_ = false, whole_ = true;

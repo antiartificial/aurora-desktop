@@ -78,6 +78,19 @@ static au_key pressing(uint32_t raw) {
     return k;
 }
 
+// Enough rows to overflow any frame here, so the scrollbar has a reason to exist.
+struct ManyRows : Rows {
+    int n;
+    explicit ManyRows(int count) : n(count) {}
+    int Count() const override { return n; }
+    CellValue Cell(int row, int) const override {
+        return CellValue{CellState::Ready, "row " + std::to_string(row)};
+    }
+    int Columns() const override { return 1; }
+    float ColumnWidth(int) const override { return 380; }
+    std::string ColumnTitle(int) const override { return "Name"; }
+};
+
 int main() {
     Env e;              // unit 8, no fonts needed by anything here
     const Rect box{0, 0, 1000, 600};
@@ -286,6 +299,43 @@ int main() {
         eq("the chain opened", TreeRowCount(t) == 5);
         eq("the deep row is where it should be", TreeRowId(t, 2) == "/a/x/deep");
         eq("and at depth 2", TreeRowDepth(t, 2) == 2);
+    }
+
+    // ---- a press on the scrollbar is not a click on a row -------------------------------------
+    // The list routes presses to its scrollbar before its own hit handling, and the hazard that
+    // creates is the reason this test exists: a bar drawn OVER the rows means every press on it
+    // lands on a row too, so dragging the thumb would also select whatever was behind it.
+    {
+        ManyRows src(500);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);              // the bar is laid out during Draw
+
+        // x = 395 is inside the bar (9 px wide, at the right edge of a 400 px frame).
+        list->OnPressAt(395, 300, 1);
+        list->OnRelease(true);
+        eq("pressing the scrollbar selects nothing", selected == -1);
+
+        // The same press away from the bar does select.
+        list->OnPressAt(100, 300, 1);
+        list->OnRelease(true);
+        eq("pressing a row does select", selected >= 0);
+    }
+
+    // ---- the bar appears only when there is somewhere to go -----------------------------------
+    // A track with a full-length thumb is furniture that says nothing.
+    {
+        ManyRows few(3);
+        int selected = -1;
+        Desc list = ListView(&few, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+        // Near the top, because with three rows y = 300 is past the last one -- which would
+        // make this pass for the wrong reason.
+        list->OnPressAt(395, 12, 1);
+        list->OnRelease(true);
+        eq("with nothing to scroll the press reaches the rows", selected >= 0);
     }
 
     if (fails == 0) printf("tk_layout: ok\n");
