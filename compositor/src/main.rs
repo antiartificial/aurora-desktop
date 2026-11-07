@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open a Wayland/X11 window for our nested compositor
     match (args.headless, drm_prepared) {
-        (Some((w, h)), _) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0))?,
+        (Some((w, h)), _) => crate::headless::init_headless(&mut event_loop, &mut state, w, h, args.scale.unwrap_or(1.0), &args.extra_outputs)?,
         (None, Some(p)) => crate::drm::init_drm(&mut event_loop, &mut state, p, args.scale)
             .unwrap_or_else(|e| fail(&e.to_string())),
         (None, None) => crate::winit::init_winit(&mut event_loop, &mut state)?,
@@ -293,6 +293,8 @@ struct Args {
     theme: Option<std::path::PathBuf>,
     legacy_scene: bool,
     freeze_time: bool,
+    /// Extra headless outputs beyond the first, from `--headless=WxH,WxH`.
+    extra_outputs: Vec<(i32, i32)>,
     /// `--scale F`: the output scale for headless (winit reads the host's).
     scale: Option<f64>,
     aurora_bin: Option<String>,
@@ -337,6 +339,7 @@ fn default_drop_socket() -> Option<std::path::PathBuf> {
 
 fn parse_args() -> Args {
     let mut args = Args {
+        extra_outputs: vec![],
         headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
@@ -375,8 +378,23 @@ fn parse_args() -> Args {
                 args.quit_after = Some(std::time::Duration::from_secs(secs));
             }
             "--headless" => args.headless = Some((1280, 800)),
+            // `--headless=WxH` or `WxH,WxH`: more than one size makes more than one output,
+            // laid out left to right. This is how multi-monitor is exercised without two
+            // monitors -- the DRM backend will enumerate real connectors, but the logic that
+            // has to be right (per-output rendering, where a window is, which output owns the
+            // dock) is the same either way.
             s if s.starts_with("--headless=") => {
-                let dims = s["--headless=".len()..].split_once('x');
+                let spec = &s["--headless=".len()..];
+                let mut extra: Vec<(i32, i32)> = vec![];
+                for part in spec.split(',').skip(1) {
+                    if let Some((w, h)) = part.split_once('x') {
+                        if let (Ok(w), Ok(h)) = (w.parse::<i32>(), h.parse::<i32>()) {
+                            extra.push((w, h));
+                        }
+                    }
+                }
+                args.extra_outputs = extra;
+                let dims = spec.split(',').next().unwrap_or("").split_once('x');
                 let parsed = dims.and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
                 args.headless = Some(parsed.unwrap_or_else(|| {
                     eprintln!("aurora-compositor: bad --headless size, want WxH; using 1280x800");

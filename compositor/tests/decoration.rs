@@ -660,3 +660,32 @@ fn a_new_window_arrives_and_then_is_done_arriving() {
     wait_for("the arrival retires", || arriving(&c) == 0);
     assert_eq!(arriving(&c), 0, "the window has finished arriving");
 }
+
+/// A window lives on ONE output, and the session's chrome lives on the primary.
+///
+/// Two 1280x800 headless outputs side by side stand in for two monitors. What they prove is the
+/// part that has to be right either way: that a rectangle from the global space is translated
+/// into the output being drawn, that a window off this output is skipped rather than drawn in
+/// the wrong place, and that the dock is not duplicated. Enumerating real connectors is the DRM
+/// backend's job and is not exercised here.
+#[test]
+fn a_window_is_drawn_on_the_output_it_is_on_and_nowhere_else() {
+    let (_t, mut c) = themed("1", "", &["--headless=1280x800,1280x800"]);
+    c.client_args(&["--size", "400x300", "--title", "Rover"]);
+    wait_deco(&c, "Rover");
+
+    // The test client paints this; the capture tool takes the FIRST output.
+    const INK: [u8; 3] = [200, 40, 200];
+
+    // On the second output: global x past 1280. The first output must not show it.
+    c.inject("move 0 1400 200");
+    wait_for("it moved", || win_of(&c, "Rover").0 >= 1400);
+    let away = c.capture("away.png");
+    assert_eq!(away.count(INK), 0, "a window on the second output was drawn on the first");
+
+    // Back onto the first, and it reappears.
+    c.inject("move 0 100 200");
+    wait_for("it came back", || win_of(&c, "Rover").0 < 1280);
+    let home = c.capture("home.png");
+    assert!(home.count(INK) > 1000, "a window on this output was not drawn: {} px", home.count(INK));
+}

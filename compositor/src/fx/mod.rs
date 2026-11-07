@@ -226,8 +226,26 @@ impl Fx {
             let sy = f.finish()?; self.phases.lap(Phase::Scene, &sy); wait(r, sy)?;
         }
         s.reset();
+        // Where this output sits in the global space, in device pixels. Every rectangle below
+        // comes from the space and is therefore GLOBAL; subtracting this makes it local to the
+        // surface being drawn. For a single output at the origin it is (0, 0) and nothing
+        // changes, which is why adding multi-output does not move a single-output pixel.
+        let origin: Point<i32, Physical> = space
+            .output_geometry(output)
+            .map(|g| g.loc.to_physical_precise_round(scale))
+            .unwrap_or_default();
+        let local = |r: Rectangle<i32, Physical>| {
+            Rectangle::<i32, Physical>::new((r.loc.x - origin.x, r.loc.y - origin.y).into(), r.size)
+        };
         for (i, w) in space.elements().enumerate() {
-            let geo_full = crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale);
+            let geo_full = local(crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale));
+            // A window entirely off this output is not this output's business. Without this
+            // every output draws every window, which on two monitors means the same window
+            // twice, once in the wrong place.
+            if geo_full.loc.x >= size.w || geo_full.loc.y >= size.h
+                || geo_full.loc.x + geo_full.size.w <= 0 || geo_full.loc.y + geo_full.size.h <= 0 {
+                continue;
+            }
             // Is this window still arriving? Alpha goes into the surfaces as they are built;
             // the shrink is applied to every destination rectangle that makes up the window --
             // its glass, its title bar and its surfaces -- about the window's own centre, so it
@@ -235,7 +253,8 @@ impl Fx {
             let arrival = crate::windeco::win_key(w).and_then(|k| shell.window_arrival(&k));
             let (alpha, k) = arrival.unwrap_or((1.0, 1.0));
             let geo = scale_about(geo_full, geo_full, k);
-            let els = window_elements_alpha(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc, scale, alpha);
+            let ol: Point<i32, smithay::utils::Logical> = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
+            let els = window_elements_alpha(r, w, space.element_location(w).unwrap_or_default() - ol - w.geometry().loc, scale, alpha);
             // Everything this window puts in the scene: its glass, and its surfaces (which may overhang it).
             let mut touched = els.iter().map(|e| e.geometry(Scale::from(scale))).fold(rect_of(geo), |a, g| union(a, rect_of(g)));
             if glass.enabled { blur::backdrop(r, s, &bp, Kind::Window, rect_of(geo), glass.blur_radius, linear, &mut self.phases)?; }
@@ -253,7 +272,7 @@ impl Fx {
             }
             if let Some((tex, dst)) = bar {
                 s.mark_dirty(rect_of(geo));
-                let bg = scale_about(Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into()), geo_full, k);
+                let bg = scale_about(local(Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into())), geo_full, k);
                 if glass.enabled { blur::backdrop(r, s, &bp, Kind::Chrome, rect_of(bg), chrome_radius, linear, &mut self.phases)?; }
                 {
                     let mut t = r.bind(&mut s.scene)?;
@@ -393,7 +412,12 @@ impl Fx {
                 s.mark_dirty(rect_of(*g));
             }
         }
-        if let Some((tex, panel)) = shell.dock_draw(size) {
+        // The dock, the clock and the menus live on ONE output. They are the session's chrome,
+        // not the display's: two docks is two of something there is one of, and a desktop menu
+        // that opened on both would have two of them answering one right-click. The first
+        // output is the primary, which is also the one at the origin.
+        let primary = space.outputs().next().map(|o| o == output).unwrap_or(true);
+        if let Some((tex, panel)) = shell.dock_draw(size).filter(|_| primary) {
             let geo = Rectangle::<i32, Physical>::new((panel.x, panel.y).into(), (panel.w, panel.h).into());
             if glass.enabled { blur::backdrop(r, s, &bp, Kind::Chrome, rect_of(geo), chrome_radius, linear, &mut self.phases)?; }
             {
@@ -413,7 +437,7 @@ impl Fx {
         // Menu and settings panel: ordinary chrome, in the scene, so captures see them.
         // Glass fades in with the animation by scaling its tint and edge strength; the luminance
         // ceiling is relaxed by the same factor so it does not pop in at full strength.
-        for p in shell.chrome_draws(size) {
+        for p in if primary { shell.chrome_draws(size) } else { vec![] } {
             let geo = Rectangle::<i32, Physical>::new((p.dst.x, p.dst.y).into(), (p.dst.w, p.dst.h).into());
             if glass.enabled { blur::backdrop(r, s, &bp, Kind::Chrome, rect_of(geo), chrome_radius, linear, &mut self.phases)?; }
             {
