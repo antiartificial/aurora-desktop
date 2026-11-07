@@ -45,6 +45,14 @@ waitf "aurora-up ready" test -f "$RUN/ready"
 # against it: a capture a second later differed by 565877 of 1024000 pixels.
 # Freezing the wallpaper keeps the claim strict instead of loosening it.
 sed -i 's/^mode = "shader"/mode = "solid"/' "$RUN/theme/aurora-glass.toml"
+# The clock and the Deskbar's machine figures off as well. Step 6 compares two compositor
+# frames captured seconds apart and allows a bounded difference for a known defect (Escape does
+# not restore focus, so one title bar restyles: 829 px). A ticking cpu% adds to that from the
+# OTHER side of the screen, in the Deskbar at x 982-1270, and pushed the total past the bound
+# often enough to fail about half of all runs. Scoped to [deskbar] because five sections carry
+# `system`/`enabled` keys.
+sed -i 's/^clock = true/clock = false/' "$RUN/theme/aurora-glass.toml"
+sed -i '/^\[deskbar\]/,/^\[/ s/^system = true/system = false/' "$RUN/theme/aurora-glass.toml"
 sleep 1   # the compositor hot-reloads the theme on mtime
 source "$RUN/env"
 sed -n '/== Aurora is up/,/logs/p' "$RUN.up.log" | sed 's/^/   | /'
@@ -127,10 +135,16 @@ SW=$($PNG diff "$HERE/glass-on.png" "$HERE/switcher-flip.png"); [ "$SW" -gt 1000
 key "key Escape"; key "up alt"; sleep 1; cap "$HERE/switcher-after.png"
 AFT=$($PNG diff "$HERE/glass-on.png" "$HERE/switcher-after.png")
 # KNOWN DEFECT, not a tolerance: Escape should CANCEL the switch and restore the
-# previous keyboard focus exactly, and it does not. Measured twice: 829 pixels,
-# confined to x 200-599 y 131-149 -- one title bar, restyled because a different
-# window holds focus after cancelling than before. The scene itself is restored;
-# only the focus is wrong.
+# previous keyboard focus exactly, and it does not. One title bar restyles, because a different
+# window holds focus after cancelling than before. The scene itself is restored; only the focus
+# is wrong.
+#
+# Measured at 829 px when this was written and at a steady 1437 px now, three runs identical.
+# It was NOT steady before the clock and the Deskbar's machine figures were frozen above: a
+# ticking cpu% in the Deskbar, at the far side of the screen from the title bar, added a
+# varying amount and pushed the total past the bound in about half of all runs. The number to
+# watch is the variance, not the value: a bounded difference that moves between runs is two
+# defects wearing one number.
 #
 # Bounded rather than dropped, so a real failure to restore the desktop (which
 # would be hundreds of thousands of pixels, as the switcher's own 999653 shows)
