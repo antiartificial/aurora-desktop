@@ -194,7 +194,9 @@ impl Default for Decoration {
 }
 
 /// The capability-in-use indicator (decision 0016): which held grants it shows and how it looks.
-/// `classes` are exact capability names as the bus carries them (`device:wayland`), not
+/// `classes` are capability class paths as the bus carries them (`device:wayland`). An entry
+/// matches a resource exactly, or as a prefix followed by a ':' separator, so `ui:read` covers
+/// the accessibility grant's `ui:read:<domain identity>` (see `indicator::covers`). Not
 /// patterns: a class that nothing lists is not shown, and a typo shows nothing rather than everything.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -216,7 +218,7 @@ pub struct Indicator {
 impl Default for Indicator {
     fn default() -> Self {
         Indicator {
-            enabled: true, classes: vec!["device:wayland".into()], margin: 10.0, ease_ms: 140,
+            enabled: true, classes: vec!["device:wayland".into(), "ui:read".into()], margin: 10.0, ease_ms: 140,
             dot_oklab: [0.72, 0.17, 0.14], text_oklab: [0.97, 0.0, 0.0], text_dim_oklab: [0.84, 0.0, 0.0], panel_oklab: [0.22, 0.0, 0.0],
         }
     }
@@ -446,13 +448,15 @@ mod tests {
         assert_eq!((r.blur_radius, r.blur_passes, r.corner_radius, r.tint.strength, r.linear_blur, r.precision, r.share_prepass), (d.blur_radius, d.blur_passes, d.corner_radius, d.tint.strength, d.linear_blur, d.precision, d.share_prepass));
         assert!(BUILTIN_THEME.contains("[glass.chrome]"), "the reference theme documents chrome glass");
     }
-    /// The harness strips `[indicator]` too: the file must spell out exactly the parser's defaults, and the
-    /// default class list is the decision-0016 one (display yes, GPU no).
+    /// The harness strips `[indicator]` too: the file must spell out exactly the parser's defaults.
+    /// The default class list is decision 0016's (display yes, GPU no) plus 0017's accessibility
+    /// read, which is the clearest "something is using this" the system has.
     #[test]
-    fn the_reference_indicator_table_is_the_default_and_shows_the_display_but_not_the_gpu() {
+    fn the_reference_indicator_table_is_the_default_and_shows_the_display_and_ui_reads_but_not_the_gpu() {
         let (r, d) = (Theme::parse(BUILTIN_THEME).unwrap().indicator, Indicator::default());
         assert_eq!(r, d);
-        assert_eq!(d.classes, vec!["device:wayland".to_string()]);
+        assert_eq!(d.classes, vec!["device:wayland".to_string(), "ui:read".to_string()]);
+        assert!(!d.classes.iter().any(|c| c == "device:gpu"), "a dot for every GPU kit trains the eye to ignore it");
         assert!(BUILTIN_THEME.contains("\n[indicator]\n"));
         let t = Theme::parse("[indicator]\nmargin = 900.0\nease_ms = 99999\nclasses = [\"device:gpu\"]\n").unwrap().indicator;
         assert_eq!((t.margin, t.ease_ms, t.classes), (64.0, 1000, vec!["device:gpu".to_string()]));

@@ -19,6 +19,9 @@ pub mod settings;
 
 use std::time::{Instant, SystemTime};
 
+/// How long a launch may take: the domain is created and the controller waits to see the app stay up.
+const LAUNCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -318,36 +321,38 @@ impl Shell {
     /// Run `verb` of `app`: the launcher does the rest (arguments, then the
     /// powerbox for the file). Which verb is already decided, by the verb menu,
     /// so no terminal is spent on asking that. Returns the argv it ran.
-    /// Launch a windowed app: its own binary, directly, with WAYLAND_DISPLAY
-    /// pointing at Aurora -- the same way the desktop menu starts a terminal.
+    /// Launch a windowed app: ask the controller (`registry.launch@v1`), which puts it in a domain
+    /// with `device:wayland` and whatever its manifest declares, and ends the domain when the app
+    /// ends. A window is not a verb (decision 0012), so this is a launch and not an invocation.
     ///
-    /// Not a domain. Decision 0012 is blunt about what that costs: a windowed
-    /// app runs outside the sandbox that is this project's whole security
-    /// argument, because the Wayland socket is not yet a grantable capability.
-    /// Nothing here pretends otherwise.
-    pub fn run_windowed(&mut self, app: &str, exec: &str) -> Option<Vec<String>> {
-        if exec.is_empty() {
-            tracing::warn!("dock: {app:?} is windowed but the registry sent no exec path");
+    /// The compositor does not start the process. It used to, as a host process with the user's
+    /// whole environment; that is the gap this closes, and it is why there is no fallback here to
+    /// spawning `exec` directly. The one way to run an app outside a domain is the controller's
+    /// explicit `--unsandboxed-windows`, so the choice is made, and logged, in one place.
+    ///
+    /// The bus call runs off the main thread (a launch waits to see the app stay up). A failure is
+    /// logged here and also lands on the dock through the registry's own `launch_problem`.
+    pub fn run_windowed(&mut self, app: &str, _exec: &str) -> Option<Vec<String>> {
+        let Some(sock) = self.registry.sock.clone() else {
+            tracing::error!("dock: cannot launch {app:?}: no registry (no --bus-socket), and a window is not started outside a domain");
             return None;
-        }
-        let mut cmd = std::process::Command::new(exec);
-        cmd.stdin(std::process::Stdio::null());
-        if let Some(s) = &self.registry.sock {
-            cmd.env("AURORA_BUS_SOCK", s);
-        }
-        match cmd.spawn() {
-            Ok(mut child) => {
-                tracing::info!("dock: launched windowed app {app:?} ({exec}), unsandboxed (decision 0012)");
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                Some(vec![exec.to_string()])
+        };
+        let (id, refresh) = (app.to_string(), self.registry.refresh_now.clone());
+        let _ = std::thread::Builder::new().name("dock-launch".into()).spawn(move || {
+            let r = crate::trusted::verify::call_within(&sock, "registry", "registry.launch@v1", Some(serde_json::json!({"app": id})), LAUNCH_DEADLINE);
+            match r {
+                Ok(v) => tracing::info!(
+                    "dock: launched windowed app {id:?} in domain {} (isolated={}, grants {:?}){}",
+                    v["domain"].as_str().unwrap_or("-"),
+                    v["isolated"],
+                    v["grants"].as_array().map(|g| g.iter().filter_map(|x| x["path"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),
+                    v["warning"].as_str().map(|w| format!(" WARNING: {w}")).unwrap_or_default()
+                ),
+                Err(e) => tracing::error!("dock: cannot launch {id:?}: {e}"),
             }
-            Err(e) => {
-                tracing::error!("dock: cannot launch {app:?} ({exec}): {e}");
-                None
-            }
-        }
+            refresh.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        Some(vec!["registry.launch@v1".to_string(), app.to_string()])
     }
 
     pub fn run_verb(&mut self, app: &str, verb: &str) -> Option<Vec<String>> {

@@ -229,6 +229,12 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
 While a domain holds a capability on the theme's `[indicator] classes` list (default `device:wayland`), the compositor draws a pill at the top-right: a dot and `Display: <domain>`; hover or click for a panel (what, which attested domain, held for how long, cap id). It is in the trusted layer: drawn last, after captures are served (so in none), above any fullscreen client, no protocol object, and the pointer over it is the compositor's. It learns of grants from the bus (`bus.cap.minted` and `bus.cap.revoked`, the daemon's own voice, plus the controller's `provenance.grant.held`, believed only from the handle's own minter), so it needs `--bus-socket`. It covers domains and nothing else: windowed apps launched as host processes (decision 0012) hold no grants and do not show. Decision 0016 says what is and is not covered. Tests: `tests/indicator.rs` (a fake busd, pixels of `--test-input dump PATH`, scale 1 and 1.45); end to end against a real grant: `demos/capability-indicator/run.sh`.
 
+## Which domain a window belongs to
+
+At connect the compositor reads the client's `SO_PEERCRED` pid and `/proc/<pid>/cgroup` (`src/peer.rs`, the same read the clipboard refusal makes) and, if the pid is under `.../aurora-domains/<name>`, records `<name>` on the client's `ClientState`. A window's title bar then carries a **badge**: a filled pill with the domain's name, drawn by the compositor into the bar. A title is whatever the client sends; the badge is not, so a host client titled with a domain's exact name gets no badge (`demos/windowed-domain` step 5). `--test-input state` reports `domain` per window (`null` for none) and the `deco: layout` log line ends ` domain=NAME` for a domain window only. A window with no domain (a host process, XWayland, a test client) is normal and unchanged. A client that draws its own decorations has no bar and so no badge. The attribution is decided once, for the pid that connected; a host process of the same user can move itself into a domain cgroup and would be labelled as that domain, which only makes it look more confined than it is. Decision 0022.
+
+The dock's `run_windowed` no longer spawns anything: it sends `registry.launch@v1` to the controller, which creates the domain.
+
 ## Known limits of the backends
 
 - **winit needs two EGL contexts.** Three wrong

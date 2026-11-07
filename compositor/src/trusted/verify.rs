@@ -103,9 +103,15 @@ pub(crate) fn call(sock: &Path, verb: &str, payload: Option<Value>) -> Result<Va
 
 /// One request to service `to` on the session socket; the reply payload.
 pub fn call_to(sock: &Path, to: &str, verb: &str, payload: Option<Value>) -> Result<Value, String> {
+    call_within(sock, to, verb, payload, DEADLINE)
+}
+
+/// `call_to` with the caller's own deadline, for a verb that is slow by nature (a launch waits to
+/// see the app stay up).
+pub fn call_within(sock: &Path, to: &str, verb: &str, payload: Option<Value>, deadline: Duration) -> Result<Value, String> {
     let start = Instant::now();
     let s = UnixStream::connect(sock).map_err(|e| format!("connect {}: {e}", sock.display()))?;
-    s.set_write_timeout(Some(DEADLINE)).ok();
+    s.set_write_timeout(Some(deadline)).ok();
     let id = "v1";
     let mut req = serde_json::json!({"id": id, "kind": "request", "to": to, "verb": verb});
     if let Some(p) = payload {
@@ -114,7 +120,7 @@ pub fn call_to(sock: &Path, to: &str, verb: &str, payload: Option<Value>) -> Res
     (&s).write_all(format!("{req}\n").as_bytes()).map_err(|e| format!("write: {e}"))?;
     let mut rd = BufReader::new((&s).take(MAX_REPLY));
     loop {
-        let left = DEADLINE.checked_sub(start.elapsed()).ok_or("timed out")?;
+        let left = deadline.checked_sub(start.elapsed()).ok_or("timed out")?;
         s.set_read_timeout(Some(left.max(Duration::from_millis(1)))).ok();
         let mut line = String::new();
         if rd.read_line(&mut line).map_err(|e| format!("read: {e}"))? == 0 {

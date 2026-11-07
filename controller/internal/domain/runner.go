@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +45,19 @@ type Runner interface {
 	GrantDevice(name, class string) error
 	RevokeDevice(name, class string) error
 	Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error)
+	// Start runs argv in the domain without waiting: a window, which lives as
+	// long as the user keeps it open (decision 0012). Cancelling ctx ends it.
+	Start(ctx context.Context, name string, argv []string) (Proc, error)
+	// Destroy removes the domain and its storage.
+	Destroy(name string) error
+}
+
+// Proc is a command started in a domain.
+type Proc interface {
+	// Wait blocks until the command ends and returns its exit status.
+	Wait() (exit int, err error)
+	// Stderr is the tail of what it and the domain tooling wrote to stderr so far.
+	Stderr() string
 }
 
 // CLI shells out to the `domain` binary.
@@ -187,6 +202,61 @@ func (c CLI) RevokeDevice(name, class string) error {
 func (c CLI) Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error) {
 	return c.do(ctx, stdin, append([]string{"run", name, "--"}, argv...)...)
 }
+
+// tailBuf keeps the last max bytes written to it, safe for concurrent use. A
+// window's stderr is unbounded in time; this is what stops it being unbounded
+// in memory.
+type tailBuf struct {
+	mu  sync.Mutex
+	max int
+	b   []byte
+}
+
+func (t *tailBuf) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if len(t.b) > t.max {
+		t.b = append([]byte(nil), t.b[len(t.b)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuf) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.b)
+}
+
+type cliProc struct {
+	cmd *exec.Cmd
+	err tailBuf
+}
+
+func (p *cliProc) Stderr() string { return p.err.String() }
+
+func (p *cliProc) Wait() (int, error) {
+	err := p.cmd.Wait()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), nil
+	}
+	return 0, err
+}
+
+func (c CLI) Start(ctx context.Context, name string, argv []string) (Proc, error) {
+	p := &cliProc{err: tailBuf{max: 8 << 10}}
+	p.cmd = exec.CommandContext(ctx, c.Bin, append([]string{"run", name, "--"}, argv...)...)
+	p.cmd.Stdin = nil
+	p.cmd.Stdout, p.cmd.Stderr = io.Discard, &p.err
+	p.cmd.WaitDelay = 2 * time.Second
+	if err := p.cmd.Start(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (c CLI) Destroy(name string) error { return c.must("destroy", name) }
 
 // Root mirrors the domain CLI's data dir choice.
 func Root() string {

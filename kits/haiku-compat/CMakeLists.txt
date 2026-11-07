@@ -3,7 +3,14 @@
 # never copied. See README.md. Usage: cmake -S . -B build -G Ninja && cmake --build build && build/test_flat
 cmake_minimum_required(VERSION 3.20)
 project(haiku_compat C CXX)
+# An absolute default, overridable with -DHAIKU_SRC=... or the HAIKU_SRC environment variable, so
+# a checkout somewhere else can build at all. The default is one machine's path and always was.
+if(NOT HAIKU_SRC AND DEFINED ENV{HAIKU_SRC})
+	set(HAIKU_SRC "$ENV{HAIKU_SRC}")
+endif()
 set(HAIKU_SRC "/home/arti/projects/Vitruvian" CACHE PATH "Vitruvian/Haiku checkout (read-only)")
+include(${CMAKE_CURRENT_LIST_DIR}/CheckHaikuSrc.cmake)
+aurora_check_haiku_src("${HAIKU_SRC}" "${CMAKE_CURRENT_LIST_DIR}/../haiku-src.lock")
 set(K ${HAIKU_SRC}/src/kits)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS ON)

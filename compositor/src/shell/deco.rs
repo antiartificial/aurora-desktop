@@ -42,6 +42,8 @@ const PAD: i32 = 8;
 /// How far inside the bar's top edge a press still grabs the top edge, logical pixels. This is what
 /// makes a window at the very top of the screen resizable from the top.
 const INNER: f64 = 3.0;
+/// Horizontal padding inside the domain badge, logical pixels.
+const BADGE_PAD: i32 = 7;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -154,6 +156,9 @@ pub struct DecoSpec {
     pub id: String,
     pub window: R,
     pub title: String,
+    /// The domain the kernel put the client in, or `None`. Drawn by the compositor as a badge the
+    /// client cannot imitate inside the bar; the title beside it is only what the client claims.
+    pub domain: Option<String>,
     pub focused: bool,
     pub hover_close: bool,
 }
@@ -236,8 +241,9 @@ impl Shell {
 
     /// A bar's frame for a client at `window`. The tab style measures `title` (in the bold face, the
     /// wider, so focus never changes the tab's width).
-    pub fn deco_frame(&mut self, window: R, title: &str) -> Frame {
+    pub fn deco_frame(&mut self, window: R, title: &str, domain: Option<&str>) -> Frame {
         let h = self.deco_height();
+        let badge = domain.map_or(0, |d| self.badge_logical_w(d) + PAD);
         let tab_w = if self.deco.style == DecoStyle::Tab {
             let key = (title.to_string(), self.scale.to_bits());
             let w = match self.decos.tab_w.get(&key) {
@@ -251,11 +257,14 @@ impl Shell {
                     w
                 }
             };
-            (h + (w.ceil() as i32) + PAD).max(h * 3)
+            (h + (w.ceil() as i32) + PAD + badge).max(h * 3)
         } else {
             0
         };
-        frame(self.deco.style, h, window, tab_w)
+        let mut f = frame(self.deco.style, h, window, tab_w);
+        // The badge sits at the bar's right end; the title's room ends before it.
+        f.title.size.w = (f.title.size.w - badge).max(0);
+        f
     }
 
     /// The windows to decorate this frame, in `Space` order (`None` for one that is not).
@@ -268,7 +277,7 @@ impl Shell {
                 states.push(None);
                 continue;
             };
-            let frame = self.deco_frame(spec.window, &spec.title);
+            let frame = self.deco_frame(spec.window, &spec.title, spec.domain.as_deref());
             let (f, h) = self.decos.anim.entry(spec.id.clone()).or_insert_with(|| (Ease::at(spec.focused as u8 as f32), Ease::at(0.0)));
             f.set(spec.focused as u8 as f32, ms);
             h.set(spec.hover_close as u8 as f32, ms);
@@ -300,8 +309,8 @@ impl Shell {
                 let ext = ext.min(win.h).max(0);
                 let (fq, hq) = ((st.focus * 16.0).round() as i32, (st.hover * 16.0).round() as i32);
                 let key = format!(
-                    "{}x{}|{}|{fq}|{hq}|{s}|{}|{}|{:?}|{}|{}|{:?}",
-                    bar.w, bar.h, st.spec.title, self.glass_on, self.font.size, self.deco.style, self.font.family, self.rev, self.deco
+                    "{}x{}|{}|{:?}|{fq}|{hq}|{s}|{}|{}|{:?}|{}|{}|{:?}",
+                    bar.w, bar.h, st.spec.title, st.spec.domain, self.glass_on, self.font.size, self.deco.style, self.font.family, self.rev, self.deco
                 );
                 let placed = match self.decos.tex.get(&st.spec.id) {
                     Some((k, _, p)) if *k == key => p.clone(),
@@ -316,9 +325,11 @@ impl Shell {
                 let r4 = |r: Rect| format!("{},{},{},{}", r.x, r.y, r.w, r.h);
                 let (_, _, close) = device(&st.frame, s);
                 let line = format!(
-                    "scale={s} style={:?} win={} window={} bar={} close={} focused={} title={},{},{} text={}",
+                    "scale={s} style={:?} win={} window={} bar={} close={} focused={} title={},{},{} text={}{}",
                     self.deco.style, st.n, r4(win), r4(bar), r4(close), st.spec.focused,
-                    bar.x + placed.0, bar.y + placed.1, placed.2, placed.3
+                    bar.x + placed.0, bar.y + placed.1, placed.2, placed.3,
+                    // only a domain window has this field, so a window without one logs exactly what it always did
+                    st.spec.domain.as_ref().map(|d| format!(" domain={d}")).unwrap_or_default()
                 );
                 if self.decos.logged.get(&st.spec.id) != Some(&line) {
                     tracing::info!("deco: layout {line}");
@@ -338,6 +349,42 @@ impl Shell {
         let (win, bar, _) = device(&st.frame, self.scale);
         let ext = ((self.glass_radius as f64 * self.scale).round() as i32).min(win.h).max(0);
         Some(DecoDraw { tex, dst: Rect { x: bar.x, y: bar.y, w: bar.w, h: bar.h + ext } })
+    }
+
+    fn badge_spec(&self) -> FontSpec {
+        FontSpec::new(self.font.size * 0.85).bold()
+    }
+
+    /// What the badge says: the domain's name, bounded. The cgroup reader already refused any name
+    /// the adapter would not create, so this only has to keep it short.
+    fn badge_label(domain: &str) -> String {
+        if domain.chars().count() > 32 { format!("{}...", domain.chars().take(29).collect::<String>()) } else { domain.to_string() }
+    }
+
+    /// The badge's width in logical pixels, text plus its padding.
+    pub(super) fn badge_logical_w(&mut self, domain: &str) -> i32 {
+        let spec = self.badge_spec();
+        (self.text.string_width(&Self::badge_label(domain), &spec, self.scale).ceil() as i32) + 2 * BADGE_PAD
+    }
+
+    /// The domain badge: a filled, rounded pill at the bar's right end. It is drawn by the
+    /// compositor into the bar, which no client can reach, so a client's title cannot pass for it.
+    fn draw_badge(&mut self, c: &mut Canvas, domain: &str, bw: i32, bh: i32, accent: [u8; 3]) {
+        let s = self.scale;
+        let d = |v: f32| (v as f64 * s).round() as i32;
+        let spec = self.badge_spec();
+        let label = Self::badge_label(domain);
+        let tw = self.text.string_width(&label, &spec, s);
+        let pw = d(tw + 2.0 * BADGE_PAD as f32);
+        let m = self.text.metrics(&spec);
+        let ph = d(m.ascent + m.descent + 6.0).min(bh - 2).max(1);
+        let (px, py) = (bw - d(PAD as f32) - pw, (bh - ph) / 2);
+        if px <= 0 {
+            return;
+        }
+        c.round_rect(px, py, pw, ph, ph as f32 / 2.0, [accent[0], accent[1], accent[2], 235]);
+        let ty = py as f32 / s as f32 + (ph as f32 / s as f32 - (m.ascent + m.descent)) / 2.0;
+        self.text.draw(c, (px as f32 / s as f32) + BADGE_PAD as f32, ty, &label, &spec, [16, 18, 26, 255], s);
     }
 
     /// Draw one bar: device pixels, premultiplied. Returns the canvas and the title's placement
@@ -387,6 +434,9 @@ impl Shell {
         let ty = (cfg.height - (m.ascent + m.descent)) / 2.0;
         let end = if room > 0.0 { self.text.draw(&mut c, tx, ty, &shown, &spec, [col[0], col[1], col[2], 255], s) } else { tx };
         let placed = (d(tx), d(ty), d(end - tx), shown);
+        if let Some(dom) = &st.spec.domain {
+            self.draw_badge(&mut c, dom, bw, bh, accent);
+        }
         (c, placed)
     }
 }

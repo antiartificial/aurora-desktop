@@ -17,6 +17,7 @@ type Fake struct {
 	Unusable    error                                    // if set, Available returns it
 	OnRun       func(argv []string, stdin []byte) Result // default: exit 0, no output
 	GrantErr    error
+	StartHook   func(*FakeProc) *FakeProc // may set ErrText or end the process at once
 	IdentityErr error
 }
 
@@ -70,8 +71,50 @@ func (f *Fake) Run(_ context.Context, n string, argv []string, stdin []byte) (Re
 	return Result{}, nil
 }
 
+// FakeProc is a started command a test ends by hand.
+type FakeProc struct {
+	ErrText string
+	done    chan int
+}
+
+func (p *FakeProc) Wait() (int, error) { return <-p.done, nil }
+func (p *FakeProc) Stderr() string     { return p.ErrText }
+
+// Exit ends the process with status code.
+func (p *FakeProc) Exit(code int) { p.done <- code }
+
+// Start records the call and returns a process that lives until its context
+// ends or a test calls Exit. StartHook, if set, may return a prepared one.
+func (f *Fake) Start(ctx context.Context, n string, argv []string) (Proc, error) {
+	f.rec("start %s %s", n, strings.Join(argv, " "))
+	p := &FakeProc{done: make(chan int, 1)}
+	if f.StartHook != nil {
+		p = f.StartHook(p)
+	}
+	go func() {
+		<-ctx.Done()
+		select {
+		case p.done <- 137:
+		default:
+		}
+	}()
+	return p, nil
+}
+
+func (f *Fake) Destroy(n string) error {
+	f.rec("destroy %s", n)
+	return nil
+}
+
 // InstallHelper records the call and returns a fixed in-domain path.
 func (f *Fake) InstallHelper(n, src string) (string, error) {
 	f.rec("helper %s", n)
 	return "/domain/data/helpers/" + filepath.Base(src), nil
+}
+
+// Log returns a copy of Calls, safe while background launches are running.
+func (f *Fake) Log() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.Calls...)
 }

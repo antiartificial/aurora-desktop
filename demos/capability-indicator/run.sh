@@ -19,7 +19,7 @@
 #                                 nothing lights
 #
 # And the weakest point, run rather than described:
-#   7. a windowed app launched as a host process (decision 0012: unsandboxed,
+#   7. a display client that is a host process (before decision 0022 that was every dock app; it is still anything not launched by the controller:
 #      no grants) maps a fullscreen window and holds the display: NOTHING shows.
 #
 # Needs: go, cargo, bwrap, socat, python3.
@@ -150,7 +150,7 @@ sleep 1
 clog | grep 'indicator: bus snapshot' | grep -q 'held=1 up=true device:gpu@' && ok "the compositor's model DID see the real device:gpu grant ($(clog | grep 'indicator: bus snapshot' | grep 'device:gpu@' | tail -1 | sed 's/.*snapshot //' | cut -c1-90))" || fail "the gpu grant never reached the indicator's model"
 eq "$(layouts)" "$BEFORE" "and drew nothing for it"
 
-step 7 "the weakest point, run: an unsandboxed windowed app holds the display" "a host-process client (how windowed apps launch today, decision 0012) maps a fullscreen window: no grant, so no indicator"
+step 7 "the weakest point, run: a process the controller did not launch holds the display" "a host-process client (how every dock app launched before decision 0022, and how anything the user starts still does) maps a fullscreen window: no grant, so no indicator"
 XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR WAYLAND_DISPLAY=$AURORA_WAYLAND "$EX/testclient" --fullscreen --hidpi --rgb 10,200,60 >"$WORK/host.out" 2>&1 & HC=$!; JOBS_PIDS+=($HC)
 waitf "the host client to map" grep -q mapped "$WORK/host.out"
 sleep 1; BEFORE=$(layouts)

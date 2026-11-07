@@ -241,9 +241,15 @@ impl Aurora {
                 // `Client::get_credentials` there re-enters a lock the backend
                 // already holds and deadlocks every connecting client.
                 let clip = crate::clipboard::peer_may_read_clipboard(&client_stream, &state.trusted.allow);
+                // Which domain the kernel says this client is in, learned here for the same reason
+                // (crate::peer). A client with none is a host process, XWayland or a test client.
+                let domain = crate::peer::peer_domain(&client_stream);
+                if let Some(d) = &domain {
+                    tracing::info!("client: pid {} uid {} is in domain {:?}; its windows are attributed to it", d.pid, d.uid, d.name);
+                }
                 state
                     .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::new(clip)))
+                    .insert_client(client_stream, Arc::new(ClientState::new(clip).with_domain(domain)))
                     .unwrap();
             })
             .expect("Failed to init the wayland event source.");
@@ -285,11 +291,19 @@ pub struct ClientState {
     /// `clipboard::peer_may_read_clipboard`). Defaults to false, so a client
     /// whose data is some other type is refused rather than trusted.
     pub may_read_clipboard: bool,
+    /// The domain the kernel placed this client in at connect (`crate::peer`), if any. Chrome
+    /// shows it on the client's windows; unlike a title, the client cannot set it.
+    pub domain: Option<crate::peer::PeerDomain>,
 }
 
 impl ClientState {
     pub fn new(may_read_clipboard: bool) -> Self {
-        ClientState { compositor_state: CompositorClientState::default(), may_read_clipboard }
+        ClientState { compositor_state: CompositorClientState::default(), may_read_clipboard, domain: None }
+    }
+
+    pub fn with_domain(mut self, domain: Option<crate::peer::PeerDomain>) -> Self {
+        self.domain = domain;
+        self
     }
 }
 

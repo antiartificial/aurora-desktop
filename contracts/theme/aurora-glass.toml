@@ -255,13 +255,20 @@ close_oklab = [0.62, 0.20, 0.10]
 # bus.cap.revoked), not by watching a device. Windowed apps that run outside a domain hold no grants
 # and are not shown: read the decision's "what this does not cover" before relying on it.
 enabled = true
-# Exact capability names, as the bus carries them. device:wayland (a domain that can see and inject
+# Capability class paths, as the bus carries them: an entry matches a resource exactly, or as a
+# prefix followed by a ":" separator. device:wayland (a domain that can see and inject
 # into the display) is on. device:gpu is off: a render node can compute but cannot see the screen,
 # GPU kits are expected to run often, and a dot that lights for every one trains the eye to ignore
 # the dot that matters. Add "device:gpu" here to see it. When camera and microphone classes exist
 # ("device:camera", "device:mic"), list them here; they are not named by default because nothing
 # grants them yet and a guessed name would silently show nothing.
-classes = ["device:wayland"]
+# ui:read is the accessibility grant (decision 0017): while it is held, something
+# is reading the text and structure of an app's windows. That is the clearest
+# "in use" there is, so it is on. Its resource carries the holder
+# ("ui:read:<domain identity>"), and the entry matches it as a class path --
+# exact, or followed by ':' -- so a sub-resource lights the dot and a
+# look-alike class name does not.
+classes = ["device:wayland", "ui:read"]
 # Distance from the output's top-right corner, logical pixels.
 margin = 10.0
 # The pill and the detail panel fade in on this ease-out (cubic, like the menus). 0 = instant.

@@ -97,6 +97,10 @@ func (o onlyRunner) Grant(n, p, m string) error                  { return o.r.Gr
 func (o onlyRunner) Revoke(n, p string) error                    { return o.r.Revoke(n, p) }
 func (o onlyRunner) GrantDevice(n, c string) error               { return o.r.GrantDevice(n, c) }
 func (o onlyRunner) RevokeDevice(n, c string) error              { return o.r.RevokeDevice(n, c) }
+func (o onlyRunner) Start(c context.Context, n string, a []string) (domain.Proc, error) {
+	return o.r.Start(c, n, a)
+}
+func (o onlyRunner) Destroy(n string) error { return o.r.Destroy(n) }
 func (o onlyRunner) Run(c context.Context, n string, a []string, s []byte) (domain.Result, error) {
 	return o.r.Run(c, n, a, s)
 }

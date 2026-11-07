@@ -96,6 +96,15 @@ type Invoker struct {
 	Caps CapBus
 	// Execs overrides executable lookup: app id to host path.
 	Execs map[string]string
+	// UnsandboxedWindows is the escape hatch for windowed apps: launch them as
+	// plain host processes instead of in a domain. Off by default, set only by
+	// an explicit flag, and announced on every launch (launch.go).
+	UnsandboxedWindows bool
+	// LaunchGrace is how long a launch waits to see the app stay up.
+	LaunchGrace time.Duration
+
+	launchOnce sync.Once
+	lstate     *launchState
 
 	clock      *hlc.Clock
 	mu         sync.Mutex

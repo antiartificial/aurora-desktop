@@ -3,6 +3,9 @@
   info F                -> "W H"
   diff A B              -> number of differing pixels (-1 if sizes differ)
   count F R G B         -> pixels exactly that colour
+  diffrect A B X Y W H  -> "IN OUT": pixels that differ inside / outside that rectangle
+  near F R G B TOL X Y W H -> pixels within TOL of that colour inside the rectangle
+  colors F X Y W H      -> number of distinct colours inside the rectangle
   profile F Y X0 X1     -> "mids=N maxjump=M" for the red channel along row Y, X0..X1-1
                            (mids: values strictly between the row's min and max)
 """
@@ -55,6 +58,23 @@ def main(a):
     elif cmd == "count":
         w, h, bpp, rows = load(a[1]); want = bytes(int(v) for v in a[2:5])
         print(sum(1 for r in rows for x in range(w) if bytes(r[x * bpp:x * bpp + 3]) == want))
+    elif cmd == "diffrect":
+        w, h, bpp, r1 = load(a[1]); w2, h2, bpp2, r2 = load(a[2])
+        if (w, h) != (w2, h2): print("-1 -1"); return
+        x0, y0, rw, rh = (int(v) for v in a[3:7]); inn = out = 0
+        for y in range(h):
+            for x in range(w):
+                if r1[y][x * bpp:x * bpp + 3] != r2[y][x * bpp2:x * bpp2 + 3]:
+                    if x0 <= x < x0 + rw and y0 <= y < y0 + rh: inn += 1
+                    else: out += 1
+        print(inn, out)
+    elif cmd == "near":
+        w, h, bpp, rows = load(a[1]); want = [int(v) for v in a[2:5]]; tol = int(a[5]); x0, y0, rw, rh = (int(v) for v in a[6:10])
+        print(sum(1 for y in range(y0, min(h, y0 + rh)) for x in range(x0, min(w, x0 + rw))
+                  if all(abs(rows[y][x * bpp + i] - want[i]) <= tol for i in range(3))))
+    elif cmd == "colors":
+        w, h, bpp, rows = load(a[1]); x0, y0, rw, rh = (int(v) for v in a[2:6])
+        print(len({bytes(rows[y][x * bpp:x * bpp + 3]) for y in range(y0, min(h, y0 + rh)) for x in range(x0, min(w, x0 + rw))}))
     elif cmd == "profile":
         w, h, bpp, rows = load(a[1]); y, x0, x1 = int(a[2]), int(a[3]), int(a[4])
         v = [rows[y][x * bpp] for x in range(x0, x1)]; lo, hi = min(v), max(v)
