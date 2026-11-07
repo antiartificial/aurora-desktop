@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,9 @@ type env struct {
 }
 
 // start runs a real in-process busd and a registry service on it.
+// What the stubbed `wpctl set-volume` was last asked for, so a test can hold the verb to it.
+var fakeVol string
+
 func start(t *testing.T, runner domain.Runner, dirs ...string) *env {
 	t.Helper()
 	d, err := os.MkdirTemp("", "ctl")
@@ -69,7 +73,19 @@ func start(t *testing.T, runner domain.Runner, dirs ...string) *env {
 	if err := sc.Register(ctx, "registry"); err != nil {
 		t.Fatal(err)
 	}
-	go (&Service{Reg: reg, Inv: inv}).Serve(sc)
+	// A stubbed audio tool, so the verbs can be exercised on a machine with no audio server --
+	// which is every CI machine, and the one this was written on.
+	audio := func(name string, args ...string) (string, error) {
+		if name != "wpctl" {
+			return "", fmt.Errorf("%s: not found", name)
+		}
+		if len(args) > 0 && args[0] == "set-volume" {
+			fakeVol = args[2]
+			return "", nil
+		}
+		return "Volume: 0.40\n", nil
+	}
+	go (&Service{Reg: reg, Inv: inv, Audio: audio}).Serve(sc)
 	ec := dial()
 	if err := ec.Subscribe(ctx, "provenance.created"); err != nil {
 		t.Fatal(err)
@@ -306,5 +322,43 @@ func TestRealDomain(t *testing.T) {
 	raw, err = e.call(t, "registry.invoke@v1", map[string]any{"app": "org.aurora.demo", "verb": "size@v1", "input": in})
 	if err != nil || !strings.Contains(string(raw), `"bytes":`) {
 		t.Fatalf("size: %v %s", err, raw)
+	}
+}
+
+func TestAudioIsReadableByAnyoneAndSettableOnlyFromTheSession(t *testing.T) {
+	e := start(t, &domain.Fake{}, "../../../apps")
+
+	raw, err := e.call(t, "system.audio@v1", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Volume    int  `json:"volume"`
+		Muted     bool `json:"muted"`
+		Available bool `json:"available"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Available || st.Volume != 40 {
+		t.Fatalf("got %+v", st)
+	}
+
+	// Setting from the session socket works, and the reply is the NEW state rather than an
+	// empty ack: a volume control that has to ask again to find out what it did would show the
+	// old number for one frame.
+	if _, err := e.call(t, "system.audio.set@v1", map[string]any{"volume": 65}); err != nil {
+		t.Fatal(err)
+	}
+	if fakeVol != "65%" {
+		t.Fatalf("the tool was asked for %q", fakeVol)
+	}
+
+	// And it is clamped before it ever reaches the tool.
+	if _, err := e.call(t, "system.audio.set@v1", map[string]any{"volume": 9000}); err != nil {
+		t.Fatal(err)
+	}
+	if fakeVol != "150%" {
+		t.Fatalf("an absurd volume reached the tool as %q", fakeVol)
 	}
 }

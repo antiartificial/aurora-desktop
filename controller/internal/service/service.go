@@ -4,6 +4,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/antiartificial/aurora/controller/internal/sysaudio"
 
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
@@ -21,6 +23,17 @@ type Service struct {
 	// Rules is the plumb rule set for registry.plumb@v1; nil means the
 	// embedded default.
 	Rules *plumb.RuleSet
+	// How the audio verbs run their tool. nil means really run it; the tests
+	// replace it so the parsing can be checked without an audio server.
+	Audio sysaudio.Runner
+}
+
+// audio is Audio, or the real exec.
+func (s *Service) audio(name string, args ...string) (string, error) {
+	if s.Audio != nil {
+		return s.Audio(name, args...)
+	}
+	return sysaudio.Exec(name, args...)
 }
 
 // Serve handles requests from c until it closes. Each runs in its own
@@ -72,6 +85,25 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 		var q plumb.Request
 		if e = decode(req, &q); e == nil {
 			out = s.plumb(q, req.From)
+		}
+	case "system.audio@v1":
+		// Reading the volume is harmless and anything may ask.
+		out = sysaudio.Get(s.audio)
+	case "system.audio.set@v1":
+		// SETTING it is not. It changes the machine for every application at once, so it is
+		// refused inside a domain by the same rule that refuses registry.launch@v1: an app the
+		// user gave a file to has not been given the speakers.
+		if !mayDecide(req.From) {
+			return nil, &invoke.Error{Code: "not_permitted", Msg: "system.audio.set@v1 may only be called from the session socket", Detail: fmt.Sprintf("caller %q may not change the machine's volume", req.From)}
+		}
+		var q struct {
+			Volume int `json:"volume"`
+		}
+		if e = decode(req, &q); e == nil {
+			if err := sysaudio.Set(s.audio, q.Volume); err != nil {
+				return nil, &invoke.Error{Code: "unavailable", Msg: "the volume could not be set", Detail: err.Error()}
+			}
+			out = sysaudio.Get(s.audio)
 		}
 	case "registry.describe@v1":
 		var q struct{ App, Verb string }
