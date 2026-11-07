@@ -29,6 +29,21 @@ func plumbVia(t *testing.T, e *env, kind, value string) plumb.Reply {
 // Over a real busd, as the user's own session: a real PNG offers the demo
 // app's verbs with their effect classes, the destructive one marked, and the
 // runner is never touched.
+// demoOnly counts the candidates belonging to the app a test is about. These
+// tests load every fixture app in testdata/apps, so a hard-coded total couples
+// them to the directory's contents: adding the 0014 devprobe fixture, whose
+// verbs legitimately accept image/png, broke three assertions that were not
+// about it. Scope the count, keep the assertion exact.
+func demoOnly(cs []plumb.Candidate) int {
+	n := 0
+	for _, c := range cs {
+		if c.App == "org.aurora.demo" {
+			n++
+		}
+	}
+	return n
+}
+
 func TestPlumbOverBusOffersVerbsWithEffects(t *testing.T) {
 	fk := &domain.Fake{}
 	e := start(t, fk, "../../testdata/apps")
@@ -38,9 +53,15 @@ func TestPlumbOverBusOffersVerbsWithEffects(t *testing.T) {
 	if rep.Viewer != "session" || rep.Selection.MIME != "image/png" {
 		t.Fatalf("%+v", rep)
 	}
+	// Scoped to the app under test: this asserts ranking and effect marking for
+	// org.aurora.demo, not the contents of the fixture directory. Any other
+	// fixture app that happens to accept image/png is legitimately offered too,
+	// and adding one must not break this.
 	got := map[string]string{}
 	for _, c := range rep.Candidates {
-		got[c.Verb] = c.Effect
+		if c.App == "org.aurora.demo" {
+			got[c.Verb] = c.Effect
+		}
 	}
 	want := map[string]string{"copy@v1": "write", "size@v1": "read", "delete@v1": "destructive"}
 	if !reflect.DeepEqual(got, want) {
@@ -53,7 +74,7 @@ func TestPlumbOverBusOffersVerbsWithEffects(t *testing.T) {
 		t.Fatalf("plumbing touched the domain runner: %v", fk.Calls)
 	}
 	// text that looks like a path:line, and one that matches nothing
-	if r := plumbVia(t, e, plumb.KindText, f+":3"); r.Selection.Line != 3 || len(r.Candidates) != 3 {
+	if r := plumbVia(t, e, plumb.KindText, f+":3"); r.Selection.Line != 3 || demoOnly(r.Candidates) != 3 {
 		t.Fatalf("%+v", r)
 	}
 	if r := plumbVia(t, e, plumb.KindText, "hello there"); len(r.Candidates) != 0 || r.Reason == "" {
@@ -87,7 +108,7 @@ func TestPlumbDomainCallerLearnsNothingFromDisk(t *testing.T) {
 		t.Fatalf("a domain can tell a real file from a missing one:\n%+v\n%+v", a, b)
 	}
 	// the same question from the session does see the file
-	if s := ask("uid1000:aurora", real); s.Selection.MIME != "image/png" || len(s.Candidates) != 3 {
+	if s := ask("uid1000:aurora", real); s.Selection.MIME != "image/png" || demoOnly(s.Candidates) != 3 {
 		t.Fatalf("session: %+v", s)
 	}
 	// and from an identity nobody vouches for: nothing
