@@ -4,6 +4,7 @@
 //! It also prints `keymap <xkb_symbols line>` and `repeat <rate> <delay>` as the seat sends them,
 //! `configure WxH` for each non-zero toplevel configure, and with `--maximize` asks to be
 //! maximised and redraws at the size it is given.
+//! `--fullscreen` asks for fullscreen (and follows the configure that answers).
 //! Usage: testclient [--size WxH] [--rgb R,G,B] [--pattern solid|checker|fine|split|bars|glass] [--alpha A] [--maximize]
 //!                   [--hidpi | --integer-scale] [--title T] [--app-id ID]
 //!                   [--decor client|server] [--min-size WxH] [--max-size WxH] [--refuse-close] [--child WxH]
@@ -269,11 +270,12 @@ impl Dispatch<XdgToplevel, ()> for App {
         }
     }
 }
-impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--maximize" || a == "--follow") } }
+impl App { fn pending_allowed(&self) -> bool { std::env::args().any(|a| a == "--maximize" || a == "--follow" || a == "--fullscreen") } }
 
 fn main() {
     let (mut w, mut h, mut rgb) = (1000usize, 700usize, [200u8, 40, 200]);
     let (mut pattern, mut alpha) = ("solid".to_string(), 0.14f32);
+    let mut fullscreen = false;
     let (mut maximize, mut hidpi, mut integer_only, mut text_input) = (false, false, false, false);
     let (mut title, mut app_id) = ("aurora-testclient".to_string(), None::<String>);
     let (mut decor, mut min_size, mut max_size, mut refuse_close, mut child) = (None::<String>, None::<(i32, i32)>, None::<(i32, i32)>, false, None::<(usize, usize)>);
@@ -294,6 +296,7 @@ fn main() {
             "--follow" => {}
             "--child" => child = Some(wh(a.next().unwrap())),
             "--maximize" => maximize = true,
+            "--fullscreen" => fullscreen = true,
             "--hidpi" => hidpi = true,
             "--integer-scale" => integer_only = true,
             "--text-input" => text_input = true,
@@ -337,6 +340,7 @@ fn main() {
     }
     app.top = Some(top.clone());
     if maximize { top.set_maximized(); }
+    if fullscreen { top.set_fullscreen(None); }
     surface.commit();
     loop { q.blocking_dispatch(&mut app).expect("dispatch"); }
 }

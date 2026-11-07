@@ -193,9 +193,39 @@ impl Default for Decoration {
     }
 }
 
+/// The capability-in-use indicator (decision 0016): which held grants it shows and how it looks.
+/// `classes` are exact capability names as the bus carries them (`device:wayland`), not
+/// patterns: a class that nothing lists is not shown, and a typo shows nothing rather than everything.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Indicator {
+    pub enabled: bool,
+    pub classes: Vec<String>,
+    /// Margin from the output's top-right corner, logical pixels.
+    pub margin: f32,
+    /// Ease-out duration of the pill and the detail panel appearing.
+    pub ease_ms: u64,
+    /// The dot. No other pixel the compositor draws has this colour (tests count on that).
+    pub dot_oklab: [f32; 3],
+    /// Text on the indicator's own opaque panel. 4.5:1 or better over `panel_oklab` (asserted on pixels).
+    pub text_oklab: [f32; 3],
+    pub text_dim_oklab: [f32; 3],
+    /// The panel behind the text: opaque, so contrast does not depend on what is behind it.
+    pub panel_oklab: [f32; 3],
+}
+impl Default for Indicator {
+    fn default() -> Self {
+        Indicator {
+            enabled: true, classes: vec!["device:wayland".into()], margin: 10.0, ease_ms: 140,
+            dot_oklab: [0.72, 0.17, 0.14], text_oklab: [0.97, 0.0, 0.0], text_dim_oklab: [0.84, 0.0, 0.0], panel_oklab: [0.22, 0.0, 0.0],
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Theme {
+    pub indicator: Indicator,
     pub decoration: Decoration,
     pub glass: Glass,
     pub switcher: SwitcherParams,
@@ -258,6 +288,13 @@ impl Theme {
         for v in [c.height, c.grip, c.corner].into_iter().chain(c.text_oklab).chain(c.text_dim_oklab).chain(c.accent_oklab).chain(c.close_oklab) {
             if !v.is_finite() { return Err("non-finite number in theme".into()); }
         }
+        let i = &mut t.indicator;
+        for v in [i.margin].into_iter().chain(i.dot_oklab).chain(i.text_oklab).chain(i.text_dim_oklab).chain(i.panel_oklab) {
+            if !v.is_finite() { return Err("non-finite number in theme".into()); }
+        }
+        i.margin = i.margin.clamp(0.0, 64.0);
+        i.ease_ms = i.ease_ms.clamp(0, 1000);
+        i.classes.truncate(64);
         c.height = c.height.clamp(16.0, 64.0).round();
         c.grip = c.grip.clamp(2.0, 32.0);
         c.corner = c.corner.clamp(c.grip, 64.0);
@@ -358,6 +395,17 @@ mod tests {
         assert_eq!((r.chrome.tint.oklab, r.chrome.tint.strength, r.chrome.luminance_max, r.chrome.blur_radius), (d.chrome.tint.oklab, d.chrome.tint.strength, d.chrome.luminance_max, d.chrome.blur_radius));
         assert_eq!((r.blur_radius, r.blur_passes, r.corner_radius, r.tint.strength, r.linear_blur, r.precision, r.share_prepass), (d.blur_radius, d.blur_passes, d.corner_radius, d.tint.strength, d.linear_blur, d.precision, d.share_prepass));
         assert!(BUILTIN_THEME.contains("[glass.chrome]"), "the reference theme documents chrome glass");
+    }
+    /// The harness strips `[indicator]` too: the file must spell out exactly the parser's defaults, and the
+    /// default class list is the decision-0016 one (display yes, GPU no).
+    #[test]
+    fn the_reference_indicator_table_is_the_default_and_shows_the_display_but_not_the_gpu() {
+        let (r, d) = (Theme::parse(BUILTIN_THEME).unwrap().indicator, Indicator::default());
+        assert_eq!(r, d);
+        assert_eq!(d.classes, vec!["device:wayland".to_string()]);
+        assert!(BUILTIN_THEME.contains("\n[indicator]\n"));
+        let t = Theme::parse("[indicator]\nmargin = 900.0\nease_ms = 99999\nclasses = [\"device:gpu\"]\n").unwrap().indicator;
+        assert_eq!((t.margin, t.ease_ms, t.classes), (64.0, 1000, vec!["device:gpu".to_string()]));
     }
     /// The harness strips `[decoration]` from its copy of the reference theme too (tests append their own), so the
     /// same holds: the file must spell out exactly the parser's defaults, and a bad value must be clamped, not trusted.

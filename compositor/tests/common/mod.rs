@@ -283,7 +283,7 @@ impl Theme {
         // error. Drop those sections from the copy: the parser's defaults are the same.
         let mut keep = true;
         let text: String = fs::read_to_string(src.join("aurora-glass.toml")).unwrap().lines().filter(|l| {
-            if l.starts_with('[') { keep = !["[background]", "[desktop]", "[dock]", "[font]", "[input]", "[output]", "[glass.chrome]", "[decoration]"].contains(&l.trim()); }
+            if l.starts_with('[') { keep = !["[background]", "[desktop]", "[dock]", "[font]", "[input]", "[output]", "[glass.chrome]", "[decoration]", "[indicator]"].contains(&l.trim()); }
             keep
         }).map(|l| format!("{l}\n")).collect();
         fs::write(dir.path().join("aurora-glass.toml"), text).unwrap();

@@ -190,3 +190,29 @@ text_dim_oklab = [0.90, 0.0, 0.0]
 accent_oklab = [0.86, 0.0, 0.16]
 # The close button's fill when the pointer is over it.
 close_oklab = [0.62, 0.20, 0.10]
+
+[indicator]
+# The capability-in-use indicator (decision 0016): a dot the compositor draws above everything,
+# including a fullscreen client, and leaves out of every screen capture, while a domain HOLDS one
+# of the capabilities below. It is driven by the grant lifecycle (the daemon's own bus.cap.minted and
+# bus.cap.revoked), not by watching a device. Windowed apps that run outside a domain hold no grants
+# and are not shown: read the decision's "what this does not cover" before relying on it.
+enabled = true
+# Exact capability names, as the bus carries them. device:wayland (a domain that can see and inject
+# into the display) is on. device:gpu is off: a render node can compute but cannot see the screen,
+# GPU kits are expected to run often, and a dot that lights for every one trains the eye to ignore
+# the dot that matters. Add "device:gpu" here to see it. When camera and microphone classes exist
+# ("device:camera", "device:mic"), list them here; they are not named by default because nothing
+# grants them yet and a guessed name would silently show nothing.
+classes = ["device:wayland"]
+# Distance from the output's top-right corner, logical pixels.
+margin = 10.0
+# The pill and the detail panel fade in on this ease-out (cubic, like the menus). 0 = instant.
+ease_ms = 140
+# The dot: orange-red. The compositor draws nothing else in this colour.
+dot_oklab = [0.72, 0.17, 0.14]
+# Text sits on its own opaque panel, so its contrast does not depend on the backdrop:
+#   text L 0.97 on panel L 0.22 -> about 15:1;  dim L 0.84 -> about 10:1  (asserted on pixels in tests/indicator.rs)
+text_oklab = [0.97, 0.0, 0.0]
+text_dim_oklab = [0.84, 0.0, 0.0]
+panel_oklab = [0.22, 0.0, 0.0]
