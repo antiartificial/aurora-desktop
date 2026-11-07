@@ -9,6 +9,7 @@
 #   aurora-up --env           print `export` lines for a shell that wants to drive a running stack
 #   aurora-up --build-only    build and exit
 # Flags: --no-compositor --no-haiku --no-windows --no-fixtures --no-build
+#        --unsandboxed-windows (ESCAPE HATCH: dock launches run as host processes, not in domains)
 #        --require-isolation --no-test-input --dump-overlay FILE --size WxH
 #        --approval-timeout DUR --run DIR -h
 set -uo pipefail
@@ -19,16 +20,17 @@ EXAMPLES=$ROOT/compositor/target/release/examples
 CAPTURE=$ROOT/harness/capture/target/release/aurora-capture
 LEDGER=$ROOT/kits/build/haiku_ledger
 RUN=${AURORA_RUN:-/tmp/aurora-up-$(id -u)}
-COMPOSITOR=1 HAIKU=1 WINDOWS=1 FIXTURES=1 BUILD=1 BUILD_ONLY=0 ISOLATION= TESTINPUT=1 DUMP= SIZE=1280x800 APPROVAL=60s
+UNSB= COMPOSITOR=1 HAIKU=1 WINDOWS=1 FIXTURES=1 BUILD=1 BUILD_ONLY=0 ISOLATION= TESTINPUT=1 DUMP= SIZE=1280x800 APPROVAL=60s
 
 while [ $# -gt 0 ]; do case $1 in
   --no-compositor) COMPOSITOR=0;; --no-haiku) HAIKU=0;; --no-windows) WINDOWS=0;;
   --no-fixtures) FIXTURES=0;; --no-build) BUILD=0;; --build-only) BUILD_ONLY=1;;
+  --unsandboxed-windows) UNSB=--unsandboxed-windows;;
   --require-isolation) ISOLATION=--require-isolation;; --no-test-input) TESTINPUT=0;;
   --dump-overlay) DUMP=$2; shift;; --size) SIZE=$2; shift;; --approval-timeout) APPROVAL=$2; shift;;
   --run) RUN=$2; shift;;
   --env) [ -f "$RUN/env" ] && cat "$RUN/env" || { echo "aurora-up: no running stack in $RUN" >&2; exit 1; }; exit 0;;
-  -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
   *) echo "aurora-up: unknown flag $1 (try -h)" >&2; exit 2;;
 esac; shift; done
 
@@ -150,7 +152,7 @@ if [ $COMPOSITOR = 1 ]; then COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOC
   printf '{"services":[\n'
   svc_entry busd "$RUN/busd.log" '{"type":"bus"}' '[]' '' "$BIN/busd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/buslog"; printf ',\n'
   svc_entry controllerd "$RUN/controllerd.log" '{"type":"service","name":"registry"}' '["busd"]' '' \
-    "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" --approval-timeout "$APPROVAL" ${ISOLATION:+"$ISOLATION"} "${COMPFLAGS[@]}"; printf ',\n'
+    "$BIN/controllerd" --apps "$APPS" --domain-bin "$BIN/domain" --approval-timeout "$APPROVAL" ${ISOLATION:+"$ISOLATION"} ${UNSB:+"$UNSB"} "${COMPFLAGS[@]}"; printf ',\n'
   svc_entry indexd "$RUN/indexd.log" '{"type":"service","name":"index"}' '["busd"]' '' "$BIN/indexd" --socket "$AURORA_BUS_SOCK" --data-dir "$RUN/index"
   if [ $COMPOSITOR = 1 ]; then
     printf ',\n'

@@ -40,14 +40,21 @@ type capSet struct {
 // leaves the grant without a Cap and says why in the set's note. Call
 // release (deferred) to revoke what was minted.
 func (iv *Invoker) mintCaps(grants []prov.Grant) *capSet {
+	var ttl time.Duration
+	if iv.Timeout > 0 {
+		ttl = iv.Timeout + capGrace
+	}
+	return iv.mintCapsTTL(grants, ttl)
+}
+
+// mintCapsTTL is mintCaps with the handles' lifetime given. A window's grants
+// last as long as the window, which no timeout bounds: ttl 0 is no expiry, and
+// the launcher revokes them when the app exits.
+func (iv *Invoker) mintCapsTTL(grants []prov.Grant, ttl time.Duration) *capSet {
 	cs := &capSet{bus: iv.Caps}
 	if iv.Caps == nil {
 		cs.note = "no handle issued: no bus capability client configured"
 		return cs
-	}
-	var ttl time.Duration
-	if iv.Timeout > 0 {
-		ttl = iv.Timeout + capGrace
 	}
 	var errs []error
 	for i := range grants {

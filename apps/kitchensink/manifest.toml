@@ -5,11 +5,11 @@
 # the exec below does not exist; the registry then reports the app as "not built"
 # instead of listing it as launchable.
 #
-# NO SANDBOX. A windowed app launches as a plain host process, outside the domain
-# machinery (decision 0012). [capabilities] could not gate anything here, so it is
-# left empty on purpose: declaring paths or devices that nothing enforces would read
-# as a promise. The one thing the app needs, a Wayland socket, has no grantable form
-# in the schema yet.
+# SANDBOXED (decision 0012, amended; 0017). A dock click launches this app in its own
+# domain: bubblewrap, its own uid, the aurora-domains cgroup, no network, and a
+# device:wayland grant, which a windowed app always gets because the window is the
+# point. It sees none of the host filesystem. [capabilities] below is what it gets
+# on top of that, and an empty section means exactly nothing more.
 # image_hash is a placeholder; real images do not exist yet (0002 open question 6).
 
 [app]

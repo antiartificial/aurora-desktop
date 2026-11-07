@@ -118,6 +118,24 @@ func main() {
 			p["output_ticket"] = *otk
 		}
 		call(sock, "registry.invoke@v1", p)
+	case "launch":
+		pos := split(fs, rest)
+		if len(pos) != 1 {
+			die("usage: controller launch <windowed-app-id>   (what a dock click sends: a domain with device:wayland, not a verb)")
+		}
+		call(sock, "registry.launch@v1", map[string]any{"app": pos[0]})
+	case "stop":
+		dom := fs.String("domain", "", "stop one launch by domain name")
+		pos := split(fs, rest)
+		p := map[string]any{}
+		if *dom != "" {
+			p["domain"] = *dom
+		} else if len(pos) == 1 {
+			p["app"] = pos[0]
+		} else {
+			die("usage: controller stop <app-id> | controller stop --domain NAME")
+		}
+		call(sock, "registry.stop@v1", p)
 	case "decide":
 		pos := split(fs, rest)
 		if len(pos) != 2 {
