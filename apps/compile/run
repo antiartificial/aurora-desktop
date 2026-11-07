@@ -1,0 +1,109 @@
+#!/bin/sh
+# Entrypoint for the controller: builds one C translation unit with the host's
+# compiler, as a typed verb. Protocol: run --verb NAME, request JSON on stdin
+#   {"input":SOURCE.c,"output":FILE,"args":{...}}
+# Result JSON on stdout, diagnostics on stderr, non-zero exit on failure.
+#
+# Inside the domain the toolchain is the host's read-only /usr (cc, as, ld,
+# headers, libc), the source is the one file granted ro, and the output is the
+# one file granted rw. There is no network. #include "other.h" next to the
+# source therefore cannot work: the neighbours are not in the domain. One
+# translation unit is the point of the first version, not an oversight.
+#
+# The result carries a "reported" object. The controller copies it into the
+# output's provenance record, so the compiler's identity and the exact flags
+# travel with the binary in the same xattr as the grants. It is this app's
+# claim, made from inside the domain; the grants beside it are the
+# controller's own observation.
+set -eu
+[ "${1:-}" = "--verb" ] || { echo "usage: run --verb NAME < request.json" >&2; exit 2; }
+verb=$2
+for t in jq cc sha256sum; do
+  command -v $t >/dev/null || { echo "build: $t: not found in the domain's /usr" >&2; exit 127; }
+done
+die() { echo "build: $*" >&2; exit 1; }
+
+req=$(cat)
+in=$(printf '%s' "$req" | jq -r '.input // empty')
+out=$(printf '%s' "$req" | jq -r '.output // empty')
+arg() { printf '%s' "$req" | jq -r --arg k "$1" '.args[$k] // empty'; }
+[ -n "$in" ] && [ -r "$in" ] || die "cannot read source '$in'"
+[ -n "$out" ] || die "$verb needs an output"
+case $in in *.c) ;; *) die "source must be a .c file";; esac
+
+kind=$(arg kind); kind=${kind:-executable}
+case $kind in executable|object) ;; *) die "kind must be executable or object";; esac
+epoch=$(arg source_date_epoch)
+case $epoch in ''|*[!0-9]*) [ -z "$epoch" ] || die "source_date_epoch must be a non-negative integer";; esac
+
+ulimit -t 120 -f 262144 2>/dev/null || true   # CPU seconds, output size (512 B blocks)
+# A fixed path, because it appears in the recorded flags (-ffile-prefix-map) and
+# the flags must not differ from run to run. /tmp is the domain's own, and
+# invokes are serialised per domain, so there is no one to collide with.
+work=/tmp/build-work; rm -rf "$work"; mkdir "$work"; trap 'rm -rf "$work"' EXIT
+# The compiler sees a relative name in a throwaway directory, so the host path
+# of the source does not leak into the object (its FILE symbol, __FILE__).
+unit=$(basename "$in")
+cp "$in" "$work/$unit"
+srcsum=$(sha256sum "$work/$unit" | cut -d' ' -f1)
+
+# Everything that decides the bytes, other than the source and the toolchain.
+# -frandom-seed: gcc otherwise makes up names for anonymous symbols per run.
+# -ffile-prefix-map: keeps the scratch directory out of anything gcc embeds.
+# --build-id=sha1: pinned, and a hash of the content, so it adds no noise.
+flags="-std=c11 -O2 -Wall -g0 -fno-plt -frandom-seed=$srcsum -ffile-prefix-map=$work=."
+[ "$kind" = object ] && flags="$flags -c" || flags="$flags -Wl,--build-id=sha1"
+
+first() { "$@" 2>&1 | head -1; }
+hashof() { p=$(command -v "$1") && sha256sum "$(readlink -f "$p")" | cut -d' ' -f1; }
+cc1=$(cc -print-prog-name=cc1)
+tool=$(first cc --version)
+ccsum=$(hashof cc)
+cc1sum=$(sha256sum "$cc1" | cut -d' ' -f1)
+asv=$(first as --version)
+ldv=$(first ld --version)
+ldsum=$(hashof ld)
+
+# Compile into scratch, then copy over the granted file. ld unlinks its
+# output, and a bind-mounted file cannot be unlinked (the controller needs
+# apps to write the output in place); a plain copy writes it in place.
+build() {
+  ( cd "$work" && [ -z "$epoch" ] || export SOURCE_DATE_EPOCH=$epoch
+    export LC_ALL=C TZ=UTC
+    # shellcheck disable=SC2086
+    cc $flags "$unit" -o "$work/artefact" ) >&2 || die "compile failed"
+  cat "$work/artefact" > "$out" || die "cannot write $out"
+  [ "$kind" = object ] || chmod +x "$out" 2>/dev/null || true
+  outsum=$(sha256sum "$out" | cut -d' ' -f1)
+}
+
+reported() {  # extra jq fields as $1 (a jq object expression)
+  jq -nc --arg tool "$tool" --arg ccsum "$ccsum" --arg cc1sum "$cc1sum" --arg as "$asv" --arg ld "$ldv" --arg ldsum "$ldsum" \
+    --arg flags "$flags" --arg kind "$kind" --arg unit "$unit" --arg src "$srcsum" --arg outsum "$outsum" --arg epoch "$epoch" \
+    "{toolchain:{cc:\$tool,cc_sha256:\$ccsum,cc1_sha256:\$cc1sum,as:\$as,ld:\$ld,ld_sha256:\$ldsum},
+      flags:\$flags,kind:\$kind,source:\$unit,source_sha256:\$src,output_sha256:\$outsum,
+      source_date_epoch:(if \$epoch==\"\" then null else (\$epoch|tonumber) end)} + $1"
+}
+
+case $verb in
+  compile@v1)
+    build
+    rep=$(reported '{}')
+    jq -nc --arg o "$out" --argjson n "$(wc -c < "$out")" --argjson r "$rep" '{ok:true,output:$o,size:$n,reported:$r}'
+    ;;
+  verify@v1)
+    # Rebuild from the recorded source and compare with what the caller read
+    # from the original's provenance. The rebuild is written to the output
+    # file (a scratch artefact with its own provenance).
+    want=$(arg expect_sha256); [ -n "$want" ] || die "verify@v1 needs expect_sha256"
+    build
+    ident=false; [ "$outsum" = "$want" ] && ident=true
+    tmatch=true; [ -z "$(arg expect_cc_sha256)" ] || [ "$(arg expect_cc_sha256)" = "$ccsum" ] || tmatch=false
+    fmatch=true; [ -z "$(arg expect_flags)" ] || [ "$(arg expect_flags)" = "$flags" ] || fmatch=false
+    rep=$(jq -nc --arg want "$want" --argjson i "$ident" --argjson t "$tmatch" --argjson f "$fmatch" \
+      --argjson base "$(reported '{}')" '$base + {rebuild_of_sha256:$want,identical:$i,toolchain_match:$t,flags_match:$f}')
+    jq -nc --arg w "$want" --arg g "$outsum" --argjson i "$ident" --argjson t "$tmatch" --argjson f "$fmatch" --argjson r "$rep" \
+      '{ok:true,identical:$i,toolchain_match:$t,flags_match:$f,expected_sha256:$w,rebuilt_sha256:$g,reported:$r}'
+    ;;
+  *) echo "unknown verb $verb" >&2; exit 2;;
+esac

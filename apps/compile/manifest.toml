@@ -1,0 +1,46 @@
+# build: the host's C compiler as a typed verb, so a binary can say what made
+# it. cc, as, ld, the headers and libc come from the read-only /usr every
+# domain already binds; this app ships only `run`.
+#
+# There are no declared capabilities.paths on purpose. A build is granted the
+# one source file (ro) and the one output file (rw) the caller names, and
+# nothing ambient: every grant is therefore source=gesture in the provenance
+# record, which is the honest description of "the caller pointed at these two
+# files". No network capability exists, so the domain has none (a build is
+# offline). One translation unit, one fixed flag set (printed by every result
+# and recorded in the output's provenance); not a build system.
+#
+# Reproducibility is measured, not claimed: see demos/build-verb/run.sh.
+# image_hash is a placeholder; real images do not exist yet (0002 open question 6).
+
+[app]
+id = "org.aurora.build"
+name = "Build"
+version = "0.1.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[[runtime]]
+name = "gcc"
+version = "16.2.1"
+
+[capabilities]
+
+[types]
+opens = ["text/x-csrc"]
+creates = ["application/octet-stream"]
+
+[[verb]]
+name = "compile@v1"
+summary = "Compile one C source file to an executable or an object; the compiler's identity and flags are recorded in the output's provenance"
+effect = "write"
+accepts = ["text/x-csrc"]
+input = { kind = "string?", source_date_epoch = "int?" }
+output = { binary = "application/octet-stream", size = "int" }
+
+[[verb]]
+name = "verify@v1"
+summary = "Rebuild a source with the recorded settings into a scratch file and report whether it is byte-identical to the original"
+effect = "write"
+accepts = ["text/x-csrc"]
+input = { expect_sha256 = "string", expect_cc_sha256 = "string?", expect_flags = "string?", kind = "string?", source_date_epoch = "int?" }
+output = { identical = "bool", toolchain_match = "bool", flags_match = "bool", rebuilt_sha256 = "string" }
