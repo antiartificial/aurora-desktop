@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #define _GNU_SOURCE 1
 #include <strings.h>
@@ -342,6 +343,37 @@ int main() {
         }
     });
 
+    // Rename, for real: rename(2) in the current directory. Returning false keeps the field
+    // open, which is what a collision or a refusal from the filesystem should do.
+    OnListRename(list, [&](int row, const std::string& to) -> bool {
+        std::string from = rows.Cell(row, 0).text;
+        if (!from.empty() && from.back() == '/') from.pop_back();
+        if (to == from) return true;
+        if (to.find('/') != std::string::npos) {
+            last_action.set("rename refused: a name cannot contain '/'");
+            return false;
+        }
+        const std::string base = path.get() == "/" ? "" : path.get();
+        const std::string a = base + "/" + from, b = base + "/" + to;
+        // Refuse rather than clobber: renaming onto an existing name would destroy it silently,
+        // and rename(2) is happy to do that.
+        struct stat st;
+        if (lstat(b.c_str(), &st) == 0) {
+            last_action.set("rename refused: \"" + to + "\" already exists");
+            return false;
+        }
+        if (rename(a.c_str(), b.c_str()) != 0) {
+            last_action.set(std::string("rename failed: ") + strerror(errno));
+            return false;
+        }
+        last_action.set("renamed " + from + " -> " + to);
+        rows.Open(path.get());            // re-read: the listing and its order have changed
+        rows.SetFilter(filter.get());
+        status.set(std::to_string(rows.Count()) + " items");
+        w.Invalidate();
+        return true;
+    });
+
     OnListContext(list, [&](int row, float x, float y) {
         const std::string name = rows.Cell(row, 0).text;
         const bool is_dir = !name.empty() && name.back() == '/';
@@ -352,8 +384,8 @@ int main() {
                                  [&, name] { last_action.set("copy " + name); }});
         items.push_back(MenuItem{"Show provenance", "", Effect::Read, true, false, false,
                                  [&, name] { last_action.set("prov " + name); }});
-        items.push_back(MenuItem{"Rename", "F2", Effect::Write, false, false, false, nullptr});
-        items.back().note = "needs a text area";
+        items.push_back(MenuItem{"Rename", "F2", Effect::Write, true, false, false,
+                                 [&, row] { w.Defer([&, row] { BeginListRename(list, row); }); }});
         items.push_back(MenuItem{"Upload", "", Effect::External, false, false, false, nullptr});
         items.back().note = "no network grant";
         items.push_back(MenuItem{"Move to Trash", "Del", Effect::Destructive, true, false, false,

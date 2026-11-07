@@ -221,9 +221,14 @@ private:
 
 // Rows are built for the visible band plus a margin and for nothing else, which is what makes a
 // directory of 50,000 entries cost the same as one of 40.
+// Defined further down; the list needs one and the field needs nothing from the list.
+Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+                std::function<void(const std::string&)> co, std::function<void()> ca,
+                FieldOpts o);
+
 class ListNode : public Node {
 public:
-    ListNode(Rows* r, int* sel) : r_(r), sel_(sel) {}
+    ListNode(Rows* r, int* sel) : r_(r), sel_(sel), edit_text_("") {}
 
     Size Measure(const Env& e, Constraints c) override {
         row_h_ = text_h(e) + e.unit * 0.75f;
@@ -264,6 +269,16 @@ public:
 
         for (int i = first; i <= last; i++) {
             const float ry = frame.y + head_h_ + 1 + (i - first) * row_h_;
+            if (i == edit_row_ && edit_field_) {
+                // The field replaces the row's first cell. Placed every frame because the row
+                // moves when the list scrolls, and measured once here rather than in Measure:
+                // the list's own size does not depend on it.
+                const Rect fr{frame.x + 2, ry - 1, r_->ColumnWidth(0) - 4, row_h_ + 2};
+                edit_field_->Measure(e, Constraints{fr.w, fr.h});
+                edit_field_->Place(fr);
+                edit_field_->Draw(s, e);
+                continue;
+            }
             if (sel_ && *sel_ == i)
                 au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
                              e.accent);
@@ -326,11 +341,59 @@ public:
     bool CanFocus() const override { return true; }
     void OnFocus(bool g) override { focused_ = g; whole_ = true; dirty_ = true; }
 
+    // ---- inline rename ----
+
+    void BeginRename(int row) {
+        if (row < 0 || row >= r_->Count() || !on_ren_) return;
+        std::string name = r_->Cell(row, 0).text;
+        if (!name.empty() && name.back() == '/') name.pop_back();   // edit the name, not the mark
+        edit_row_ = row;
+        edit_text_ = State<std::string>(name);
+        edit_text_.bind(win_);
+        FieldOpts o;
+        o.select_all_on_focus = true;      // typing replaces, which is what a rename usually is
+        edit_field_ = make_field(
+            &edit_text_, nullptr,
+            [this](const std::string& v) { CommitRename(v); },
+            [this] { CancelRename(); }, o);
+        Reveal(row);
+        whole_ = true;
+        dirty_ = true;
+    }
+    void CommitRename(const std::string& v) {
+        if (edit_row_ < 0) return;
+        if (v.empty()) { CancelRename(); return; }
+        // A handler that refuses keeps the field open: discarding what someone typed because the
+        // name collided is worse than making them change it.
+        if (on_ren_ && !on_ren_(edit_row_, v)) return;
+        edit_row_ = -1;
+        edit_field_.reset();
+        whole_ = true;
+        dirty_ = true;
+    }
+    void CancelRename() {
+        edit_row_ = -1;
+        edit_field_.reset();
+        whole_ = true;
+        dirty_ = true;
+    }
+    bool renaming() const { return edit_row_ >= 0 && edit_field_ != nullptr; }
+    void SetRenameHandler(std::function<bool(int, const std::string&)> f) { on_ren_ = std::move(f); }
+    void Attached(Window* w) override { win_ = w; }
+
     bool OnKey(const au_key& k) override {
-        if (!k.pressed || !sel_) return false;
+        if (!k.pressed) return false;
+        // While renaming, the field has the keyboard. Everything below is the list's bindings and
+        // must not fire: typing a name should not also jump the selection via type-ahead.
+        if (renaming()) return edit_field_->OnKey(k);
+        if (!sel_) return false;
         const int n = r_->Count();
         if (n == 0) return false;
         const int cur = *sel_ < 0 ? -1 : *sel_;
+        // F2 by its evdev code, not by raw_char. raw_char carries what a key TYPES, and a
+        // function key types nothing -- BeOS reports B_FUNCTION_KEY for all of them and
+        // distinguishes by scancode, so a raw_char test for F2 is meaningless. KEY_F2 is 60.
+        if (k.evdev == 60 && cur >= 0) { BeginRename(cur); return true; }
         // Enter activates the selection, the same thing a double-click means.
         if ((k.raw_char == 0x0a || k.raw_char == 0x0d) && cur >= 0) {
             if (on_act_) on_act_(cur);
@@ -431,7 +494,11 @@ private:
     std::vector<int> rows_dirty_;
     std::function<void(int, float, float)> on_ctx_;
     std::function<void(int)> on_act_;
-    int ctx_row_ = -1, clicks_ = 1;
+    std::function<bool(int, const std::string&)> on_ren_;
+    int ctx_row_ = -1, clicks_ = 1, edit_row_ = -1;
+    State<std::string> edit_text_;
+    Desc edit_field_;
+    Window* win_ = nullptr;
     std::string ahead_;
     std::chrono::steady_clock::time_point last_type_{};
 };
@@ -1225,6 +1292,12 @@ void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
 void OnListActivate(const Desc& list, std::function<void(int)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetActivateHandler(std::move(f));
 }
+void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f) {
+    if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetRenameHandler(std::move(f));
+}
+void BeginListRename(const Desc& list, int row) {
+    if (auto* l = dynamic_cast<ListNode*>(list.get())) l->BeginRename(row);
+}
 Desc Either(State<bool>* first, Desc a, Desc b) {
     return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
 }
@@ -1252,6 +1325,17 @@ Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch
     return std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
                                        std::move(o));
 }
+
+namespace {
+Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+                std::function<void(const std::string&)> co, std::function<void()> ca,
+                FieldOpts o) {
+    auto f = std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
+                                         std::move(o));
+    f->OnFocus(true);     // it appears already focused: nobody clicks a field they just summoned
+    return f;
+}
+}  // namespace
 
 // ---- Menu -------------------------------------------------------------------------------------
 
@@ -1742,8 +1826,10 @@ void Window::CollectFocusables() {
         for (size_t i = kids.size(); i > 0; i--) stack.push_back(kids[i - 1]);
     }
     all_ = order;
-    for (Node* n : order)
+    for (Node* n : order) {
+        n->Attached(this);
         if (n->CanFocus()) focusables_.push_back(n);
+    }
     if (focus_ && std::find(focusables_.begin(), focusables_.end(), focus_) == focusables_.end())
         focus_ = nullptr;        // it went away with the last layout
 }

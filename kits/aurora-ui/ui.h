@@ -169,6 +169,10 @@ public:
     // have to care; a node that draws text overrides it.
     virtual void SetStyle(const TextStyle& st) { (void)st; }
 
+    // Called once per layout with the owning window, for a node that needs to bind a State of
+    // its own (the list's rename field does). Generic so the window never special-cases a type.
+    virtual void Attached(Window* w) { (void)w; }
+
     virtual void Retarget(bool motion_allowed) { (void)motion_allowed; }
     virtual bool Animating() const { return false; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
@@ -281,6 +285,17 @@ void OnListContext(const Desc& list, std::function<void(int, float, float)> f);
 // Activation: Enter, or a double-click on a row. One callback for both, because they mean the
 // same thing and a user who learns one expects the other.
 void OnListActivate(const Desc& list, std::function<void(int)> f);
+
+// Inline rename. F2 (or a call to BeginListRename) puts an editable field over the row's first
+// cell; Enter commits and calls `f`, Escape cancels. Returning false from `f` keeps the field
+// open, which is what a name collision should do -- silently discarding what someone typed is
+// worse than making them fix it.
+//
+// The list owns the field rather than the app placing one, because the list is the only thing
+// that knows where a row is and the tree is built once: a field that appears over a row is
+// structural change, and structural change is a widget's job.
+void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
+void BeginListRename(const Desc& list, int row);
 
 // ---- breadcrumb -------------------------------------------------------------------------------
 
