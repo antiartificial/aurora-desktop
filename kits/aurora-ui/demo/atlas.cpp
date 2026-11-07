@@ -32,6 +32,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <map>
 #include <vector>
 
 using namespace aurora::ui;
@@ -218,6 +219,90 @@ private:
 
 }  // namespace
 
+// ---- the sidebar's source ---------------------------------------------------------------------
+//
+// Directories only, read on demand and cached by path. Three things about it are deliberate:
+//
+// Expandable is true for EVERY directory, because answering it honestly means reading the
+// directory to see whether it holds another one -- which is the work that expanding does. So a
+// chevron may open onto nothing. That is the trade every file manager makes, and the alternative
+// (reading one level ahead of what the user asked for) costs a readdir per visible row.
+//
+// Directory-ness comes from the dirent's d_type, not from a stat. On a filesystem that answers
+// DT_UNKNOWN we fall back to a stat for that entry alone; the point is that the common case does
+// not pay for it. This is the same lesson DirRows measured: readdir on 3-5k entries is 0.9-1.8 ms
+// and the lstats are 13-43 ms.
+//
+// It reads SYNCHRONOUSLY, once per expand, which is a 1-2 ms stall on a local directory and an
+// unbounded one on a dead network mount. The TreeSource contract already has the answer -- return
+// false for "not yet" and invalidate when the worker lands, which the widget draws as pending --
+// so making this async is a change to this class and to nothing else. It is not done because
+// nothing here mounts anything, and a thread per sidebar expand to fix a problem we do not have
+// would be the kind of weight this whole project is arguing against.
+class PlacesTree : public aurora::ui::TreeSource {
+public:
+    explicit PlacesTree(const std::string& home) : home_(home) {}
+
+    bool Children(const std::string& id, std::vector<aurora::ui::TreeItem>* out) override {
+        if (id.empty()) {
+            // The roots are PLACES, not the filesystem: a sidebar that starts at / makes the
+            // user walk down to where they live every time.
+            out->push_back(aurora::ui::TreeItem{home_, "Home", true});
+            out->push_back(aurora::ui::TreeItem{"/tmp", "Temporary", true});
+            out->push_back(aurora::ui::TreeItem{"/", "Filesystem", true});
+            return true;
+        }
+        std::map<std::string, std::vector<aurora::ui::TreeItem>>::iterator it = cache_.find(id);
+        if (it == cache_.end()) it = cache_.emplace(id, read(id)).first;
+        *out = it->second;
+        return true;
+    }
+
+    std::string Parent(const std::string& id) const override {
+        // A root place has no parent IN THIS TREE even though its path has one: revealing
+        // ~/Documents must open Home, not walk up to / and open the whole chain under
+        // Filesystem, which would be a second, duplicate route to the same directory.
+        if (id == home_ || id == "/tmp" || id == "/" || id.empty()) return std::string();
+        if (id == home_ + "/") return std::string();
+        const size_t slash = id.find_last_of('/');
+        if (slash == std::string::npos) return std::string();
+        return slash == 0 ? std::string("/") : id.substr(0, slash);
+    }
+
+    // A directory whose contents changed on disk, or one we want re-read after a rename.
+    void Forget(const std::string& id) { cache_.erase(id); }
+
+private:
+    std::vector<aurora::ui::TreeItem> read(const std::string& dir) const {
+        std::vector<aurora::ui::TreeItem> kids;
+        DIR* d = opendir(dir.c_str());
+        if (!d) return kids;
+        const std::string base = dir == "/" ? std::string() : dir;
+        while (const struct dirent* ent = readdir(d)) {
+            if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+            if (ent->d_name[0] == '.') continue;          // dotfiles stay out of the sidebar
+            bool is_dir = ent->d_type == DT_DIR;
+            if (ent->d_type == DT_UNKNOWN) {
+                struct stat st;
+                is_dir = lstat((base + "/" + ent->d_name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+            }
+            if (!is_dir) continue;
+            kids.push_back(
+                aurora::ui::TreeItem{base + "/" + ent->d_name, ent->d_name, true});
+            if (kids.size() >= 2000) break;    // a sidebar is not a place to render 50,000 rows
+        }
+        closedir(d);
+        std::sort(kids.begin(), kids.end(),
+                  [](const aurora::ui::TreeItem& a, const aurora::ui::TreeItem& b) {
+                      return strcasecmp(a.label.c_str(), b.label.c_str()) < 0;
+                  });
+        return kids;
+    }
+
+    std::string home_;
+    mutable std::map<std::string, std::vector<aurora::ui::TreeItem>> cache_;
+};
+
 int main() {
     const char* d = getenv("ATLAS_DIR");
     std::string dir = d && *d ? d : (getenv("HOME") ? getenv("HOME") : "/");
@@ -233,6 +318,13 @@ int main() {
 
     int selected = -1;
     State<std::string> path(dir);
+    // The sidebar. `place` is the tree's selected id and the split's ratio is a State for the
+    // reason the widget takes one: it is a setting, and it belongs to whatever the app persists.
+    PlacesTree places(getenv("HOME") ? getenv("HOME") : "/");
+    State<std::string> place(dir);
+    State<float> sidebar(0.28f);
+    Desc tree;                      // built below; `go` reveals into it, so it is named first
+    bool revealing = false;         // the tree selecting a folder calls go, which reveals: once
     std::vector<std::string> history;
     State<std::string> status(std::to_string(rows.Count()) + " items");
     State<std::string> filter("");
@@ -300,6 +392,14 @@ int main() {
         selected = -1;
         rows.SetFilter(filter.get());
         status.set(std::to_string(rows.Count()) + " items");
+        // Keep the sidebar on the directory the main pane is showing, whichever way we got here
+        // -- a crumb, Up, a double-click, the tree itself. The guard is because the tree's own
+        // selection calls go, and go reveals: without it that is a loop through the widget.
+        if (tree && !revealing) {
+            revealing = true;
+            RevealInTree(tree, to);
+            revealing = false;
+        }
         w.Invalidate();
     };
     auto parent_of = [](const std::string& p) {
@@ -311,8 +411,9 @@ int main() {
 
     // The context menu. Its shape is the plumber's (decision 0009): the default first and bold,
     // effects marked, destructive behind a separator, and a disabled item left visible with its
-    // reason. The verbs are stubs here -- wiring registry.plumb@v1 is the next piece -- but the
-    // ORDER and the MARKING are the part the user is owed, and they are real.
+    // reason. The verbs come from registry.plumb@v1, so what the menu offers is what an
+    // installed app's manifest actually claims -- Atlas does not know what a PNG can have done
+    // to it, and should not.
     // ---- the preview pane ----
     //
     // docs/aurora-ui.md section 2: the explorer links NO decoder for image, video, PDF or
@@ -395,6 +496,20 @@ int main() {
         if (n == kCap) buf += "\n\n[truncated at 256 KiB]";
         preview_text.set(buf);
     };
+
+    place.bind(&w);
+    sidebar.bind(&w);
+    tree = named(TreeView(&places, &place), "places");
+    // Selecting in the sidebar navigates. That is single-click-to-navigate, which is what a
+    // sidebar is for and what every explorer does there -- unlike the main pane, where a single
+    // click selects and only a double-click opens. The two panes mean different things by a
+    // click because the user means different things by them.
+    OnTreeSelect(tree, [&](const std::string& id) {
+        if (!revealing) go(id, true);
+    });
+    OnTreeActivate(tree, [&](const std::string& id) {
+        if (!revealing) go(id, true);
+    });
 
     State<bool> list_view(true);
     State<bool> preview_open(false);
@@ -631,7 +746,13 @@ int main() {
                              0.5f),
                      Transition{Motion::Reveal, 160, Curve::EaseOut}),
               "filterbar"),
-        weight(HStack({
+        // The sidebar and the rest, with a divider the user drags. The preview pane stays a
+        // RevealX rather than becoming a second split, and the difference is real: appearing is
+        // not resizing. A pane you toggle wants a transition between absent and present; a pane
+        // you size wants a handle. Making the preview a split would have meant animating a ratio
+        // to fake the first, and making the sidebar a Reveal would have meant no handle at all.
+        weight(HSplit(tree,
+                      HStack({
                    weight(Either(&list_view, list, icons), 2),
                    named(Reveal(&preview_open,
                                 padding(VStack({
@@ -645,7 +766,8 @@ int main() {
                                 // hit test, which is how the axis mistake announced itself.
                                 Transition{Motion::RevealX, 160, Curve::EaseOut}),
                          "previewpane"),
-               }, 0),
+                      }, 0),
+                      &sidebar, SplitOpts{9, 16, 0.5f, 3}),
                1),
     }, 0));
 

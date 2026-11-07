@@ -11,6 +11,7 @@
 #include <strings.h>
 #include <cctype>
 #include <cmath>
+#include <set>
 
 namespace aurora {
 namespace ui {
@@ -1423,6 +1424,282 @@ private:
 
 }  // namespace
 
+// ---- Tree -------------------------------------------------------------------------------------
+
+class TreeNode : public Node {
+public:
+    TreeNode(TreeSource* src, State<std::string>* sel) : src_(src), sel_(sel) {
+        if (sel_) sel_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        row_h_ = text_h(e) + e.unit * 0.5f;
+        unit_ = e.unit;
+        return Size{c.max_w >= 0 ? c.max_w : 200, c.max_h >= 0 ? c.max_h : 300};
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        unit_ = e.unit;
+        au_fill_rect(s, frame.box(), au_color{26, 28, 37, 255});
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        // Rebuilt here and not in Measure: the flattening asks the source for children, and the
+        // tree's own size does not depend on the answer. Rebuilding in Measure would ask on
+        // every layout pass instead of only when something actually opened or closed.
+        ensure();
+
+        au_clip_set(s, frame.box());
+        const int vis = visible();
+        const int first = std::max(0, std::min(top_, std::max(0, (int)flat_.size() - 1)));
+        const int last = std::min((int)flat_.size() - 1, first + vis);
+        for (int i = first; i <= last; i++) {
+            const Row& r = flat_[i];
+            const float ry = frame.y + (i - first) * row_h_;
+            const bool is_sel = sel_ && sel_->get() == r.id;
+            if (is_sel)
+                au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
+                             e.accent);
+            else if (i == cur_ && focused_)
+                // The keyboard cursor, distinct from the selection. They are usually the same
+                // row; they come apart when the app sets the selection from elsewhere, and a
+                // tree that showed only one of them would lose the user's place.
+                au_stroke_rect(s, au_rect{frame.x + 1, ry, frame.x + frame.w - 2, ry + row_h_ - 1},
+                               e.surface_hi, 1);
+
+            const float ind = frame.x + e.unit * 0.5f + r.depth * e.unit * 1.5f;
+            const au_color ink = is_sel ? au_color{24, 26, 34, 255} : e.fg;
+            if (r.expandable) chevron(s, ind + e.unit * 0.5f, ry + row_h_ * 0.5f,
+                                     open_.count(r.id) != 0, is_sel ? ink : e.dim);
+            const float tx = ind + e.unit * 1.5f;
+            au_clip_set(s, au_rect{tx, ry, frame.x + frame.w - 2, ry + row_h_ - 1});
+            au_text_draw(s, is_sel ? e.bold : e.font, e.size, r.label.c_str(), -1, tx,
+                         ry + row_h_ * 0.74f, ink);
+            au_clip_reset(s);
+            // A node whose children are not here yet says so, rather than looking like a leaf.
+            if (r.expandable && open_.count(r.id) && pending_.count(r.id))
+                au_text_draw(s, e.font, e.size - 2, "...", -1, frame.x + frame.w - e.unit * 2,
+                             ry + row_h_ * 0.74f, e.dim);
+        }
+        au_clip_reset(s);
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+
+    bool OnWheel(float dy) override {
+        const int before = top_;
+        top_ = std::max(0, std::min(top_ + (dy > 0 ? 3 : -3),
+                                    std::max(0, (int)flat_.size() - visible())));
+        return top_ != before;
+    }
+
+    void OnPressAt(float x, float y, int clicks) override {
+        ensure();
+        const int i = top_ + (int)((y - frame.y) / row_h_);
+        if (i < 0 || i >= (int)flat_.size()) return;
+        cur_ = i;
+        const Row& r = flat_[i];
+        // Hitting the twisty toggles without selecting. Clicking the row selects. These are
+        // different intents -- "show me what is in there" is not "go there" -- and a tree that
+        // conflates them navigates every time someone peeks.
+        const float tw = frame.x + unit_ * 0.5f + r.depth * unit_ * 1.5f + unit_ * 1.5f;
+        if (r.expandable && x < tw) {
+            toggle(i);
+            return;
+        }
+        select(i);
+        if (clicks >= 2 && on_act_) on_act_(r.id);
+    }
+
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed) return false;
+        ensure();
+        const int n = (int)flat_.size();
+        if (n == 0) return false;
+        // Nothing selected yet is -1, and each key decides what that means for itself rather
+        // than being clamped to 0 up front: clamping first made the FIRST Down land on row one,
+        // because it then incremented a cursor that had already been moved to row zero.
+        const int cur = cur_;
+        const int from = cur < 0 ? 0 : cur;
+        switch (k.raw_char) {
+            case 0x1e: move(cur <= 0 ? 0 : cur - 1); return true;                  // up
+            case 0x1f: move(cur < 0 ? 0 : std::min(n - 1, cur + 1)); return true;  // down
+            case 0x0b: move(std::max(0, from - visible())); return true;           // page up
+            case 0x0c: move(std::min(n - 1, from + visible())); return true;       // page down
+            case 0x01: move(0); return true;                                       // home
+            case 0x04: move(n - 1); return true;                                   // end
+            case 0x1d: {                                                           // right
+                if (cur < 0) { move(0); return true; }
+                const Row& r = flat_[cur];
+                if (r.expandable && !open_.count(r.id)) { toggle(cur); return true; }
+                if (cur + 1 < n && flat_[cur + 1].depth > r.depth) { move(cur + 1); return true; }
+                return true;
+            }
+            case 0x1c: {                                                           // left
+                if (cur < 0) { move(0); return true; }
+                const Row& r = flat_[cur];
+                if (r.expandable && open_.count(r.id)) { toggle(cur); return true; }
+                // Climbing to the parent is the part people use. Walking BACK through the flat
+                // rows finds it without asking the source, which is right: the flattening
+                // already knows the shape, and TreeSource::Parent is only for a reveal from
+                // outside, where there is no row to walk back from.
+                for (int i = cur - 1; i >= 0; i--)
+                    if (flat_[i].depth < r.depth) { move(i); return true; }
+                return true;
+            }
+            case 0x0a:
+            case 0x0d:
+                if (cur >= 0 && on_act_) on_act_(flat_[cur].id);
+                return true;
+            default: break;
+        }
+        return false;
+    }
+
+    bool DamageHint(std::vector<Rect>* out) override {
+        if (whole_) { whole_ = false; return false; }
+        if (dirty_rows_.empty()) return false;
+        for (int row : dirty_rows_) {
+            if (row < top_ || row >= top_ + visible()) continue;
+            out->push_back(Rect{frame.x, frame.y + (row - top_) * row_h_, frame.w, row_h_});
+        }
+        dirty_rows_.clear();
+        return true;
+    }
+
+    void SetSelectHandler(std::function<void(const std::string&)> f) { on_sel_ = std::move(f); }
+    void SetActivateHandler(std::function<void(const std::string&)> f) { on_act_ = std::move(f); }
+
+    // Expand down to `id` and select it. The chain is collected from the source's Parent and
+    // opened from the top, because opening a node is what makes its children askable at all.
+    void RevealId(const std::string& id) {
+        if (id.empty()) return;
+        std::vector<std::string> chain;
+        for (std::string p = src_->Parent(id); !p.empty() && chain.size() < 64;
+             p = src_->Parent(p))
+            chain.push_back(p);
+        for (size_t i = chain.size(); i-- > 0;) open_.insert(chain[i]);
+        flat_valid_ = false;
+        whole_ = true;
+        rebuild();
+        if (sel_) sel_->set(id);
+        for (size_t i = 0; i < flat_.size(); i++)
+            if (flat_[i].id == id) { cur_ = (int)i; show(cur_); break; }
+    }
+
+    // These flatten first if the flattening is stale. Reading "what is showing" must not depend
+    // on a Draw having happened: an accessibility consumer asking before the first frame, or
+    // between an expand and the next frame, would otherwise get the previous answer.
+    int row_count() {
+        ensure();
+        return (int)flat_.size();
+    }
+    int cursor() const { return cur_; }
+    std::string row_id(int i) {
+        ensure();
+        return i >= 0 && i < (int)flat_.size() ? flat_[i].id : std::string();
+    }
+    int row_depth(int i) {
+        ensure();
+        return i >= 0 && i < (int)flat_.size() ? flat_[i].depth : -1;
+    }
+
+private:
+    struct Row {
+        std::string id, label;
+        int depth = 0;
+        bool expandable = false;
+    };
+
+    int visible() const { return std::max(1, (int)(frame.h / row_h_)); }
+
+    void ensure() {
+        if (!flat_valid_) rebuild();
+    }
+
+    void move(int to) {
+        if (to == cur_ || to < 0 || to >= (int)flat_.size()) return;
+        dirty_rows_.push_back(cur_);
+        dirty_rows_.push_back(to);
+        cur_ = to;
+        show(to);
+        select(to);
+    }
+
+    void select(int i) {
+        dirty_rows_.push_back(i);
+        cur_ = i;
+        const std::string& id = flat_[i].id;
+        if (sel_ && sel_->get() == id) return;
+        if (sel_) sel_->set(id);
+        if (on_sel_) on_sel_(id);
+    }
+
+    void show(int i) {
+        const int before = top_;
+        if (i < top_) top_ = i;
+        else if (i >= top_ + visible()) top_ = i - visible() + 1;
+        if (top_ != before) whole_ = true;      // it scrolled: every row moved
+    }
+
+    void toggle(int i) {
+        const std::string id = flat_[i].id;
+        if (open_.count(id)) open_.erase(id);
+        else open_.insert(id);
+        flat_valid_ = false;
+        whole_ = true;                          // rows below it all moved
+        rebuild();
+        // Keep the cursor on the row the user acted on, which after a collapse may have moved.
+        for (size_t j = 0; j < flat_.size(); j++)
+            if (flat_[j].id == id) { cur_ = (int)j; break; }
+    }
+
+    void chevron(au_surface* s, float cx, float cy, bool open, au_color c) {
+        const float r = std::max(3.0f, unit_ * 0.33f);
+        if (open) {   // pointing down
+            au_stroke_line(s, cx - r, cy - r * 0.5f, cx, cy + r * 0.5f, c, 1.5f);
+            au_stroke_line(s, cx, cy + r * 0.5f, cx + r, cy - r * 0.5f, c, 1.5f);
+        } else {      // pointing right
+            au_stroke_line(s, cx - r * 0.5f, cy - r, cx + r * 0.5f, cy, c, 1.5f);
+            au_stroke_line(s, cx + r * 0.5f, cy, cx - r * 0.5f, cy + r, c, 1.5f);
+        }
+    }
+
+    void rebuild() {
+        flat_.clear();
+        pending_.clear();
+        flat_valid_ = true;
+        walk(std::string(), 0);
+        if (cur_ >= (int)flat_.size()) cur_ = (int)flat_.size() - 1;
+    }
+
+    void walk(const std::string& id, int depth) {
+        // Two caps, and both are reachable by accident rather than by malice: a symlink loop
+        // makes a path tree infinitely deep, and a directory of directories makes it wide. A
+        // widget that hangs on either is worse than one that stops drawing.
+        if (depth > 32 || flat_.size() > 20000) return;
+        std::vector<TreeItem> kids;
+        if (!src_->Children(id, &kids)) {
+            if (!id.empty()) pending_.insert(id);
+            return;
+        }
+        for (const TreeItem& k : kids) {
+            flat_.push_back(Row{k.id, k.label, depth, k.expandable});
+            if (k.expandable && open_.count(k.id)) walk(k.id, depth + 1);
+        }
+    }
+
+    TreeSource* src_;
+    State<std::string>* sel_;
+    std::vector<Row> flat_;
+    std::set<std::string> open_, pending_;
+    std::vector<int> dirty_rows_;
+    std::function<void(const std::string&)> on_sel_, on_act_;
+    float row_h_ = 16, unit_ = 8;
+    int top_ = 0, cur_ = -1;
+    bool focused_ = false, flat_valid_ = false, whole_ = true;
+};
+
 // ---- Split ------------------------------------------------------------------------------------
 
 // Two panes and a divider the user drags.
@@ -1679,6 +1956,37 @@ void BeginListRename(const Desc& list, int row) {
 }
 Desc Either(State<bool>* first, Desc a, Desc b) {
     return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
+}
+
+Desc TreeView(TreeSource* src, State<std::string>* selected) {
+    return std::make_shared<TreeNode>(src, selected);
+}
+
+void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f) {
+    if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->SetSelectHandler(std::move(f));
+}
+
+void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f) {
+    if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->SetActivateHandler(std::move(f));
+}
+
+void RevealInTree(const Desc& tree, const std::string& id) {
+    if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->RevealId(id);
+}
+
+int TreeRowCount(const Desc& tree) {
+    TreeNode* t = dynamic_cast<TreeNode*>(tree.get());
+    return t ? t->row_count() : 0;
+}
+
+std::string TreeRowId(const Desc& tree, int row) {
+    TreeNode* t = dynamic_cast<TreeNode*>(tree.get());
+    return t ? t->row_id(row) : std::string();
+}
+
+int TreeRowDepth(const Desc& tree, int row) {
+    TreeNode* t = dynamic_cast<TreeNode*>(tree.get());
+    return t ? t->row_depth(row) : -1;
 }
 
 Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {

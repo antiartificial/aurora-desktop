@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <cmath>
+#include <map>
 
 using namespace aurora::ui;
 
@@ -36,6 +37,45 @@ static void eq(const char* what, bool cond) {
 static void lay(const Desc& root, const Env& e, Rect box) {
     root->Measure(e, Constraints{box.w, box.h});
     root->Place(box);
+}
+
+// A tree three levels deep that notes what it was asked for. The note is the point: the cost
+// claim for a tree is that it asks only about what is expanded, and a claim about what a widget
+// did NOT do can only be tested by recording what it did.
+struct Fake : TreeSource {
+    std::map<std::string, int> asked;
+
+    bool Children(const std::string& id, std::vector<TreeItem>* out) override {
+        asked[id]++;
+        if (id.empty()) {
+            out->push_back(TreeItem{"/a", "a", true});
+            out->push_back(TreeItem{"/b", "b", true});
+            return true;
+        }
+        if (id == "/a") {
+            out->push_back(TreeItem{"/a/x", "x", true});
+            out->push_back(TreeItem{"/a/y", "y", false});
+            return true;
+        }
+        if (id == "/a/x") {
+            out->push_back(TreeItem{"/a/x/deep", "deep", false});
+            return true;
+        }
+        if (id == "/b") return false;          // a source that does not know its children yet
+        return true;
+    }
+
+    std::string Parent(const std::string& id) const override {
+        const size_t slash = id.rfind('/');
+        return slash == 0 || slash == std::string::npos ? std::string() : id.substr(0, slash);
+    }
+};
+
+static au_key pressing(uint32_t raw) {
+    au_key k{};
+    k.pressed = 1;
+    k.raw_char = raw;
+    return k;
 }
 
 int main() {
@@ -158,6 +198,94 @@ int main() {
         near("vstack weight 1 of 4", a->frame.h, 150);
         near("vstack weight 3 of 4", b->frame.h, 450);
         near("vstack child spans the width", a->frame.w, 1000);
+    }
+
+    // ---- the tree flattens to what is visible -------------------------------------------------
+    // The whole cost argument for a tree is that a collapsed node is one row no matter what is
+    // under it, and that only expanded nodes are ever asked for children. Both are checked by
+    // counting what the source was asked, because the second is a claim about what did not happen.
+    {
+        Fake src;
+        State<std::string> sel("");
+        Desc t = TreeView(&src, &sel);
+        lay(t, e, Rect{0, 0, 200, 600});
+        eq("root rows only while collapsed", TreeRowCount(t) == 2);
+        eq("a collapsed node is not asked for children", src.asked.count("/a") == 0);
+
+        // Row 0 is /a, 16-ish px tall. Clicking inside the indent hits the twisty.
+        t->OnPressAt(4, 1, 1);
+        eq("expanding adds the children", TreeRowCount(t) == 4);
+        eq("the child is at depth 1", TreeRowDepth(t, 1) == 1);
+        eq("the first child is /a/x", TreeRowId(t, 1) == "/a/x");
+        eq("the twisty did not select", sel.get().empty());
+        eq("the expanded node was asked once", src.asked["/a"] == 1);
+        eq("its sibling still was not", src.asked.count("/b") == 0);
+
+        // Past the indent, a click selects rather than toggling: "show me what is in there" is
+        // not "go there", and a tree that conflates them navigates every time someone peeks.
+        t->OnPressAt(120, 1, 1);
+        eq("clicking the row selects it", sel.get() == "/a");
+        eq("selecting did not collapse", TreeRowCount(t) == 4);
+    }
+
+    // ---- the keys that make a tree usable without a mouse -------------------------------------
+    {
+        Fake src;
+        State<std::string> sel("");
+        Desc t = TreeView(&src, &sel);
+        lay(t, e, Rect{0, 0, 200, 600});
+
+        au_key down = pressing(0x1f), right = pressing(0x1d), left = pressing(0x1c);
+        eq("down is handled", t->OnKey(down));
+        eq("down selects the first row", sel.get() == "/a");
+
+        t->OnKey(right);
+        eq("right expands a collapsed node", TreeRowCount(t) == 4);
+        t->OnKey(right);
+        eq("right again steps into the first child", sel.get() == "/a/x");
+
+        t->OnKey(left);
+        eq("left on a closed node climbs to the parent", sel.get() == "/a");
+        t->OnKey(left);
+        eq("left on an open node collapses it", TreeRowCount(t) == 2);
+
+        std::string fired;
+        OnTreeActivate(t, [&](const std::string& id) { fired = id; });
+        t->OnKey(pressing(0x0a));
+        eq("Enter activates the cursor row", fired == "/a");
+    }
+
+    // ---- a source that does not know yet is not a leaf ----------------------------------------
+    // /b answers false, which means "not yet". Expanding it must leave it expandable and add no
+    // rows, rather than caching an empty answer -- a slow mount would otherwise read as empty.
+    {
+        Fake src;
+        State<std::string> sel("");
+        Desc t = TreeView(&src, &sel);
+        lay(t, e, Rect{0, 0, 200, 600});
+        t->OnKey(pressing(0x1f));
+        t->OnKey(pressing(0x1f));
+        eq("cursor on /b", sel.get() == "/b");
+        t->OnKey(pressing(0x1d));
+        eq("a pending expand adds no rows", TreeRowCount(t) == 2);
+        eq("and it was asked", src.asked.count("/b") == 1);
+        t->OnKey(pressing(0x1c));
+        eq("collapsing it again is harmless", TreeRowCount(t) == 2);
+    }
+
+    // ---- RevealInTree opens the chain ---------------------------------------------------------
+    // The app names a destination; the widget works out which nodes have to open. Opening is what
+    // makes a node's children askable at all, so the chain has to open from the top down.
+    {
+        Fake src;
+        State<std::string> sel("");
+        Desc t = TreeView(&src, &sel);
+        lay(t, e, Rect{0, 0, 200, 600});
+        RevealInTree(t, "/a/x/deep");
+        eq("the revealed id is selected", sel.get() == "/a/x/deep");
+        eq("the chain opened", TreeRowCount(t) == 5);
+        eq("the deep row is where it should be", TreeRowId(t, 2) == "/a/x/deep");
+        eq("and at depth 2", TreeRowDepth(t, 2) == 2);
     }
 
     if (fails == 0) printf("tk_layout: ok\n");

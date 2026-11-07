@@ -420,6 +420,63 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
 // toggle back.
 Desc Either(State<bool>* first, Desc a, Desc b);
 
+// ---- tree -------------------------------------------------------------------------------------
+
+// One node of a tree. `id` is whatever the source knows it by -- for a file tree, the path -- and
+// the widget treats it as opaque. Expansion is remembered BY ID and not by position, so a source
+// that re-reads a directory and returns its children in a different order does not shuffle what
+// the user had open, and a row that disappears takes only its own expansion with it.
+struct TreeItem {
+    std::string id;
+    std::string label;
+    bool expandable = false;
+};
+
+// Demand-driven, the same bargain as Rows: the widget asks only for the children of what is
+// actually expanded, and asking MUST NOT BLOCK. Returning false means "not yet" -- the row draws
+// as pending and the source invalidates the window when it knows. A tree that called readdir
+// from Draw would stall a frame on every expand, and on a slow mount it would stall every frame.
+class TreeSource {
+public:
+    virtual ~TreeSource() {}
+    // Children of `id`, or of the root when `id` is empty.
+    virtual bool Children(const std::string& id, std::vector<TreeItem>* out) = 0;
+    // The parent of `id`, or empty at the root. Only RevealInTree needs it: the widget cannot
+    // know that a path's parent is a prefix of it, and a tree of something else would have a
+    // different answer. A source that does not implement it simply cannot be revealed into.
+    virtual std::string Parent(const std::string& id) const { (void)id; return std::string(); }
+};
+
+// A sidebar tree: expand, collapse, select, and navigate from the keyboard.
+//
+// Rows are FLATTENED to what is visible, which is what keeps the cost proportional to what is on
+// screen rather than to the hierarchy: a collapsed home directory costs one row no matter what is
+// under it, and only expanded nodes are ever asked for children.
+//
+// The keys are the convention every tree shares, and they are worth naming because half-doing
+// them makes a tree that needs a mouse: Up and Down move, Right expands or steps into, Left
+// collapses or steps out to the parent, Enter activates. Left on a collapsed node going to the
+// parent rather than doing nothing is the detail people actually use to climb a tree.
+//
+// `selected` is a State holding the selected id, so the app reads the selection as a value and a
+// breadcrumb or a path field can be bound to the same cell.
+Desc TreeView(TreeSource* src, State<std::string>* selected);
+void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f);
+void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f);
+
+// Expand the chain down to `id` and select it. This is how navigating in the main pane keeps the
+// sidebar in step without the app having to know how the tree is laid out -- it names a
+// destination, not a sequence of expansions.
+void RevealInTree(const Desc& tree, const std::string& id);
+
+// What the tree is currently showing, flattened. This is not only a test seam: the flattened row
+// list IS the tree's observable state -- it is the thing expanding and collapsing change -- so an
+// accessibility tree wants exactly this, and a test that could not read it would have to assert
+// on pixels, which tells you a row moved without telling you which row it now is.
+int TreeRowCount(const Desc& tree);
+std::string TreeRowId(const Desc& tree, int row);
+int TreeRowDepth(const Desc& tree, int row);
+
 // ---- split panes ------------------------------------------------------------------------------
 
 // Two children with a divider the user drags. `ratio` is the fraction of the main axis the FIRST
