@@ -51,7 +51,13 @@ static void do_init(void)
 	struct stat st;
 	fstat(fd, &st);
 	int fresh = st.st_size == 0;
-	if (fresh && ftruncate(fd, (off_t)total) < 0) { perror("kits: ftruncate"); abort(); }
+	/* Grow a region left by an older build, not only a brand new one. K_MAX_PORTS changed from
+	 * 128 to 512, so `total` grew from 33 MB to 134 MB, and a file created at the old size is
+	 * still on disk after the upgrade. mmap()ing 134 MB of a 33 MB file succeeds and then
+	 * SIGBUSes the moment anything past the end is touched -- which the header alone now does,
+	 * because ports[] is four times longer. Truncating only when `fresh` made the first run
+	 * after the change die on a machine that had ever run the previous one. */
+	if ((size_t)st.st_size < total && ftruncate(fd, (off_t)total) < 0) { perror("kits: ftruncate"); abort(); }
 	void *m = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (m == MAP_FAILED) { perror("kits: mmap"); abort(); }
 	K = m;
