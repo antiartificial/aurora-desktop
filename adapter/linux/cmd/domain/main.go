@@ -17,7 +17,8 @@ const usage = `usage: domain <command> [args]
   grant <name> <path> [--ro|--rw] [--exact]
                                         grant one file or directory (default --ro); --exact binds
                                         the path as given and refuses it unless already canonical
-  grant <name> --net <host>             grant network (coarse: shares the host network)
+  grant <name> --net <host>             let the domain reach one host by name, through a host-side proxy
+                                        (the domain keeps an empty network namespace; no wildcards, no ports)
   grant <name> --device <class>         grant a device: gpu (render node) or wayland (the compositor socket)
   revoke <name> --device <class>        remove a device grant
   revoke <name> <path>                  remove a path grant
@@ -70,6 +71,9 @@ func main() {
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == dom.NetFwdCmd { // the in-domain relay (netfwd.go); never typed by a person
+		os.Exit(dom.RunNetFwd(args))
+	}
 	st := dom.Store{Root: dom.DefaultRoot()}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
@@ -103,7 +107,7 @@ func main() {
 			if err := st.GrantNet(pos[0], *net); err != nil {
 				die("%v", err)
 			}
-			fmt.Printf("granted net %s to %s\n  NOTE: enforcement is coarse. Any net grant gives the domain the host network namespace;\n  the host name is recorded but NOT filtered.\n", *net, pos[0])
+			fmt.Printf("granted net %s to %s\n  enforced by name: the domain has no network of its own, only a proxy that allows the granted hosts.\n  Raw sockets, other names and hard-coded IPs get nothing (decision 0015).\n", *net, pos[0])
 			return
 		}
 		if *device != "" {
@@ -269,7 +273,7 @@ func show(st dom.Store, name string) {
 	fmt.Printf("bus socket: %s/bus.sock\ngrants:\n", dom.SockDir(name))
 	for _, g := range m.Grants {
 		if g.Kind == "net" {
-			fmt.Printf("  net   %s (coarse: host netns)\n", g.Host)
+			fmt.Printf("  net   %s (by name, via the proxy)\n", g.Host)
 		} else if g.Kind == "device" {
 			fmt.Printf("  device %s\n", g.Device)
 		} else {

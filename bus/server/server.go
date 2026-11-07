@@ -417,6 +417,14 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 			s.sendError(c, clientID, "reserved_topic", "topics under bus. are published by the daemon only")
 			return
 		}
+		// net.* is the record of what each domain connected to (0015). The
+		// daemon publishes it from bus.net.report@v1, naming the domain from
+		// its own registry; a domain that could publish there could write
+		// another domain's history or invent a refusal for itself.
+		if !replay && c.viaDomain && strings.HasPrefix(e.Topic, "net.") {
+			s.sendError(c, clientID, "reserved_topic", "topics under net. are published by the daemon only")
+			return
+		}
 		s.publish(e)
 	}
 }
@@ -424,13 +432,14 @@ func (s *Server) dispatch(c *conn, e proto.Envelope) {
 // systemPrefixes are the topic namespaces that carry the system's own business:
 // provenance records (paths, apps, grants, capability handle ids), approval
 // requests, the daemon's own events, agent traffic, index matches, and which
-// services the supervisor has restarted and why. A confined
+// services the supervisor has restarted and why, and net.: which host each
+// domain connected to or was refused (0015). A confined
 // app has no need to hear any of it, and provenance.created in particular names
 // every other domain's files. A domain connection (one that arrived on a
 // per-domain socket, so its identity was stamped by busd from the socket, never
 // by the client) is never delivered these. The user's own session still hears
 // everything.
-var systemPrefixes = []string{"provenance.", "approval.", "bus.", "agent.", "index.", "supervisor."}
+var systemPrefixes = []string{"provenance.", "approval.", "bus.", "agent.", "index.", "supervisor.", "net."}
 
 func isSystemTopic(topic string) bool {
 	for _, p := range systemPrefixes {

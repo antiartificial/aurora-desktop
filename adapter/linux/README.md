@@ -17,7 +17,7 @@ data dir is `$AURORA_DOMAINS_DIR` or `${XDG_DATA_HOME:-~/.local/share}/aurora/do
 | Run in domain | `run <n> -- cmd` | `unshare` makes a user namespace and maps the domain's subuid (`newuidmap`), `bwrap` makes new pid, ipc, uts, cgroup (and net) namespaces inside it, tmpfs root, new session, read-only `/usr` + merged-usr links, minimal `/etc`; `setpriv` drops to the domain's uid with two capabilities (see "Per-domain uid") | implemented |
 | Restrict filesystem and syscalls | (none) | the mount namespace is the filesystem restriction; Landlock and seccomp are **not** applied | partial (mount ns only) |
 | Grant file / folder | `grant <n> <path> [--ro\|--rw]`, `revoke` | bind mount of exactly that path at the same absolute path | implemented |
-| Grant net host | `grant <n> --net <host>` | any net grant skips `--unshare-net`, so the domain shares the host network | partial (coarse: host name recorded, not filtered) |
+| Grant net host | `grant <n> --net <host>` | the domain always keeps `--unshare-net`; a grant lets it reach that one name through a host-side proxy on a unix socket (HTTP `CONNECT` / absolute-URI, TLS SNI checked). Exact names only: no wildcards, no ports. Decision 0015 | implemented (by name; tunnelling over a granted host and local-network egress are not stopped, see 0015) |
 | Grant device | (none) | would be a `--dev-bind` of one node | not built |
 | Snapshot / roll back | `snapshot [--tag]`, `rollback` | `btrfs subvolume snapshot` of all three subvolumes; rollback deletes the live subvolume and re-snapshots the snapshot (so it can be reused) | implemented on btrfs, clear error elsewhere |
 | Resource budget | `limit --memory --pids --cpu` | cgroup2 files in a per-domain cgroup under the user's delegated `user@UID.service`; `run` starts the domain inside it (`CLONE_INTO_CGROUP`) | partial: see below |
@@ -190,10 +190,13 @@ default. Not done:
 - No Landlock, no seccomp filter: the domain can make any syscall the kernel
   exposes to an unprivileged userns (the attack surface of userns itself,
   and kernel bugs, are in scope for a determined attacker).
-- Net grants are all-or-nothing and share the host network, including
-  abstract unix sockets and host loopback services.
-- `/etc/passwd`, `group`, `nsswitch.conf`, `ld.so.cache` (plus resolv.conf,
-  hosts and certificate stores with a net grant) and all of `/usr` are
+- Net grants are by name and enforced by a proxy (0015), not by the kernel:
+  a domain that tunnels over a granted host, or whose granted name resolves
+  to a loopback or private address, is not stopped. The domain's own network
+  namespace is always empty, so raw sockets, hard-coded IPs, QUIC and DNS
+  find nothing.
+- `/etc/passwd`, `group`, `nsswitch.conf`, `ld.so.cache` (plus certificate
+  stores with a net grant; no resolv.conf or hosts) and all of `/usr` are
   readable. `/usr` is not secret, but it is not nothing.
 - Granting a directory exposes everything below it; a granted path is
   canonicalised (symlinks resolved) when granted. `grant --exact` is for a

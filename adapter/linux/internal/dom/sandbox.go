@@ -41,10 +41,11 @@ func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
 	if !ownUID {
 		a = append(a, "--unshare-user", "--cap-drop", "ALL")
 	}
-	net := HasNet(m)
-	if !net {
-		a = append(a, "--unshare-net")
-	}
+	// ALWAYS --unshare-net (decision 0015). A net grant no longer shares the host
+	// network: it lets the domain ask the host-side proxy (netproxy.go) for the
+	// granted names, through a unix socket, and nothing else.
+	hasNet := HasNet(m)
+	a = append(a, "--unshare-net")
 	// minimal read-only system: /usr plus the merged-usr links
 	a = append(a, "--ro-bind", "/usr", "/usr")
 	for _, d := range []string{"bin", "sbin", "lib", "lib64"} {
@@ -57,8 +58,13 @@ func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
 	}
 	a = append(a, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp")
 	etc := []string{"passwd", "group", "ld.so.cache", "nsswitch.conf"}
-	if net {
-		etc = append(etc, "resolv.conf", "hosts", "ssl", "ca-certificates", "pki")
+	if hasNet {
+		// certificates so TLS to a granted host verifies; no resolv.conf or hosts:
+		// the domain does not resolve names, the proxy does, and only granted ones
+		etc = append(etc, "ssl", "ca-certificates", "pki")
+		if exe, err := os.Executable(); err == nil {
+			a = append(a, "--ro-bind", exe, NetFwdPath)
+		}
 	}
 	for _, f := range etc {
 		a = append(a, "--ro-bind-try", "/etc/"+f, "/etc/"+f)
@@ -90,6 +96,13 @@ func (s Store) BwrapArgs(m *Meta, ownUID bool) []string {
 		"--setenv", "AURORA_BUS_SOCKET", "/run/aurora/bus.sock",
 		"--setenv", "TERM", termOr(),
 		"--chdir", "/domain/data")
+	if hasNet {
+		px := "http://" + NetFwdAddr
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+			a = append(a, "--setenv", k, px)
+		}
+		a = append(a, "--setenv", "NO_PROXY", "", "--setenv", "no_proxy", "")
+	}
 	return append(a, devEnv...)
 }
 
@@ -163,6 +176,14 @@ func (s Store) Run(name string, argv []string, stdin io.Reader, stdout, stderr i
 		// unshare maps the ids and execs bwrap as namespace root; bwrap execs
 		// setpriv in the sandbox, which becomes the subuid and execs the payload.
 		full = append(append(pre, full...), drop...)
+	}
+	if HasNet(m) {
+		stop, err := s.startNetProxy(m, stderr)
+		if err != nil {
+			return 0, err
+		}
+		defer stop()
+		full = append(full, NetFwdPath, NetFwdCmd, "--")
 	}
 	full = append(full, argv...)
 	cmd := exec.Command(full[0], full[1:]...)
