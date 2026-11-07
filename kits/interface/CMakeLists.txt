@@ -138,3 +138,25 @@ set_tests_properties(iface_theme_haiku_colors PROPERTIES ENVIRONMENT "AURORA_COL
 add_test(NAME iface_controls_haiku_look COMMAND test_controls)
 set_tests_properties(iface_controls_haiku_look PROPERTIES ENVIRONMENT "AURORA_CONTROL_LOOK=haiku")
 set_tests_properties(iface_theme iface_theme_custom_palette iface_theme_haiku_look iface_theme_haiku_colors iface_controls_haiku_look PROPERTIES TIMEOUT 30)
+
+# ---- aurora::ui ------------------------------------------------------------------------------
+# The new toolkit's substrate, and a deliberate demonstration: this library links canvas.cpp,
+# fonts.cpp and present_wl.c and NOT haiku_iface_real. If that ever stops being possible, the
+# architecture in docs/aurora-ui.md has quietly stopped being true, and the link will say so.
+#
+# Those three files include only canvas.h, text_backend.h, FreeType, HarfBuzz and libc -- no
+# Haiku header at all -- which is what makes a toolkit with no BView, no ports and no AS_*
+# dispatch possible on top of them.
+add_library(aurora_ui STATIC
+	../aurora-ui/au_draw.cpp
+	appserver/canvas.cpp
+	appserver/fonts.cpp)
+target_include_directories(aurora_ui PUBLIC ../aurora-ui appserver)
+target_link_libraries(aurora_ui PUBLIC PkgConfig::FT2 PkgConfig::HB)
+if(TARGET aurora_wl_present)
+	target_link_libraries(aurora_ui PUBLIC aurora_wl_present)
+	target_compile_definitions(aurora_ui PUBLIC AURORA_HAVE_WAYLAND=1)
+endif()
+
+add_executable(aurora_ui_spike ../aurora-ui/demo/spike.cpp)
+target_link_libraries(aurora_ui_spike PRIVATE aurora_ui)
