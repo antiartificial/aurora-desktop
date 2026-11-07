@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -33,6 +34,12 @@ const usage = `usage: domain <command> [args]
   cgroup <name>                         print the domain's cgroup (as /proc/<pid>/cgroup shows it); the bus attests membership
   nsid <name>                           print the namespaces (type:inode) of the domain's live run; the bus attests them too
   uid <name>                            print the host uid (a subordinate uid) the domain's processes run as; the bus attests it
+  drop <name> <path> [--ro|--rw]        mount one canonical file or directory into the RUNNING domain at
+                                        /run/aurora/drops/<n>/<name> (read-only by default); prints one JSON line
+  undrop <name> <n>                     unmount that drop and remove its placeholder
+  drop <name> <path> [--ro|--rw]        mount one canonical file or directory into the RUNNING domain at
+                                        /run/aurora/drops/<n>/<name> (read-only by default); prints one JSON line
+  undrop <name> <n>                     unmount that drop and remove its placeholder
   sockpath <name>                       print the host path of the domain's bus socket
 
 data dir: $AURORA_DOMAINS_DIR or ${XDG_DATA_HOME:-~/.local/share}/aurora/domains
@@ -73,6 +80,9 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	if cmd == dom.NetFwdCmd { // the in-domain relay (netfwd.go); never typed by a person
 		os.Exit(dom.RunNetFwd(args))
+	}
+	if cmd == dom.DropCmd { // the in-namespace half of `drop` (dropmount.go); never typed by a person
+		os.Exit(dom.RunDropHelper(os.Args[1:]))
 	}
 	st := dom.Store{Root: dom.DefaultRoot()}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -135,6 +145,29 @@ func main() {
 			die("%v", err)
 		}
 		fmt.Printf("granted %s (%s) to %s\n", p, mode, pos[0])
+	case "drop":
+		ro, rw := fs.Bool("ro", false, "read-only (default)"), fs.Bool("rw", false, "read-write")
+		pos := parse(fs, args)
+		need(pos, 2, "drop <name> <path> [--ro|--rw]")
+		if *ro && *rw {
+			die("--ro and --rw are exclusive")
+		}
+		mode := "ro"
+		if *rw {
+			mode = "rw"
+		}
+		m, err := st.MountDrop(pos[0], pos[1], mode)
+		if err != nil {
+			die("%v", err)
+		}
+		b, _ := json.Marshal(map[string]any{"id": m.ID, "host": m.Host, "guest": m.Guest, "mode": m.Mode, "dir": m.Dir})
+		fmt.Println(string(b))
+	case "undrop":
+		pos := parse(fs, args)
+		need(pos, 2, "undrop <name> <n>")
+		if err := st.UnmountDrop(pos[0], pos[1]); err != nil {
+			die("%v", err)
+		}
 	case "revoke":
 		net := fs.Bool("net", false, "target is a net host")
 		device := fs.Bool("device", false, "target is a device class")

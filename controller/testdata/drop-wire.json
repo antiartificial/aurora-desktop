@@ -1,0 +1,5 @@
+{
+  "request": {"v": 1, "op": "drop", "domain": "win-text-1a2b3c4d-aabbcc", "paths": ["/home/u/photo.png"], "mode": "ro"},
+  "reply": {"v": 1, "ok": true, "app": "org.example.win", "domain": "win-text-1a2b3c4d-aabbcc",
+            "grants": [{"id": "1", "host": "/home/u/photo.png", "guest": "/run/aurora/drops/1/photo.png", "mode": "ro", "dir": false, "source": "powerbox", "ticket": "n"}]}
+}

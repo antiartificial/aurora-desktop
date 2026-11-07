@@ -49,3 +49,6 @@ apps/*/bin/
 
 # atlas-demo writes its frames and reel here; the script regenerates them.
 harness/atlas-demo-out/
+
+# aurora-up writes its logs here.
+harness/aurora-up-out/

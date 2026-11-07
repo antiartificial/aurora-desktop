@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,27 @@ type Fake struct {
 	GrantErr    error
 	StartHook   func(*FakeProc) *FakeProc // may set ErrText or end the process at once
 	IdentityErr error
+	DropErr     error // if set, MountDrop fails with it
+	drops       int
+}
+
+// MountDrop records the call and returns the path the real tooling would: /run/aurora/drops/<n>/<base>.
+func (f *Fake) MountDrop(n, p, m string) (DropMount, error) {
+	f.rec("drop %s %s %s", n, p, m)
+	if f.DropErr != nil {
+		return DropMount{}, f.DropErr
+	}
+	f.mu.Lock()
+	f.drops++
+	id := fmt.Sprint(f.drops)
+	f.mu.Unlock()
+	st, _ := os.Stat(p)
+	return DropMount{ID: id, Host: p, Guest: "/run/aurora/drops/" + id + "/" + filepath.Base(p), Mode: m, Dir: st != nil && st.IsDir()}, nil
+}
+
+func (f *Fake) UnmountDrop(n, id string) error {
+	f.rec("undrop %s %s", n, id)
+	return nil
 }
 
 func (f *Fake) rec(format string, a ...any) {

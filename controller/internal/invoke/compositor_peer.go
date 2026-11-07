@@ -89,30 +89,36 @@ func cgroupV2Path(file string) string {
 // first. Same uid, same cgroup tree, and /proc/<pid>/exe is whatever that
 // process chooses to exec. Exe and comm are logged, not trusted.
 func (c *CompositorPrompt) checkPeer(p Peer) error {
+	return checkPeerPolicy(c.Socket, p, c.ExpectedUID, c.DenyCgroupComponents, c.DenyCgroupPrefixes)
+}
+
+// checkPeerPolicy is checkPeer's rule for any socket whose other end must be a host process of one user:
+// uid must match (nil: this process's own), the cgroup must be readable and not inside a domain.
+func checkPeerPolicy(socket string, p Peer, expected *uint32, denyComp, denyPrefix []string) error {
 	want := os.Geteuid()
-	if c.ExpectedUID != nil {
-		want = int(*c.ExpectedUID)
+	if expected != nil {
+		want = int(*expected)
 	}
 	if p.UID != want {
-		return &PeerError{c.Socket, fmt.Sprintf("peer uid is %d, expected %d (pid %d)", p.UID, want, p.PID)}
+		return &PeerError{socket, fmt.Sprintf("peer uid is %d, expected %d (pid %d)", p.UID, want, p.PID)}
 	}
 	if p.Cgroup == "" {
-		return &PeerError{c.Socket, fmt.Sprintf("cannot read the cgroup of pid %d, so cannot show it is outside a domain", p.PID)}
+		return &PeerError{socket, fmt.Sprintf("cannot read the cgroup of pid %d, so cannot show it is outside a domain", p.PID)}
 	}
-	deny := c.DenyCgroupComponents
+	deny := denyComp
 	if deny == nil {
 		deny = []string{DefaultDenyCgroupComponent}
 	}
 	for _, comp := range strings.Split(p.Cgroup, "/") {
 		for _, d := range deny {
 			if comp == d {
-				return &PeerError{c.Socket, fmt.Sprintf("peer pid %d is inside a domain cgroup (%s)", p.PID, p.Cgroup)}
+				return &PeerError{socket, fmt.Sprintf("peer pid %d is inside a domain cgroup (%s)", p.PID, p.Cgroup)}
 			}
 		}
 	}
-	for _, pre := range c.DenyCgroupPrefixes {
+	for _, pre := range denyPrefix {
 		if p.Cgroup == pre || strings.HasPrefix(p.Cgroup, strings.TrimRight(pre, "/")+"/") {
-			return &PeerError{c.Socket, fmt.Sprintf("peer pid %d is inside a denied cgroup (%s)", p.PID, p.Cgroup)}
+			return &PeerError{socket, fmt.Sprintf("peer pid %d is inside a denied cgroup (%s)", p.PID, p.Cgroup)}
 		}
 	}
 	return nil

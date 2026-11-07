@@ -11,5 +11,8 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == NetFwdCmd {
 		os.Exit(RunNetFwd(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == DropCmd { // nsenter re-runs this binary as the drop-mount helper
+		os.Exit(RunDropHelper(os.Args[1:]))
+	}
 	os.Exit(m.Run())
 }

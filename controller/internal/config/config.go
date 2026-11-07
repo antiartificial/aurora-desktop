@@ -35,3 +35,16 @@ func TrustedSocket() string {
 	}
 	return filepath.Join(rt, "aurora-trusted.sock")
 }
+
+// DropSocket returns where the controller listens for the compositor's file-drop grants (decision 0020):
+// not the bus, not the compositor's trusted socket. The compositor dials it; controllerd binds it.
+func DropSocket() string {
+	if s := os.Getenv("AURORA_DROP_SOCK"); s != "" {
+		return s
+	}
+	rt := os.Getenv("XDG_RUNTIME_DIR")
+	if rt == "" {
+		rt = os.TempDir()
+	}
+	return filepath.Join(rt, "aurora-drop.sock")
+}

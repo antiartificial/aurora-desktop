@@ -101,6 +101,10 @@ func (o onlyRunner) Start(c context.Context, n string, a []string) (domain.Proc,
 	return o.r.Start(c, n, a)
 }
 func (o onlyRunner) Destroy(n string) error { return o.r.Destroy(n) }
+func (o onlyRunner) MountDrop(n, p, m string) (domain.DropMount, error) {
+	return o.r.MountDrop(n, p, m)
+}
+func (o onlyRunner) UnmountDrop(n, id string) error { return o.r.UnmountDrop(n, id) }
 func (o onlyRunner) Run(c context.Context, n string, a []string, s []byte) (domain.Result, error) {
 	return o.r.Run(c, n, a, s)
 }

@@ -147,6 +147,12 @@ func needsApproval(effect manifest.Effect, grants []prov.Grant) bool {
 // approval was needed, else it blocks until allow, deny, timeout, or ctx end.
 // Nothing has been granted, created or spent when it returns an error.
 func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Verb, name string, argsJSON json.RawMessage, grants []prov.Grant) (*prov.Approval, *Error) {
+	return iv.approveIn(ctx, app, DomainName(app.ID()), verb, name, argsJSON, grants)
+}
+
+// approveIn is approve for the domain dname, which is not always the app's verb domain: a window runs in
+// its own (LaunchDomainName) and a prompt about it must name, and be pre-flighted from, that one.
+func (iv *Invoker) approveIn(ctx context.Context, app *apps.App, dname string, verb manifest.Verb, name string, argsJSON json.RawMessage, grants []prov.Grant) (*prov.Approval, *Error) {
 	if verb.Effect != manifest.EffectExternal && verb.Effect != manifest.EffectDestructive {
 		return nil, nil
 	}
@@ -158,7 +164,6 @@ func (iv *Invoker) approve(ctx context.Context, app *apps.App, verb manifest.Ver
 	if ap == nil {
 		return nil, fail("approval_unavailable", "%s is %s and needs approval, but this controller has no approval channel", "refusing to run unapproved; nothing was run", name, verb.Effect)
 	}
-	dname := DomainName(app.ID())
 	req := ApprovalRequest{App: app.ID(), DomainName: dname, Verb: name, Effect: verb.Effect, Grants: grants, Args: argsJSON}
 	if ap.Preflight != nil && !ap.AutoApprove && iv.Runner.Available() == nil {
 		// The helper runs in the domain, so the domain must exist (and be

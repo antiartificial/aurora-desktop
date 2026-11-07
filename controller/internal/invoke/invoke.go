@@ -103,7 +103,12 @@ type Invoker struct {
 	// LaunchGrace is how long a launch waits to see the app stay up.
 	LaunchGrace time.Duration
 
+	// DropDeny lists paths a drop may never give away (the powerbox and approval keys), beyond /proc, /sys, /dev.
+	DropDeny []string
+
 	launchOnce sync.Once
+	dropOnce   sync.Once
+	dstate     *dropState
 	lstate     *launchState
 
 	clock      *hlc.Clock

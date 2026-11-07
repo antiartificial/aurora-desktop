@@ -28,6 +28,21 @@ fn is_plain_text(mime: &str) -> bool {
     m == "text/plain" || m == "utf8_string" || m == "string" || m == "text" || m == "compound_text"
 }
 
+/// Is this the one path-bearing type a grant can stand behind: `text/uri-list` itself, not its relatives?
+pub fn is_uri_list(mime: &str) -> bool {
+    mime.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/uri-list")
+}
+
+/// The types of `offered` that a client in a domain may be shown when a drop on it can be a GRANT
+/// (decision 0020): what a confined client gets, plus `text/uri-list`, whose bytes Aurora will rewrite
+/// to name in-domain paths. The relatives (`x-special/gnome-copied-files`, `text/x-moz-url`, ...) and
+/// the plain-text twin stay withheld: each would need its own rewrite, and until it has one it is a
+/// host path.
+pub fn for_grant(offered: &[String]) -> Vec<String> {
+    let has_files = offered.iter().any(|m| names_files(m));
+    offered.iter().filter(|m| is_uri_list(m) || (!names_files(m) && !(has_files && is_plain_text(m)))).cloned().collect()
+}
+
 /// The types of `offered` that a confined client may be shown.
 ///
 /// File-naming types are withheld. So is plain text when a file type is present: a file drag's
@@ -61,6 +76,17 @@ mod tests {
     #[test]
     fn a_pure_file_drag_leaves_nothing_to_offer() {
         assert!(for_confined(&v(&["text/uri-list", "x-special/gnome-copied-files", "text/plain"])).is_empty());
+    }
+
+    #[test]
+    fn a_grantable_drop_keeps_the_uri_list_and_nothing_else_that_names_a_path() {
+        let offered = v(&["text/uri-list", "text/plain;charset=utf-8", "x-special/gnome-copied-files", "text/x-moz-url", "image/png"]);
+        assert_eq!(for_grant(&offered), v(&["text/uri-list", "image/png"]));
+        assert_eq!(for_grant(&v(&["TEXT/URI-LIST; charset=utf-8"])), v(&["TEXT/URI-LIST; charset=utf-8"]));
+        // a text drag and a pure-relatives drag behave as for a confined client
+        assert_eq!(for_grant(&v(&["text/plain", "text/html"])), v(&["text/plain", "text/html"]));
+        assert!(for_grant(&v(&["x-special/gnome-copied-files", "text/plain"])).is_empty());
+        assert!(is_uri_list("text/uri-list") && !is_uri_list("application/x-kde4-urilist") && !is_uri_list("text/x-moz-url"));
     }
 
     #[test]

@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         dnd::Choice::NoHost("the host window is not a Wayland window")
     };
+    state.drop_socket = args.drop_socket.clone().unwrap_or_else(default_drop_socket);
     dnd::start(&mut state, &event_loop.handle(), dnd_choice);
 
     // One timer for every backend, installed after the backend so it cannot be
@@ -309,6 +310,9 @@ struct Args {
     no_host_dnd: bool,
     /// `--host-dnd-display NAME`: open a stand-in window on this host socket and bridge drags to it (test affordance).
     host_dnd_display: Option<std::ffi::OsString>,
+    /// `--drop-socket PATH|none`: where the controller takes file-drop grants (default `$AURORA_DROP_SOCK`, else
+    /// `$XDG_RUNTIME_DIR/aurora-drop.sock`). `None` inside is "none": a file dropped on a domain's app is refused, as before.
+    drop_socket: Option<Option<std::path::PathBuf>>,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -322,11 +326,19 @@ fn default_trusted_socket() -> std::path::PathBuf {
     dir.join("aurora-trusted.sock")
 }
 
+fn default_drop_socket() -> Option<std::path::PathBuf> {
+    if let Some(s) = std::env::var_os("AURORA_DROP_SOCK").filter(|v| !v.is_empty()) {
+        return Some(s.into());
+    }
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| "/tmp".into());
+    Some(dir.join("aurora-drop.sock"))
+}
+
 fn parse_args() -> Args {
     let mut args = Args {
         headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -346,6 +358,7 @@ fn parse_args() -> Args {
             "--no-host-clipboard" => args.no_host_clipboard = true,
             "--host-clipboard-display" => args.host_clipboard_display = it.next().map(Into::into),
             "--no-host-dnd" => args.no_host_dnd = true,
+            "--drop-socket" => args.drop_socket = it.next().map(|v| (v != "none").then(|| v.into())),
             "--host-dnd-display" => args.host_dnd_display = it.next().map(Into::into),
             "--legacy-scene" => args.legacy_scene = true,
             "--freeze-time" => args.freeze_time = true,

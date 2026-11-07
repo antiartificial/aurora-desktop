@@ -40,6 +40,7 @@ func main() {
 	autoApprove := fs.Bool("auto-approve", false, "TEST AFFORDANCE, defeats approval: allow every destructive/external invoke on a non-ambient grant without asking anyone (logged loudly each time)")
 	compSock := fs.String("compositor-socket", config.TrustedSocket(), "compositor trusted-path socket (env AURORA_TRUSTED_SOCK): approvals are drawn by the compositor when it answers here, else they fall back to the bus route")
 	preflightBin := fs.String("preflight-bin", "", "aurora-preflight helper run inside the app's domain before a compositor prompt so the bus attests which domain asked (default: next to controllerd, or in PATH); none found means prompts show the domain as an unverified claim")
+	dropSock := fs.String("drop-socket", config.DropSocket(), "socket the compositor reports file drops on (env AURORA_DROP_SOCK; decision 0020): a file dropped on a window is mounted read-only into that window's running domain; \"none\" turns file drops off")
 	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
 	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
@@ -141,6 +142,21 @@ func main() {
 		Publish: func(topic string, payload []byte) error {
 			return c.Publish(topic, payload, proto.QoSInitiated, false)
 		},
+	}
+	inv.DropDeny = []string{*keyPath, ticket.ApprovalKeyPath()}
+	if *dropSock != "none" && *dropSock != "" {
+		ds := &invoke.DropServer{Inv: inv, Socket: *dropSock, Logf: log.Printf}
+		if *compUID >= 0 {
+			u := uint32(*compUID)
+			ds.ExpectedUID = &u
+		}
+		if err := ds.Listen(); err != nil {
+			log.Printf("WARNING: file drops are off: cannot listen on %s: %v", *dropSock, err)
+		} else {
+			defer ds.Close()
+			go ds.Serve(context.Background())
+			log.Printf("file drops: the compositor may ask for a read-only mount of a dropped file into a running window's domain on %s; directories and read-write go through the approval prompt", *dropSock)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = c.Register(ctx, config.Service)

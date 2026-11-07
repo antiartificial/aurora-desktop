@@ -4,6 +4,7 @@ package domain
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,11 +46,24 @@ type Runner interface {
 	GrantDevice(name, class string) error
 	RevokeDevice(name, class string) error
 	Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error)
+	// MountDrop mounts one canonical host path into the RUNNING domain (`domain drop`), read-only
+	// unless mode is "rw", and says where the domain sees it. UnmountDrop revokes it. Decision 0020.
+	MountDrop(name, path, mode string) (DropMount, error)
+	UnmountDrop(name, id string) error
 	// Start runs argv in the domain without waiting: a window, which lives as
 	// long as the user keeps it open (decision 0012). Cancelling ctx ends it.
 	Start(ctx context.Context, name string, argv []string) (Proc, error)
 	// Destroy removes the domain and its storage.
 	Destroy(name string) error
+}
+
+// DropMount is one path mounted into a running domain.
+type DropMount struct {
+	ID    string `json:"id"`
+	Host  string `json:"host"`
+	Guest string `json:"guest"` // the path inside the domain: /run/aurora/drops/<id>/<name>
+	Mode  string `json:"mode"`
+	Dir   bool   `json:"dir"`
 }
 
 // Proc is a command started in a domain.
@@ -198,6 +212,23 @@ func (c CLI) GrantDevice(name, class string) error {
 func (c CLI) RevokeDevice(name, class string) error {
 	return c.must("revoke", name, "--device", class)
 }
+
+func (c CLI) MountDrop(name, path, mode string) (DropMount, error) {
+	var m DropMount
+	res, err := c.do(context.Background(), nil, "drop", name, path, "--"+mode)
+	if err != nil {
+		return m, err
+	}
+	if res.Exit != 0 {
+		return m, fmt.Errorf("domain drop %s: %s", name, strings.TrimSpace(string(res.Stderr)))
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(res.Stdout), &m); err != nil || m.Guest == "" {
+		return DropMount{}, fmt.Errorf("domain drop %s: unreadable answer %q", name, strings.TrimSpace(string(res.Stdout)))
+	}
+	return m, nil
+}
+
+func (c CLI) UnmountDrop(name, id string) error { return c.must("undrop", name, id) }
 
 func (c CLI) Run(ctx context.Context, name string, argv []string, stdin []byte) (Result, error) {
 	return c.do(ctx, stdin, append([]string{"run", name, "--"}, argv...)...)

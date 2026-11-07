@@ -183,6 +183,20 @@ impl Comp {
         log
     }
 
+    /// Like `example`, but the client moves itself into the cgroup directory `cg` (under `aurora-domains`) before it
+    /// connects, so the compositor attributes it to that domain exactly as it does a real one.
+    pub fn example_in_cgroup(&mut self, name: &str, args: &[&str], cg: &Path) -> PathBuf {
+        let n = self.clients.len();
+        let log = self.dir.path().join(format!("client{n}.log"));
+        let c = Command::new("sh")
+            .args(["-c", "echo $$ > \"$0/cgroup.procs\" && exec \"$@\""]).arg(cg).arg(example(name)).args(args)
+            .env("XDG_RUNTIME_DIR", self.dir.path()).env("WAYLAND_DISPLAY", &self.display)
+            .stdout(fs::File::create(&log).unwrap()).stderr(fs::File::create(self.dir.path().join(format!("client{n}.err"))).unwrap())
+            .spawn().unwrap();
+        self.clients.push(c);
+        log
+    }
+
     pub fn capture(&self, name: &str) -> Img {
         let out = self.dir.path().join(name);
         let st = Command::new(capture_bin()).args(["--display", &self.display, "-o"]).arg(&out)

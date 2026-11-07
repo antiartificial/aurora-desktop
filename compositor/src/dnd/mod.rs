@@ -55,10 +55,23 @@
 //!
 //! # Files and domains
 //!
-//! `text/uri-list` names host paths; a confined app cannot open them. `policy.rs` therefore
-//! withholds path-bearing types from clients that are not provably outside a domain (the same
-//! fail-closed test as the clipboard) and logs it. The real answer, a *grant* made by the drop
-//! gesture, is specified in `contracts/decisions/0020-drag-and-drop.md` and is not built.
+//! `text/uri-list` names host paths; a confined app cannot open them. A client in a domain is
+//! therefore never shown a host path. What it gets instead depends on whether a drop can be a grant:
+//!
+//! * **A client the kernel placed in a domain (`ClientState::domain`) and a controller to ask
+//!   (`--drop-socket`, default `$XDG_RUNTIME_DIR/aurora-drop.sock`, present):** the drop is a grant
+//!   (decision 0020). The target is offered `text/uri-list` (and no other path-bearing type). At the
+//!   host's `drop`, Aurora, not the target, reads the host's list ONCE into a bounded buffer
+//!   (`uri.rs`), resolves symlinks, refuses anything that is not a regular file or a directory the
+//!   user can read, and asks the controller (`grant.rs`) to mount exactly those into that domain
+//!   read-only. The target's request for the list is answered with a list naming the in-domain paths;
+//!   the host's bytes never reach it. A refusal (no controller, denied approval, bad list) answers the
+//!   target with an empty list: end of file, no path.
+//! * **Any other confined client** (no domain known, no controller socket): `policy.rs` withholds
+//!   path-bearing types and logs it, as before.
+//!
+//! The data request is checked again at `send`: a confined client that asks for a file type it was
+//! not offered gets end of file, and one that asks for the list before the drop gets end of file too.
 //!
 //! # What does not exist (guest to host)
 //!
@@ -72,9 +85,11 @@
 //! Smithay grab without cancelling. That is a design of its own and cannot be verified against a
 //! real host from here, so it is left out rather than shipped half-working.
 
+pub mod grant;
 pub mod host;
 pub mod policy;
 pub mod standin;
+pub mod uri;
 
 use std::ffi::OsString;
 use std::os::fd::OwnedFd;
@@ -255,6 +270,11 @@ fn enter(state: &mut Aurora, hd: &mut HostDnd, offer: WlDataOffer, serial: u32, 
         closed: AtomicBool::new(false),
         noted: AtomicBool::new(false),
         last_accept: Mutex::new(None),
+        grant_socket: state.drop_socket.clone().filter(|p| p.exists()),
+        allow: state.trusted.allow.clone(),
+        confined: AtomicBool::new(false),
+        grant_domain: Mutex::new(None),
+        grant_slot: Mutex::new(None),
     });
     let location = pos.into();
     let start = GrabStartData { focus: None, button: BTN_LEFT, location };
@@ -276,7 +296,8 @@ fn motion(state: &mut Aurora, inner: &Arc<Inner>, pos: (f64, f64)) {
     let dp = state.to_physical_point(pos);
     let under = if l.panel.contains(dp.x, dp.y) { None } else { state.surface_under(pos) };
     let confined = under.as_ref().is_some_and(|(s, _)| is_confined(state, s));
-    inner.retarget(confined);
+    let domain = under.as_ref().filter(|_| confined).and_then(|(s, _)| domain_of(state, s));
+    inner.retarget(confined, domain.as_deref());
     let ptr = state.seat.get_pointer().unwrap();
     ptr.motion(state, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: InputTime::now() });
     ptr.frame(state);
@@ -290,6 +311,11 @@ fn is_confined(state: &Aurora, s: &WlSurface) -> bool {
         .ok()
         .and_then(|c| c.get_data::<crate::state::ClientState>().map(|d| !d.may_read_clipboard))
         .unwrap_or(true)
+}
+
+/// The domain the kernel placed this surface's client in, if any.
+fn domain_of(state: &Aurora, s: &WlSurface) -> Option<String> {
+    state.display_handle.get_client(s.id()).ok().and_then(|c| c.get_data::<crate::state::ClientState>().and_then(|d| d.domain.as_ref().map(|d| d.name.clone())))
 }
 
 fn leave(state: &mut Aurora, hd: &mut HostDnd) {
@@ -311,6 +337,7 @@ fn dropped(state: &mut Aurora, hd: &mut HostDnd) {
     let Some(inner) = hd.session.clone().filter(|i| i.live()) else { return };
     eprintln!("aurora-compositor: dnd: the host drag was dropped");
     inner.dropped.store(true, Ordering::SeqCst);
+    inner.begin_grant();
     let ptr = state.seat.get_pointer().unwrap();
     // The synthetic release makes Smithay's grab perform the drop on the focused client.
     ptr.button(state, &ButtonEvent { serial: SERIAL_COUNTER.next_serial(), time: InputTime::now(), button: BTN_LEFT, state: ButtonState::Released });
@@ -334,6 +361,35 @@ struct Inner {
     noted: AtomicBool,
     /// The last accept we sent the host, repeated on motion (see the module docs).
     last_accept: Mutex<Option<(Option<String>, Option<DndAction>)>>,
+    /// The controller's drop socket, if one was there when the drag entered (`--drop-socket`).
+    grant_socket: Option<std::path::PathBuf>,
+    allow: crate::trusted::socket::Allowlist,
+    /// Is the target under the pointer a confined client? Decides, at `send`, whether path bytes may pass through.
+    confined: AtomicBool,
+    /// Set while the target is in a domain a drop on it could be granted into.
+    grant_domain: Mutex<Option<String>>,
+    /// The grant in progress, started at the host's `drop`.
+    grant_slot: Mutex<Option<Arc<Slot>>>,
+}
+
+/// The outcome of a grant, filled in by the worker thread and waited on by whoever answers the target.
+#[derive(Default)]
+struct Slot {
+    done: Mutex<Option<Result<Vec<u8>, String>>>,
+    cv: std::sync::Condvar,
+}
+
+impl Slot {
+    fn set(&self, r: Result<Vec<u8>, String>) {
+        *self.done.lock().unwrap() = Some(r);
+        self.cv.notify_all();
+    }
+
+    fn wait(&self, within: std::time::Duration) -> Result<Vec<u8>, String> {
+        let g = self.done.lock().unwrap();
+        let (g, _) = self.cv.wait_timeout_while(g, within, |d| d.is_none()).unwrap();
+        g.clone().unwrap_or_else(|| Err("the grant did not finish in time".into()))
+    }
 }
 
 impl Inner {
@@ -352,17 +408,80 @@ impl Inner {
         }
     }
 
-    /// Choose what the target under the pointer may be shown.
-    fn retarget(&self, confined: bool) {
-        let allowed = if confined { policy::for_confined(&self.offered) } else { self.offered.clone() };
-        if allowed.len() < self.offered.len() && !self.noted.swap(true, Ordering::SeqCst) {
+    /// Choose what the target under the pointer may be shown. `domain` is the target's domain when it is
+    /// confined and the kernel placed it in one.
+    fn retarget(&self, confined: bool, domain: Option<&str>) {
+        self.confined.store(confined, Ordering::SeqCst);
+        let grantable = confined && self.grant_socket.is_some() && self.offered.iter().any(|m| policy::is_uri_list(m));
+        let domain = domain.filter(|_| grantable);
+        *self.grant_domain.lock().unwrap() = domain.map(str::to_string);
+        let allowed = match (confined, domain) {
+            (false, _) => self.offered.clone(),
+            (true, Some(_)) => policy::for_grant(&self.offered),
+            (true, None) => policy::for_confined(&self.offered),
+        };
+        if let Some(d) = domain {
+            if !self.noted.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "aurora-compositor: dnd: a file drag is over a client in domain {d}: dropping it asks the controller for a read-only grant of exactly the dropped files (decision 0020); withholding [{}]",
+                    self.offered.iter().filter(|m| !allowed.contains(m)).cloned().collect::<Vec<_>>().join(", "),
+                );
+            }
+        } else if allowed.len() < self.offered.len() && !self.noted.swap(true, Ordering::SeqCst) {
             eprintln!(
-                "aurora-compositor: dnd: withholding [{}] from a confined client: a host path means nothing inside a domain (decision 0020: dropping a file onto a confined app is a grant, not built yet){}",
+                "aurora-compositor: dnd: withholding [{}] from a confined client: a host path means nothing inside a domain{}{}",
                 self.offered.iter().filter(|m| !allowed.contains(m)).cloned().collect::<Vec<_>>().join(", "),
+                if confined && self.grant_socket.is_none() { " (no controller drop socket, so a drop cannot be a grant; see decision 0020)" } else { " (the client is in no known domain, so a drop cannot be a grant)" },
                 if allowed.is_empty() { "; nothing is left to offer, so the app sees no drag" } else { "" },
             );
         }
         *self.allowed.lock().unwrap() = allowed;
+    }
+
+    /// At the host's `drop`, for a target a drop can be granted into: read the host's list once, off the
+    /// main loop, and ask the controller. The answer is waited on by `serve_grant`.
+    fn begin_grant(&self) {
+        let Some(domain) = self.grant_domain.lock().unwrap().clone() else { return };
+        // Only for a target that said, for the list itself, that it will take the drop. An app that
+        // declined (or took some other type) is granted nothing: a grant is for a drop that landed.
+        let accepted = self.last_accept.lock().unwrap().as_ref().and_then(|l| l.0.clone());
+        if !accepted.as_deref().is_some_and(policy::is_uri_list) {
+            return eprintln!("aurora-compositor: dnd: the target in domain {domain} did not accept the file list, so nothing is granted");
+        }
+        let (Some(socket), Some(mime)) = (self.grant_socket.clone(), self.offered.iter().find(|m| policy::is_uri_list(m)).cloned()) else { return };
+        use std::os::fd::{AsFd, FromRawFd};
+        let mut fds = [0; 2];
+        // SAFETY: pipe2 fills two fds; both are owned from here on.
+        let (r, w) = unsafe {
+            if libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) != 0 {
+                return eprintln!("aurora-compositor: dnd: cannot make a pipe for the file list; the drop is refused");
+            }
+            (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
+        };
+        self.offer.receive(mime, w.as_fd());
+        self.flush();
+        drop(w);
+        let slot = Arc::new(Slot::default());
+        *self.grant_slot.lock().unwrap() = Some(slot.clone());
+        let allow = self.allow.clone();
+        std::thread::spawn(move || slot.set(grant_flow(r, &domain, &socket, &allow)));
+    }
+
+    /// Answer the target's request for the list with the rewritten one, or with nothing.
+    fn serve_grant(&self, fd: OwnedFd) {
+        let Some(slot) = self.grant_slot.lock().unwrap().clone() else {
+            eprintln!("aurora-compositor: dnd: a confined client asked for the file list before any drop; giving it nothing");
+            return;
+        };
+        std::thread::spawn(move || {
+            use std::io::Write;
+            match slot.wait(grant::REPLY_WITHIN + std::time::Duration::from_secs(5)) {
+                Ok(bytes) => {
+                    let _ = std::fs::File::from(fd).write_all(&bytes);
+                }
+                Err(why) => eprintln!("aurora-compositor: dnd: the drop was refused, so the target gets an empty file list: {why}"),
+            }
+        });
     }
 
     /// Say again what the target last said, so that it is the later request next to winit's own
@@ -432,6 +551,11 @@ impl Source for HostSource {
         if !self.0.live() || !self.0.allowed.lock().unwrap().iter().any(|m| m == mime_type) {
             return;
         }
+        // A path-bearing type for a confined client is never the host's bytes: it is the rewritten list
+        // a grant produced, or nothing.
+        if self.0.confined.load(Ordering::SeqCst) && policy::names_files(mime_type) {
+            return self.0.serve_grant(fd);
+        }
         self.0.offer.receive(mime_type.to_string(), fd.as_fd());
         self.0.flush();
     }
@@ -448,4 +572,29 @@ impl Source for HostSource {
         }
         self.0.close();
     }
+}
+
+/// The worker behind a grant: the bounded read, the checks, the controller. Everything that can go wrong
+/// is a string for the log; the target sees only an empty list.
+fn grant_flow(list: OwnedFd, domain: &str, socket: &std::path::Path, allow: &crate::trusted::socket::Allowlist) -> Result<Vec<u8>, String> {
+    let bytes = uri::read_bounded(list).map_err(|e| e.to_string())?;
+    let paths = uri::parse_uri_list(&bytes).map_err(|e| e.to_string())?;
+    let mut ok = Vec::new();
+    for p in &paths {
+        match uri::resolve(p) {
+            Ok(r) => {
+                if !ok.contains(&r) {
+                    ok.push(r);
+                }
+            }
+            Err(why) => eprintln!("aurora-compositor: dnd: not granting {}: {why}", p.display()),
+        }
+    }
+    if ok.is_empty() {
+        return Err("none of the dropped paths can be granted".into());
+    }
+    eprintln!("aurora-compositor: dnd: asking the controller to mount {} dropped path(s) read-only into domain {domain}", ok.len());
+    let g = grant::ask(socket, allow, domain, &ok)?;
+    eprintln!("aurora-compositor: dnd: the controller granted {} path(s) in domain {domain}", g.guest.len());
+    Ok(grant::rewritten_list(&g))
 }

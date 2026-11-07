@@ -55,6 +55,8 @@ pub struct Aurora {
     pub host_clip: Option<crate::clipboard::HostClipboard>,
     /// The bridge for drags entering Aurora's host window (see `crate::dnd`).
     pub host_dnd: Option<crate::dnd::HostDnd>,
+    /// The controller's file-drop socket (`--drop-socket`): what lets a file dropped on a client in a domain be a grant (decision 0020).
+    pub drop_socket: Option<std::path::PathBuf>,
     /// winit's `wl_display`, when the host is Wayland: where the drag bridge listens.
     pub host_display: Option<crate::dnd::ForeignDisplay>,
     pub popups: PopupManager,
@@ -195,6 +197,7 @@ impl Aurora {
             data_control_state,
             host_clip: None,
             host_dnd: None,
+            drop_socket: None,
             host_display: None,
             popups,
             popup_grab_surface: None,

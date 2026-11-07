@@ -211,6 +211,7 @@ func (iv *Invoker) launch(ctx context.Context, app *apps.App) (*LaunchResult, *E
 	l := &launched{app: app.ID(), name: name, done: make(chan struct{})}
 	var undo []func()
 	teardown := func() {
+		iv.releaseDrops(name)
 		for i := len(undo) - 1; i >= 0; i-- {
 			undo[i]()
 		}
