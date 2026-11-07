@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# soak: open and close windows repeatedly against one long-lived compositor, and watch what grows.
+#
+#     harness/soak [CYCLES]        default 6, three clients per cycle
+#
+# Why it exists. A daily driver runs for hours, and the two worst defects found on 2026-11-07
+# were both things that only went wrong after a while: clients that never exited when their
+# compositor died, and a 128-slot port table that could never reclaim their slots. Neither
+# showed up in any test, because every test starts from nothing.
+#
+# What it watches, per cycle: the compositor's RSS, open file descriptors and thread count from
+# /proc, the occupied slots in the kits port table, and how long three clients take to show a
+# window. The last one is the number a person feels.
+#
+# Only processes this script started are ever signalled, and only by recorded pid: a pattern
+# kill would reach another session's.
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CYCLES=${1:-6}
+COMP="$ROOT/compositor/target/debug/aurora-compositor"
+APP="$ROOT/kits/build/interface/iface_kitchensink"   # a BApplication: it uses the port table
+for f in "$COMP" "$APP"; do [ -x "$f" ] || { echo "soak: no $f; build it first" >&2; exit 77; }; done
+
+W=$(mktemp -d /tmp/soak.XXXXXX)
+export AURORA_KITS_NS="soak$$"                        # a private table, so nothing else is counted
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$W" "$COMP" \
+    --headless=1280x800 --freeze-time --test-input "$W/ti" >"$W/comp.log" 2>&1 &
+CP=$!
+KIDS=()
+cleanup() {
+  kill $CP 2>/dev/null
+  for k in "${KIDS[@]:-}"; do [ -n "$k" ] && kill "$k" 2>/dev/null; done
+  rm -f "/dev/shm/aurora-kits-$(id -u)-$AURORA_KITS_NS"; rm -rf "$W"
+}
+trap cleanup EXIT
+for _ in $(seq 200); do [ -S "$W/ti" ] && grep -aq 'socket wayland' "$W/comp.log" && break; sleep 0.05; done
+SOCK=$(grep -aoE 'socket wayland-[0-9]+' "$W/comp.log" | head -1 | awk '{print $2}')
+[ -n "$SOCK" ] || { echo "soak: the compositor made no socket" >&2; exit 1; }
+echo "compositor pid $CP on $SOCK, $CYCLES cycles of 3 clients"
+
+# The offsets are NOT guessed. They come from offsetof() against kits/src/kits_internal.h:
+# kshm.ports is at 56 and sizeof(kport) is 168 on x86-64. A guess of 48/160 read the wrong
+# bytes and reported a confident, meaningless number for three runs.
+ports() { python3 -I -c '
+import os, struct
+p = "/dev/shm/aurora-kits-%d-%s" % (os.getuid(), os.environ["AURORA_KITS_NS"])
+try: d = open(p, "rb").read(56 + 128*168)
+except OSError: print(0); raise SystemExit
+print(sum(1 for i in range(128) if struct.unpack_from("<i", d, 56 + i*168)[0] != 0))'; }
+
+nwin() { python3 -I -c '
+import socket, sys, json
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
+f.write("state\n"); f.flush()
+print(len(json.loads(f.readline()[3:])["windows"]))' "$W/ti" 2>/dev/null || echo 0; }
+
+snap() {
+  printf '%-8s rss=%-9s fds=%-4s threads=%-3s ports=%s\n' "$1" \
+    "$(awk '/VmRSS/{print $2" kB"}' /proc/$CP/status 2>/dev/null)" \
+    "$(ls /proc/$CP/fd 2>/dev/null | wc -l)" \
+    "$(awk '/Threads/{print $2}' /proc/$CP/status 2>/dev/null)" "$(ports)"
+}
+
+snap start
+for c in $(seq 1 "$CYCLES"); do
+  ROUND=(); T0=$(date +%s%N)
+  for _ in 1 2 3; do
+    env XDG_RUNTIME_DIR="$W" WAYLAND_DISPLAY="$SOCK" HOME="$W" "$APP" >/dev/null 2>&1 &
+    ROUND+=($!); KIDS+=($!)
+  done
+  for _ in $(seq 200); do [ "$(nwin)" -ge 3 ] && break; sleep 0.05; done
+  printf '         3 up in %s ms\n' "$(( ($(date +%s%N) - T0) / 1000000 ))"
+  for k in "${ROUND[@]}"; do kill "$k" 2>/dev/null; done
+  for k in "${ROUND[@]}"; do wait "$k" 2>/dev/null; done
+  sleep 1
+  snap "cycle$c"
+done
+alive=0; for k in "${KIDS[@]}"; do kill -0 "$k" 2>/dev/null && alive=$((alive+1)); done
+echo
+echo "compositor alive: $(kill -0 $CP 2>/dev/null && echo yes || echo NO)"
+echo "of the ${#KIDS[@]} clients started, still running: $alive  (any but 0 is a client that outlived its window)"
+echo
+echo "Reading it: fds and threads should be FLAT. RSS climbs while caches warm and then"
+echo "plateaus. Ports fill to 128 and stay: slots are reclaimed lazily, when a creation finds"
+echo "none free, so a saturated table is normal and not a leak. The 'up in' time should not"
+echo "grow with the port count; if it does, the reap scan has become the cost of launching."
