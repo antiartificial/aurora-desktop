@@ -23,6 +23,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#define _GNU_SOURCE 1
+#include <strings.h>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -97,9 +99,21 @@ public:
             .count();
     }
 
+    // The filter is a view over what readdir already gave us, not a re-read. The names are in
+    // memory, so narrowing is a scan; re-running readdir per keystroke would be slower and also
+    // wrong, because the directory can change between keystrokes and the list would jump.
+    void SetFilter(const std::string& f) {
+        std::lock_guard<std::mutex> g(mu_);
+        filter_ = f;
+        view_.clear();
+        if (f.empty()) return;
+        for (size_t i = 0; i < e_.size(); i++)
+            if (strcasestr(e_[i]->name.c_str(), f.c_str())) view_.push_back((int)i);
+    }
+
     int Count() const override {
         std::lock_guard<std::mutex> g(mu_);
-        return (int)e_.size();
+        return filter_.empty() ? (int)e_.size() : (int)view_.size();
     }
     int Columns() const override { return 3; }
     float ColumnWidth(int c) const override { return c == 0 ? 320 : (c == 1 ? 110 : 160); }
@@ -109,8 +123,9 @@ public:
 
     CellValue Cell(int row, int col) const override {
         std::lock_guard<std::mutex> g(mu_);
-        if (row < 0 || row >= (int)e_.size()) return CellValue{};
-        const Entry& en = *e_[row];
+        const int i = map(row);
+        if (i < 0) return CellValue{};
+        const Entry& en = *e_[i];
         if (col == 0) {
             CellValue v;
             v.state = CellState::Ready;        // the name came from readdir: always known
@@ -132,6 +147,13 @@ public:
         want_last_ = last;
     }
 
+    // Row index to entry index. Called with the lock held.
+    int map(int row) const {
+        if (filter_.empty()) return (row >= 0 && row < (int)e_.size()) ? row : -1;
+        if (row < 0 || row >= (int)view_.size()) return -1;
+        return view_[row];
+    }
+
     void StartWorker() {
         worker_ = std::thread([this] {
             while (!stop_.load()) {
@@ -142,12 +164,14 @@ public:
                     f = want_first_; l = want_last_; gen = generation_; path = path_;
                 }
                 bool did = false;
-                for (int i = f; i <= l; i++) {
+                for (int row = f; row <= l; row++) {
                     std::string name;
+                    int i = -1;
                     {
                         std::lock_guard<std::mutex> g(mu_);
                         if (gen != generation_) break;          // navigated away: drop the work
-                        if (i < 0 || i >= (int)e_.size()) continue;
+                        i = map(row);                           // the worker follows the FILTER
+                        if (i < 0) continue;
                         if (e_[i]->stated.load(std::memory_order_relaxed)) continue;
                         name = e_[i]->name;
                     }
@@ -172,11 +196,14 @@ public:
         if (worker_.joinable()) worker_.join();
     }
     int stated() const { std::lock_guard<std::mutex> g(mu_); return stated_; }
+    int Total() const { std::lock_guard<std::mutex> g(mu_); return (int)e_.size(); }
 
 private:
     mutable std::mutex mu_;
     std::vector<std::unique_ptr<Entry>> e_;
     std::string path_;
+    std::string filter_;
+    std::vector<int> view_;        // row -> entry, when a filter is on
     int want_first_ = 0, want_last_ = 0, generation_ = 0, stated_ = 0;
     std::atomic<bool> stop_{false};
     std::thread worker_;
@@ -198,14 +225,32 @@ int main() {
     }
 
     int selected = -1;
-    State<std::string> status(dir + "  -  " + std::to_string(rows.Count()) + " items");
+    State<std::string> status(std::to_string(rows.Count()) + " items");
+    State<std::string> filter("");
     status.bind(&w);
+    filter.bind(&w);
+
+    // The filter narrows as you type. It is not a search box and it does not open a mode: it is
+    // one of the three distinct things docs/aurora-ui.md separates -- type-ahead moves the
+    // selection, the filter narrows the listing, and a query opens its own window.
+    auto refilter = [&](const std::string& f) {
+        rows.SetFilter(f);
+        selected = -1;
+        status.set(f.empty() ? std::to_string(rows.Count()) + " items"
+                             : std::to_string(rows.Count()) + " of " +
+                                   std::to_string(rows.Total()) + " match \"" + f + "\"");
+        if (Node* n = w.FindNamed("files")) w.Invalidate(n->frame);
+    };
 
     w.SetRoot(VStack({
         padding(HStack({
-                    Bold("Files"),
+                    Bold("Atlas"),
                     Label(&status),
                     Spacer(),
+                    named(TextField(&filter, refilter, nullptr,
+                                    [&] { filter.set(""); refilter(""); w.FocusNamed("files"); },
+                                    FieldOpts{"filter", false, 0, false}),
+                          "filter"),
                     Button("Home", [] {}),
                 }),
                 0.75f),
@@ -216,6 +261,8 @@ int main() {
     // tree order is reading order and the toolbar comes first -- correct for Tab, wrong for
     // "what should the arrow keys talk to". The keyboard should work without a click.
     if (!w.FocusNamed("files")) fprintf(stderr, "atlas: could not focus the file list\n");
+    // ATLAS_FOCUS=filter starts in the filter field, so a scripted run can type into it.
+    if (const char* f = getenv("ATLAS_FOCUS")) w.FocusNamed(f);
     rows.StartWorker();
 
     const char* fr = getenv("ATLAS_FRAMES");
@@ -226,16 +273,18 @@ int main() {
 
     if (getenv("ATLAS_REPORT")) {
         const Window::Timing t = w.timing();
-        printf("ATLAS dir=%s entries=%d readdir_ms=%.2f\n", dir.c_str(), rows.Count(), readdir_ms);
+        printf("ATLAS dir=%s entries=%d readdir_ms=%.2f\n", dir.c_str(), rows.Total(), readdir_ms);
         printf("ATLAS frames=%zu draw_ms p50=%.3f p95=%.3f max=%.3f over_8ms=%zu\n",
                t.frames, t.p50, t.p95, t.max, t.over_8ms);
         printf("ATLAS stated=%d of %d (lstat is demand-driven: only what the list looked at)\n",
-               rows.stated(), rows.Count());
+               rows.stated(), rows.Total());
         const Window::DamageStats ds = w.damage_stats();
         printf("ATLAS damage full=%zu partial=%zu mean_fraction=%.3f\n",
                ds.full, ds.partial, ds.mean_fraction);
         printf("ATLAS focusables=%zu focused=%s keys_seen=%zu\n", w.focusable_count(),
                w.focus() ? "yes" : "no", w.keys_seen());
+        printf("ATLAS filter=\"%s\" matched=%d of %d\n", filter.get().c_str(), rows.Count(),
+               rows.Total());
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);

@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <strings.h>
+#include <cctype>
+#include <cmath>
 
 namespace aurora {
 namespace ui {
@@ -32,7 +34,9 @@ float baseline_in(const Env& e, Rect r) {
 class TextNode : public Node {
 public:
     TextNode(std::string t, bool bold) : t_(std::move(t)), bold_(bold) {}
-    TextNode(State<std::string>* s, bool bold) : s_(s), bold_(bold) {}
+    TextNode(State<std::string>* s, bool bold) : s_(s), bold_(bold) {
+        if (s_) s_->attach(this);     // the binding the design promises, made here
+    }
 
     const std::string& str() const { return s_ ? s_->get() : t_; }
 
@@ -380,6 +384,246 @@ private:
     std::chrono::steady_clock::time_point last_type_{};
 };
 
+// ---- TextField --------------------------------------------------------------------------------
+
+// Caret and selection are BYTE offsets into a UTF-8 string, moved a codepoint at a time. Byte
+// offsets keep insertion and deletion trivial; the two helpers below are what keep them from
+// ever landing inside a multi-byte sequence, which would corrupt the text and draw mojibake.
+size_t utf8_prev(const std::string& s, size_t i) {
+    if (i == 0) return 0;
+    do { i--; } while (i > 0 && ((unsigned char)s[i] & 0xC0) == 0x80);
+    return i;
+}
+size_t utf8_next(const std::string& s, size_t i) {
+    if (i >= s.size()) return s.size();
+    do { i++; } while (i < s.size() && ((unsigned char)s[i] & 0xC0) == 0x80);
+    return i;
+}
+
+class FieldNode : public Node {
+public:
+    FieldNode(State<std::string>* t, std::function<void(const std::string&)> ch,
+              std::function<void(const std::string&)> co, std::function<void()> ca,
+              FieldOpts o)
+        : t_(t), ch_(std::move(ch)), co_(std::move(co)), ca_(std::move(ca)), o_(std::move(o)) {
+        if (t_) t_->attach(this);     // the binding the design promises, made here
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        h_ = text_h(e) + e.unit * 1.5f;
+        env_ = e;                      // kept for hit testing, which needs font metrics
+        return Size{c.max_w >= 0 ? std::min(c.max_w, 260.0f) : 260, h_};
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        env_ = e;
+        const std::string& v = t_->get();
+        const float pad = e.unit;
+        const float avail = frame.w - pad * 2;
+
+        au_fill_round_rect(s, frame.box(), 6, 6,
+                           o_.read_only ? au_color{28, 30, 39, 255} : au_color{22, 24, 32, 255});
+        au_stroke_rect(s, frame.box(), focused_ ? e.accent : au_color{60, 64, 82, 255},
+                       focused_ ? 2 : 1);
+
+        // Keep the caret in view: scroll horizontally only as far as needed, and never past the
+        // end of the text, so a field you have scrolled right does not show empty space when you
+        // delete back. This is the overflow behaviour a single-line field has to have.
+        const float caret_x = au_text_width(e.font, e.size, v.c_str(), (int)caret_);
+        const float full_w = au_text_width(e.font, e.size, v.c_str(), -1);
+        if (caret_x - scroll_ > avail - 2) scroll_ = caret_x - avail + 2;
+        if (caret_x - scroll_ < 0) scroll_ = caret_x;
+        if (full_w - scroll_ < avail && scroll_ > 0) scroll_ = std::max(0.0f, full_w - avail);
+        if (full_w <= avail) scroll_ = 0;
+
+        au_clip_set(s, au_rect{frame.x + 2, frame.y, frame.x + frame.w - 3, frame.y + frame.h - 1});
+        const float tx = frame.x + pad - scroll_;
+        const float base = baseline_in(e, frame);
+
+        if (v.empty() && !focused_ && !o_.placeholder.empty()) {
+            au_text_draw(s, e.font, e.size, o_.placeholder.c_str(), -1, frame.x + pad, base, e.dim);
+        } else {
+            if (sel_ != caret_) {
+                const size_t a = std::min(sel_, caret_), b = std::max(sel_, caret_);
+                const float x0 = tx + au_text_width(e.font, e.size, v.c_str(), (int)a);
+                const float x1 = tx + au_text_width(e.font, e.size, v.c_str(), (int)b);
+                // Selection keeps its own contrast: the accent at low alpha over a dark field
+                // would leave the text unreadable, so it is a solid surface tone instead.
+                au_fill_rect(s, au_rect{x0, frame.y + 3, x1 - 1, frame.y + frame.h - 4},
+                             e.surface_hi);
+            }
+            au_text_draw(s, e.font, e.size, v.c_str(), -1, tx, base, e.fg);
+            if (focused_ && caret_on_ && !o_.read_only) {
+                const float cx = tx + caret_x;
+                au_fill_rect(s, au_rect{cx, frame.y + 3, cx + 1, frame.y + frame.h - 4}, e.accent);
+            }
+        }
+        // Overflow is shown, not hidden: a fade at whichever edge has more text off-screen.
+        if (scroll_ > 0)
+            au_fill_rect_gradient(s, au_rect{frame.x + 2, frame.y + 2, frame.x + 14,
+                                             frame.y + frame.h - 3},
+                                  au_color{22, 24, 32, 255}, au_color{22, 24, 32, 0});
+        if (full_w - scroll_ > avail)
+            au_fill_rect_gradient(s, au_rect{frame.x + frame.w - 15, frame.y + 2,
+                                             frame.x + frame.w - 3, frame.y + frame.h - 3},
+                                  au_color{22, 24, 32, 0}, au_color{22, 24, 32, 255});
+        au_clip_reset(s);
+    }
+
+    bool CanFocus() const override { return !o_.read_only; }
+    void OnFocus(bool g) override {
+        focused_ = g;
+        caret_on_ = true;
+        if (g) {
+            if (o_.select_all_on_focus) { sel_ = 0; caret_ = t_->get().size(); }
+            else { caret_ = t_->get().size(); sel_ = caret_; }
+        }
+    }
+
+    // A caret that does not blink reads as a frozen program. 530 ms is the long-standing
+    // platform interval; the window only wakes for it while this field has focus.
+    int TickMs() const override { return focused_ && !o_.read_only ? 530 : 0; }
+    void OnTick() override { caret_on_ = !caret_on_; }
+
+    // ---- pointer: click to place, drag to select, double-click a word, triple-click all ----
+
+    void OnPressAt(float x, float y, int clicks) override {
+        (void)y;
+        const std::string& v = t_->get();
+        const size_t at = offset_at(x);
+        if (clicks >= 3) { sel_ = 0; caret_ = v.size(); }
+        else if (clicks == 2) { word_at(at, &sel_, &caret_); }
+        else { caret_ = at; sel_ = at; }
+        caret_on_ = true;
+    }
+    void OnDragTo(float x, float y) override {
+        (void)y;
+        caret_ = offset_at(x);     // sel_ stays: dragging extends from where the press landed
+        caret_on_ = true;
+    }
+
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed) return false;
+        std::string v = t_->get();
+        const bool shift = (k.mods & AU_MOD_SHIFT) != 0;
+        const bool ctrl = (k.mods & AU_MOD_CTRL) != 0;
+        const uint32_t rc = k.raw_char;
+        caret_on_ = true;
+
+        if (rc == 0x1b) { if (ca_) ca_(); return true; }                 // Escape
+        if (rc == 0x0a || rc == 0x0d) { if (co_) co_(v); return true; }  // Enter
+
+        // Ctrl+A selects all. Every modern field does, and a user who cannot select all with the
+        // keyboard has to reach for the mouse to replace a value.
+        if (ctrl && (k.utf8[0] == 'a' || k.utf8[0] == 'A')) {
+            sel_ = 0;
+            caret_ = v.size();
+            return true;
+        }
+
+        if (o_.read_only) return rc == 0x1c || rc == 0x1d;   // navigable, not editable
+
+        if (rc == 0x08) {                                                 // Backspace
+            if (!erase_selection(&v)) {
+                if (caret_ == 0) return true;
+                const size_t p = ctrl ? word_start(v, caret_) : utf8_prev(v, caret_);
+                v.erase(p, caret_ - p);
+                caret_ = p;
+            }
+            commit(v);
+            return true;
+        }
+        if (rc == 0x7f) {                                                 // Delete
+            if (!erase_selection(&v)) {
+                if (caret_ >= v.size()) return true;
+                const size_t e2 = ctrl ? word_end(v, caret_) : utf8_next(v, caret_);
+                v.erase(caret_, e2 - caret_);
+            }
+            commit(v);
+            return true;
+        }
+        if (rc == 0x1c) { move(ctrl ? word_start(v, caret_) : utf8_prev(v, caret_), shift); return true; }
+        if (rc == 0x1d) { move(ctrl ? word_end(v, caret_) : utf8_next(v, caret_), shift); return true; }
+        if (rc == 0x01) { move(0, shift); return true; }                  // Home
+        if (rc == 0x04) { move(v.size(), shift); return true; }           // End
+
+        if (k.utf8[0] && (unsigned char)k.utf8[0] >= 0x20 && !ctrl) {
+            if (o_.max_len && v.size() >= o_.max_len && sel_ == caret_) return true;
+            erase_selection(&v);
+            v.insert(caret_, k.utf8);
+            caret_ += strlen(k.utf8);
+            commit(v);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    void commit(const std::string& v) {
+        sel_ = caret_;
+        t_->set(v);
+        if (ch_) ch_(v);
+    }
+    void move(size_t to, bool extend) {
+        caret_ = to;
+        if (!extend) sel_ = caret_;
+    }
+    bool erase_selection(std::string* v) {
+        if (sel_ == caret_) return false;
+        const size_t a = std::min(sel_, caret_), b = std::max(sel_, caret_);
+        v->erase(a, b - a);
+        caret_ = a;
+        sel_ = a;
+        return true;
+    }
+
+    // The byte offset whose glyph boundary is nearest x. Nearest, not "the one containing x", so
+    // clicking the right half of a character puts the caret after it, as every editor does.
+    size_t offset_at(float x) const {
+        const std::string& v = t_->get();
+        const float tx = frame.x + env_.unit - scroll_;
+        size_t best = 0;
+        float bestd = 1e9f;
+        for (size_t i = 0; i <= v.size(); i = (i < v.size() ? utf8_next(v, i) : v.size() + 1)) {
+            const float gx = tx + au_text_width(env_.font, env_.size, v.c_str(), (int)i);
+            const float d = std::fabs(gx - x);
+            if (d < bestd) { bestd = d; best = i; }
+            if (i >= v.size()) break;
+        }
+        return best;
+    }
+    static bool wordch(unsigned char c) {
+        return isalnum(c) || c == '_' || c == '.' || c == '-' || c >= 0x80;
+    }
+    static size_t word_start(const std::string& v, size_t i) {
+        while (i > 0 && !wordch((unsigned char)v[i - 1])) i--;
+        while (i > 0 && wordch((unsigned char)v[i - 1])) i--;
+        return i;
+    }
+    static size_t word_end(const std::string& v, size_t i) {
+        while (i < v.size() && !wordch((unsigned char)v[i])) i++;
+        while (i < v.size() && wordch((unsigned char)v[i])) i++;
+        return i;
+    }
+    void word_at(size_t at, size_t* a, size_t* b) const {
+        const std::string& v = t_->get();
+        size_t s2 = at, e2 = at;
+        while (s2 > 0 && wordch((unsigned char)v[s2 - 1])) s2--;
+        while (e2 < v.size() && wordch((unsigned char)v[e2])) e2++;
+        *a = s2;
+        *b = e2;
+    }
+
+    State<std::string>* t_;
+    std::function<void(const std::string&)> ch_, co_;
+    std::function<void()> ca_;
+    FieldOpts o_;
+    Env env_;
+    size_t caret_ = 0, sel_ = 0;
+    float h_ = 24, scroll_ = 0;
+    bool focused_ = false, caret_on_ = true;
+};
+
 }  // namespace
 
 // ---- damage -----------------------------------------------------------------------------------
@@ -430,6 +674,12 @@ Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
 Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
+Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch,
+               std::function<void(const std::string&)> co, std::function<void()> ca,
+               FieldOpts o) {
+    return std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
+                                       std::move(o));
+}
 
 // ---- window -----------------------------------------------------------------------------------
 
@@ -534,6 +784,14 @@ void Window::Event(void* user, int kind, int a, int b) {
         case AU_EV_POINTER_MOVE: {
             w->px_ = a / 256.0f;
             w->py_ = b / 256.0f;
+            // A drag goes to the node the press landed on, not to whatever is under the
+            // pointer now: dragging a selection past the end of a field must keep selecting in
+            // that field rather than hand the motion to a neighbour.
+            if (w->pressed_) {
+                w->pressed_->OnDragTo(w->px_, w->py_);
+                w->Invalidate(w->pressed_->frame);
+                break;
+            }
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
             if (n != w->hover_) {
                 // The payoff: a hover repaints the two nodes whose appearance changed, not the
@@ -556,12 +814,26 @@ void Window::Event(void* user, int kind, int a, int b) {
             if (a != 1) break;
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
             if (b) {
+                // Click counting: the same node, within 400 ms and 4 layout units, is a repeat.
+                // Both bounds matter -- time alone makes two deliberate clicks in different
+                // places a double-click, which is how a selection gets destroyed by accident.
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                const double since =
+                    std::chrono::duration<double, std::milli>(now - w->last_click_).count();
+                const bool near = std::fabs(w->px_ - w->last_x_) < 4 &&
+                                  std::fabs(w->py_ - w->last_y_) < 4;
+                w->clicks_ = (n == w->last_node_ && since < 400 && near) ? w->clicks_ + 1 : 1;
+                w->last_click_ = now;
+                w->last_node_ = n;
+                w->last_x_ = w->px_;
+                w->last_y_ = w->py_;
+
                 w->pressed_ = n;
                 if (n) {
                     // A press moves focus to what was pressed, if it takes focus. Clicking a
                     // thing and then typing should talk to that thing.
                     if (n->CanFocus()) w->SetFocus(n);
-                    n->OnPress();
+                    n->OnPressAt(w->px_, w->py_, w->clicks_);
                     w->Invalidate(n->frame);
                 }
             } else {
@@ -706,7 +978,14 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
         //
         // The timeout is a floor on responsiveness, not a tick: nothing animates yet. When the
         // animation driver lands it shortens this while a transition is running.
-        au_wl_wait(wl_, max_ms > 0 ? 20 : 100);
+        // Sleep no longer than the focused node's tick asks for. A caret blinks at 530 ms; an
+        // idle window with nothing animating still sleeps the full interval.
+        const int tick = focus_ ? focus_->TickMs() : 0;
+        const int wait = max_ms > 0 ? 20 : (tick > 0 ? tick : 100);
+        if (!au_wl_wait(wl_, wait) && tick > 0 && focus_) {
+            focus_->OnTick();
+            Invalidate(focus_->frame);
+        }
     }
     return 0;
 }

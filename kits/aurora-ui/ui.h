@@ -25,6 +25,7 @@
 // have created aurora::ui::au_wl, a different type, and every call would have failed to convert.
 #include "../interface/appserver/present.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -68,9 +69,16 @@ struct Env {
 // ---- state: a cell, bound at build, that invalidates what it feeds ---------------------------
 
 class Window;
+class Node;      // State holds Node* to invalidate what reads it; the class comes below
 
-// Set() marks the window dirty and nothing else: no diffing, no tree walk. The binding was made
-// when the tree was built, so the cell already knows what to invalidate.
+// Set() invalidates exactly the nodes that read this cell: no diffing and no tree walk, because
+// the binding was made when the tree was built. A node constructed from a State attaches itself,
+// which is what makes "bound at build time" true rather than aspirational -- without it set()
+// can only invalidate the whole window, which it did at first and which measured every frame as
+// a full repaint.
+//
+// Lifetime: a State must outlive the nodes built from it. In practice both are owned by the
+// window's setup scope, and a node is never destroyed before the tree it is in.
 template <class T>
 class State {
 public:
@@ -79,10 +87,13 @@ public:
     void set(T n);
     void bind(Window* w) { win_ = w; }
     Window* window() const { return win_; }
+    void attach(Node* n) { nodes_.push_back(n); }
+    size_t bound_count() const { return nodes_.size(); }
 
 private:
     T v_;
     Window* win_ = nullptr;
+    std::vector<Node*> nodes_;
 };
 
 // ---- nodes -----------------------------------------------------------------------------------
@@ -107,6 +118,18 @@ public:
     virtual void OnLeave() {}
     virtual void OnPress() {}
     virtual void OnRelease(bool inside) { (void)inside; }
+
+    // Pointer with coordinates, and the click count for double/triple. A node that only cares
+    // that it was pressed overrides OnPress; one that cares WHERE overrides these. Drag arrives
+    // between a press and its release, which is what selection, rubber-banding and a column
+    // resize all need.
+    virtual void OnPressAt(float x, float y, int clicks) { (void)x; (void)y; (void)clicks; OnPress(); }
+    virtual void OnDragTo(float x, float y) { (void)x; (void)y; }
+
+    // A node that animates asks for a tick. 0 means "never wake me". The window uses the
+    // smallest interval any focused node asks for, so an idle window still sleeps.
+    virtual int TickMs() const { return 0; }
+    virtual void OnTick() {}
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
 
     // Wheel and keys return true when handled. Unhandled events bubble to `parent`, which is
@@ -191,6 +214,33 @@ public:
 };
 
 Desc ListView(Rows* rows, int* selected);
+
+// ---- text input -------------------------------------------------------------------------------
+
+// An editable single-line field: caret, selection, and the editing keys a person expects.
+//
+// `on_change` fires on every edit, which is what a filter bar wants (narrow as you type);
+// `on_commit` fires on Enter and `on_cancel` on Escape. The State is the text, so the app reads
+// it without asking the widget anything.
+//
+// What this does NOT do, stated rather than discovered later: there is no input-method editor.
+// Composed text -- the preedit a CJK or dead-key input method shows before committing -- needs
+// text_input_v3, which the compositor implements for its own clients but present_wl does not
+// speak. So this handles what a keyboard commits, including anything the layout produces with
+// shift, caps and AltGr, and cannot yet handle composition. Pasting is also absent: the
+// clipboard is a compositor capability and wiring it is its own piece of work.
+struct FieldOpts {
+    std::string placeholder;
+    bool read_only = false;
+    size_t max_len = 0;              // 0 = unlimited
+    bool select_all_on_focus = false;  // what a path field wants, so typing replaces
+};
+
+Desc TextField(State<std::string>* text,
+               std::function<void(const std::string&)> on_change = nullptr,
+               std::function<void(const std::string&)> on_commit = nullptr,
+               std::function<void()> on_cancel = nullptr,
+               FieldOpts opts = FieldOpts{});
 
 // ---- damage -----------------------------------------------------------------------------------
 
@@ -277,6 +327,11 @@ private:
     std::vector<Node*> focusables_;
     Node* focus_ = nullptr;
     size_t keys_seen_ = 0;
+    // Click counting, for double and triple clicks.
+    std::chrono::steady_clock::time_point last_click_{};
+    Node* last_node_ = nullptr;
+    float last_x_ = 0, last_y_ = 0;
+    int clicks_ = 0;
 
     au_wl* wl_ = nullptr;
     au_wl_win* win_ = nullptr;
@@ -303,7 +358,14 @@ public:
 template <class T>
 void State<T>::set(T n) {
     v_ = std::move(n);
-    if (win_) win_->Invalidate();
+    if (!win_) return;
+    // Nothing attached means nothing in the tree reads this cell through a node, so the safe
+    // answer is the whole frame. One or more attached means we know exactly what changed.
+    if (nodes_.empty()) {
+        win_->Invalidate();
+        return;
+    }
+    for (Node* n : nodes_) win_->Invalidate(n->frame);
 }
 
 }  // namespace ui
