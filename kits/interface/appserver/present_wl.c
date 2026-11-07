@@ -59,12 +59,34 @@ struct au_wl {
 };
 
 /* A reusable shm buffer. The one-shot path above makes and destroys one per frame; this one is
- * kept and reused, because at window size the memfd, mmap and copy dominate the frame. */
+ * kept and reused, because at window size the memfd, mmap and copy dominate the frame.
+ *
+ * `owed` is what makes a POOL safe to copy damage into. A buffer may only receive the damaged
+ * rectangles if it already holds every earlier frame, and a pooled buffer does not: while one
+ * slot is on screen the other is being drawn into, so each slot misses the damage that went to
+ * the other. Copying only this frame's rects into a slot that is two frames behind leaves the
+ * regions that changed in between showing stale pixels, and copying them into a slot that was
+ * allocated this frame leaves the rest of the window showing the ZEROED memfd -- black.
+ *
+ * Neither is visible while the compositor releases a buffer before the next frame is drawn,
+ * because then slot 0 is always free and slot 1 is never allocated at all. A resize is exactly
+ * when that stops holding: the size change invalidates both slots and the compositor is busy
+ * enough to still hold one. That was the flicker. harness/present-pool proves it.
+ *
+ * So each slot carries the damage it still owes, and a present copies this frame's rects plus
+ * that backlog. The backlog is normally empty or tiny, which is why this keeps damage
+ * tracking's whole benefit; `owes_all` is the fallback when a slot is fresh or the backlog
+ * outgrows the array. */
+#define AU_OWED_MAX 24
+
 struct pbuf {
 	struct wl_buffer* b;
 	void* mem;
 	size_t size;
 	int w, h, busy;
+	int owed[AU_OWED_MAX * 4];	/* {x,y,w,h} quadruples this slot has not received */
+	int nowed;
+	int owes_all;			/* this slot owes the whole surface */
 };
 
 struct au_wl_win {
@@ -106,6 +128,38 @@ static void pbuf_drop(struct pbuf* p)
 	if (p->b) wl_buffer_destroy(p->b);
 	if (p->mem) munmap(p->mem, p->size);
 	p->b = NULL; p->mem = NULL; p->size = 0; p->w = p->h = 0; p->busy = 0;
+	p->nowed = 0; p->owes_all = 1;
+}
+
+/* This slot now owes the whole surface. */
+static void owed_all(struct pbuf* p) { p->owes_all = 1; p->nowed = 0; }
+
+/* Record damage this slot did not receive. nrects <= 0 means the whole surface changed. */
+static void owed_add(struct pbuf* p, const int* rects, int nrects)
+{
+	if (p->owes_all) return;
+	if (nrects <= 0 || !rects || p->nowed + nrects > AU_OWED_MAX) { owed_all(p); return; }
+	memcpy(p->owed + (size_t)p->nowed * 4, rects, (size_t)nrects * 4 * sizeof(int));
+	p->nowed += nrects;
+}
+
+/* Copy `nrects` clipped rectangles of `argb` into the slot. */
+static void pbuf_copy_rects(struct pbuf* p, const uint32_t* argb, int pw, int ph, size_t stride,
+                            const int* rects, int nrects)
+{
+	for (int i = 0; i < nrects; i++) {
+		int x = rects[i * 4], y = rects[i * 4 + 1];
+		int rw = rects[i * 4 + 2], rh = rects[i * 4 + 3];
+		if (x < 0) { rw += x; x = 0; }
+		if (y < 0) { rh += y; y = 0; }
+		if (x >= pw || y >= ph || rw <= 0 || rh <= 0) continue;
+		if (x + rw > pw) rw = pw - x;
+		if (y + rh > ph) rh = ph - y;
+		for (int row = y; row < y + rh; row++)
+			memcpy((char*)p->mem + (size_t)row * stride + (size_t)x * 4,
+			       (const char*)argb + (size_t)row * stride + (size_t)x * 4,
+			       (size_t)rw * 4);
+	}
 }
 
 static void wm_ping(void* d, struct xdg_wm_base* wm, uint32_t serial) { (void)d; xdg_wm_base_pong(wm, serial); }
@@ -734,46 +788,51 @@ int au_wl_win_present_damage(au_wl_win* w, const uint32_t* argb, int pw, int ph,
 				                                 WL_SHM_FORMAT_XRGB8888);
 				wl_shm_pool_destroy(pool);
 				p->mem = mem; p->size = size; p->w = pw; p->h = ph;
+				owed_all(p);	/* a fresh memfd is zero: it holds no earlier frame */
 				wl_buffer_add_listener(p->b, &pbuf_listener, p);
 			}
 		}
 		if (fd >= 0) close(fd);
 	}
 	if (!p || !p->b) {
+		/* The one-shot path presents a whole new buffer, so both slots now miss this
+		 * frame's damage as surely as if we had written to the other one. */
+		owed_add(&w->pool[0], rects, nrects);
+		owed_add(&w->pool[1], rects, nrects);
 		pthread_mutex_unlock(&g->mu);
 		return au_wl_win_present(w, argb, pw, ph, bscale);	/* no pooled buffer: one-shot */
 	}
 
-	/* Copy only what changed. This is where damage tracking pays: a hover that restyles one
-	 * row copies that row's scanlines, not the window. */
-	if (nrects <= 0 || !rects) {
+	/* Copy what changed, plus what this slot missed while the other one was in use. This is
+	 * where damage tracking pays: a hover that restyles one row copies that row's scanlines,
+	 * not the window. The backlog is what keeps that honest across the two slots. */
+	const int full = (nrects <= 0 || !rects || p->owes_all);
+	if (full) {
 		memcpy(p->mem, argb, size);
 	} else {
-		for (int i = 0; i < nrects; i++) {
-			int x = rects[i * 4], y = rects[i * 4 + 1];
-			int rw = rects[i * 4 + 2], rh = rects[i * 4 + 3];
-			if (x < 0) { rw += x; x = 0; }
-			if (y < 0) { rh += y; y = 0; }
-			if (x >= pw || y >= ph || rw <= 0 || rh <= 0) continue;
-			if (x + rw > pw) rw = pw - x;
-			if (y + rh > ph) rh = ph - y;
-			for (int row = y; row < y + rh; row++)
-				memcpy((char*)p->mem + (size_t)row * stride + (size_t)x * 4,
-				       (const char*)argb + (size_t)row * stride + (size_t)x * 4,
-				       (size_t)rw * 4);
-		}
+		pbuf_copy_rects(p, argb, pw, ph, stride, p->owed, p->nowed);
+		pbuf_copy_rects(p, argb, pw, ph, stride, rects, nrects);
 	}
 
 	p->busy = 1;
 	wl_surface_set_buffer_scale(w->surf, bscale);
 	wl_surface_attach(w->surf, p->b, 0, 0);
-	if (nrects <= 0 || !rects) {
+	/* Damage is how this buffer differs from what the compositor last saw, which is the other
+	 * slot: this frame's rects AND the backlog, the same set that was copied. */
+	if (full) {
 		wl_surface_damage_buffer(w->surf, 0, 0, pw, ph);
 	} else {
+		for (int i = 0; i < p->nowed; i++)
+			wl_surface_damage_buffer(w->surf, p->owed[i * 4], p->owed[i * 4 + 1],
+			                         p->owed[i * 4 + 2], p->owed[i * 4 + 3]);
 		for (int i = 0; i < nrects; i++)
 			wl_surface_damage_buffer(w->surf, rects[i * 4], rects[i * 4 + 1],
 			                         rects[i * 4 + 2], rects[i * 4 + 3]);
 	}
+	/* This slot is now current, and the other one has just fallen behind by this frame. */
+	p->nowed = 0;
+	p->owes_all = 0;
+	owed_add(&w->pool[p == &w->pool[0] ? 1 : 0], rects, nrects);
 	wl_surface_commit(w->surf);
 	wl_display_flush(g->dpy);
 	pthread_mutex_unlock(&g->mu);
