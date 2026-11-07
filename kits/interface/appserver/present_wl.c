@@ -44,6 +44,8 @@ struct au_wl {
 	pthread_mutex_t mu;
 	pthread_t thread;
 	int wake;			/* eventfd: the event thread bumps it, au_wl_wait sleeps on it */
+	uint32_t last_serial;		/* most recent pointer/keyboard serial; xdg_popup.grab needs one */
+	int popup_grab;			/* when set, popups created next take a grab (au_wl_popups_grab) */
 	int running;
 	struct au_wl_win* focus;
 	int nwins;
@@ -61,6 +63,8 @@ struct pbuf {
 struct au_wl_win {
 	au_wl* g;
 	struct pbuf pool[2];		/* reused by au_wl_win_present_damage; unused by the one-shot path */
+	int extra_buttons;		/* deliver right and middle buttons; see present.h */
+	int notify_done;		/* deliver AU_EV_CLOSE on xdg_popup.popup_done */
 	struct wl_surface* surf;
 	struct xdg_surface* xs;
 	struct xdg_toplevel* top;
@@ -149,10 +153,20 @@ static void p_motion(void* d, struct wl_pointer* p, uint32_t t, wl_fixed_t x, wl
 }
 static void p_button(void* d, struct wl_pointer* p, uint32_t s, uint32_t t, uint32_t button, uint32_t state)
 {
-	au_wl* g = d; (void)p; (void)s; (void)t;
-	if (g->focus && g->focus->fn && button == 0x110)	/* BTN_LEFT */
-		g->focus->fn(g->focus->user, AU_EV_POINTER_BUTTON, 1, state == WL_POINTER_BUTTON_STATE_PRESSED);
+	au_wl* g = d; (void)p; (void)t;
+	g->last_serial = s;		/* a grab must cite the serial of the event that asked for it */
+	if (!g->focus || !g->focus->fn) return;
+	const int pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
+	if (button == 0x110) {					/* BTN_LEFT */
+		g->focus->fn(g->focus->user, AU_EV_POINTER_BUTTON, 1, pressed);
+		return;
+	}
+	if (!g->focus->extra_buttons) return;			/* off by default: see present.h */
+	if (button == 0x111) g->focus->fn(g->focus->user, AU_EV_POINTER_BUTTON, 2, pressed);
+	else if (button == 0x112) g->focus->fn(g->focus->user, AU_EV_POINTER_BUTTON, 3, pressed);
 }
+
+void au_wl_win_extra_buttons(au_wl_win* w, int on) { if (w) w->extra_buttons = on ? 1 : 0; }
 /* Wheel: wl_pointer.axis value is in surface px (a notch is about 10-15). a = axis (0 vertical, 1 horizontal),
  * b = value * 256. The first version left every listener past `axis` NULL; libwayland aborts the client the
  * moment the compositor sends wl_pointer.frame, i.e. on the first real pointer event. */
@@ -425,7 +439,16 @@ au_wl_win* au_wl_win_create(au_wl* g, const char* title, int lw, int lh, au_even
 }
 
 static void pop_configure(void* d, struct xdg_popup* p, int32_t x, int32_t y, int32_t w, int32_t h) { (void)d; (void)p; (void)x; (void)y; (void)w; (void)h; }
-static void pop_done(void* d, struct xdg_popup* p) { (void)d; (void)p; /* the compositor dismissed it; the BMenu tracking thread closes it itself */ }
+static void pop_done(void* d, struct xdg_popup* p)
+{
+	/* The compositor dismissed it. The app_server's BMenu has its own tracking thread that
+	 * closes the popup itself, so telling it again would be a double close -- hence the flag,
+	 * set only for popups that asked for a grab. A toolkit menu needs to know: without this it
+	 * runs blind until its own timeout, which is how a dismissal looked like a hang. */
+	(void)p;
+	au_wl_win* w = d;
+	if (w && w->notify_done && w->fn) w->fn(w->user, AU_EV_CLOSE, 0, 0);
+}
 static void pop_repos(void* d, struct xdg_popup* p, uint32_t t) { (void)d; (void)p; (void)t; }
 static const struct xdg_popup_listener pop_listener = { pop_configure, pop_done, pop_repos };
 
@@ -448,6 +471,13 @@ au_wl_win* au_wl_popup_create(au_wl* g, au_wl_win* parent, int x, int y, int lw,
 	w->pop = xdg_surface_get_popup(w->xs, parent->xs, pos);
 	xdg_positioner_destroy(pos);
 	xdg_popup_add_listener(w->pop, &pop_listener, w);
+	if (g->popup_grab) {
+		w->notify_done = 1;
+		if (g->seat && g->last_serial) xdg_popup_grab(w->pop, g->seat, g->last_serial);
+		else if (getenv("AURORA_UI_TRACE"))
+			fprintf(stderr, "present_wl: popup grab skipped (seat=%p serial=%u)\n",
+				(void*)g->seat, g->last_serial);
+	}
 	wl_surface_commit(w->surf);
 	wl_display_flush(g->dpy);
 	pthread_mutex_unlock(&g->mu);
@@ -455,6 +485,23 @@ au_wl_win* au_wl_popup_create(au_wl* g, au_wl_win* parent, int x, int y, int lw,
 	if (!w->configured) fprintf(stderr, "present_wl: no xdg_surface.configure for a popup within 2 s\n");
 	g->nwins++;
 	return w;
+}
+
+/* Take an explicit grab for a popup: without it the compositor gives the popup no keyboard focus
+ * and does not route the pointer to it exclusively, so a menu draws but cannot be driven. It is
+ * opt-in because the app_server's own BMenu popups work as they are, and a grab changes how a
+ * click outside them behaves. Must be called before the popup's first commit is answered, which
+ * is why it takes the lock itself rather than relying on the caller's ordering. */
+void au_wl_popups_grab(au_wl* g, int on) { if (g) g->popup_grab = on ? 1 : 0; }
+
+void au_wl_popup_grab(au_wl_win* w)
+{
+	if (!w || !w->pop) return;
+	au_wl* g = w->g;
+	pthread_mutex_lock(&g->mu);
+	if (g->seat && g->last_serial) xdg_popup_grab(w->pop, g->seat, g->last_serial);
+	wl_display_flush(g->dpy);
+	pthread_mutex_unlock(&g->mu);
 }
 
 int au_wl_win_present(au_wl_win* w, const uint32_t* argb, int pw, int ph, int bscale)

@@ -254,10 +254,40 @@ int main() {
         w.FocusNamed("files");
     };
 
+    // The context menu. Its shape is the plumber's (decision 0009): the default first and bold,
+    // effects marked, destructive behind a separator, and a disabled item left visible with its
+    // reason. The verbs are stubs here -- wiring registry.plumb@v1 is the next piece -- but the
+    // ORDER and the MARKING are the part the user is owed, and they are real.
+    State<std::string> last_action("");
+    last_action.bind(&w);
+    auto list = named(ListView(&rows, &selected), "files");
+    OnListContext(list, [&](int row, float x, float y) {
+        const std::string name = rows.Cell(row, 0).text;
+        const bool is_dir = !name.empty() && name.back() == '/';
+        std::vector<MenuItem> items;
+        items.push_back(MenuItem{is_dir ? "Open" : "Open with...", "Enter", Effect::Read, true,
+                                 true, false, [&, name] { last_action.set("open " + name); }});
+        items.push_back(MenuItem{"Copy path", "", Effect::Read, true, false, false,
+                                 [&, name] { last_action.set("copy " + name); }});
+        items.push_back(MenuItem{"Show provenance", "", Effect::Read, true, false, false,
+                                 [&, name] { last_action.set("prov " + name); }});
+        items.push_back(MenuItem{"Rename", "F2", Effect::Write, false, false, false, nullptr});
+        items.back().note = "needs a text area";
+        items.push_back(MenuItem{"Upload", "", Effect::External, false, false, false, nullptr});
+        items.back().note = "no network grant";
+        items.push_back(MenuItem{"Move to Trash", "Del", Effect::Destructive, true, false, false,
+                                 [&, name] { last_action.set("trash " + name); }});
+        // Deferred, not called here: this runs on the event thread, which holds the display
+        // mutex, and creating the popup's surface would deadlock against it.
+        w.Defer([&w, x, y, items = std::move(items)]() mutable {
+            w.ShowMenu(x, y, std::move(items), 4000);
+        });
+    });
+
     w.SetRoot(VStack({
         padding(HStack({
-                    Bold("Atlas"),
-                    Label(&status),
+                    styled(Bold("Atlas"), TextStyle{1.35f, true}),
+                    styled(Label(&status), TextStyle{0.9f, false, true}),
                     Spacer(),
                     Button("Home", [] {}),
                 }),
@@ -271,7 +301,7 @@ int main() {
                              0.5f),
                      Transition{Motion::Reveal, 160, Curve::EaseOut}),
               "filterbar"),
-        weight(named(ListView(&rows, &selected), "files"), 1),
+        weight(list, 1),
     }, 0));
 
     // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because
@@ -310,6 +340,7 @@ int main() {
         printf("ATLAS filter=\"%s\" matched=%d of %d open=%s\n", filter.get().c_str(),
                rows.Count(), rows.Total(), filter_open.get() ? "yes" : "no");
         printf("ATLAS motion_degraded=%zu\n", w.motion_degraded());
+        printf("ATLAS last_action=\"%s\"\n", last_action.get().c_str());
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);

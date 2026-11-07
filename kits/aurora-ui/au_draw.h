@@ -71,6 +71,12 @@ typedef struct { float ascent, descent, leading; } au_font_metrics;
 
 /* which: "plain" | "bold" | "fixed". Returns 0 when the backend has no such font. */
 int   au_font_system(const char* which, au_font* out, float* size);
+/* A named face of a named family, e.g. ("DejaVu Sans", "Italic"). Returns 0 when there is no
+ * such face, so a caller can fall back rather than draw nothing. The system fonts above do not
+ * cover italic: Haiku's SystemFont only knows plain, bold and fixed. */
+int   au_font_lookup(const char* family, const char* style, au_font* out);
+/* The family name of a face, for finding its italic sibling. */
+int   au_font_family_of(au_font, char* buf, int cap);
 int   au_font_metrics_get(au_font, float size, au_font_metrics* out);
 /* Advance width of a UTF-8 run, in layout units. len < 0 means NUL-terminated. */
 float au_text_width(au_font, float size, const char* utf8, int len);

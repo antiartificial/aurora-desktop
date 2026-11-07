@@ -23,6 +23,18 @@ float text_h(const Env& e) {
     au_font_metrics_get(e.font, e.size, &m);
     return m.ascent + m.descent + m.leading;
 }
+float text_h(const Env& e, const TextStyle& st) {
+    au_font_metrics m;
+    m.ascent = m.descent = m.leading = 0;
+    au_font_metrics_get(e.face(st), e.sized(st), &m);
+    return m.ascent + m.descent + m.leading;
+}
+float baseline_in(const Env& e, Rect r, const TextStyle& st) {
+    au_font_metrics m;
+    m.ascent = m.descent = m.leading = 0;
+    au_font_metrics_get(e.face(st), e.sized(st), &m);
+    return r.y + (r.h + m.ascent - m.descent) / 2;
+}
 float baseline_in(const Env& e, Rect r) {
     au_font_metrics m;
     m.ascent = m.descent = m.leading = 0;
@@ -34,29 +46,34 @@ float baseline_in(const Env& e, Rect r) {
 
 class TextNode : public Node {
 public:
-    TextNode(std::string t, bool bold) : t_(std::move(t)), bold_(bold) {}
-    TextNode(State<std::string>* s, bool bold) : s_(s), bold_(bold) {
+    TextNode(std::string t, bool bold) : t_(std::move(t)) { st_.bold = bold; }
+    TextNode(State<std::string>* s, bool bold) : s_(s) {
+        st_.bold = bold;
         if (s_) s_->attach(this);     // the binding the design promises, made here
     }
 
     const std::string& str() const { return s_ ? s_->get() : t_; }
 
     Size Measure(const Env& e, Constraints) override {
-        const au_font f = bold_ ? e.bold : e.font;
-        return Size{au_text_width(f, e.size, str().c_str(), -1) + pad.l + pad.r,
-                    text_h(e) + pad.t + pad.b};
+        return Size{au_text_width(e.face(st_), e.sized(st_), str().c_str(), -1) + pad.l + pad.r,
+                    text_h(e, st_) + pad.t + pad.b};
     }
     void Draw(au_surface* s, const Env& e) override {
         const Rect in = inner();
-        au_text_draw(s, bold_ ? e.bold : e.font, e.size, str().c_str(), -1,
-                     in.x, baseline_in(e, in), e.fg);
+        au_text_draw(s, e.face(st_), e.sized(st_), str().c_str(), -1, in.x,
+                     baseline_in(e, in, st_), e.ink(st_));
+    }
+    void SetStyle(const TextStyle& st) override {
+        const bool keep_bold = st_.bold && !st.bold;   // Bold("x") must stay bold unless asked
+        st_ = st;
+        if (keep_bold) st_.bold = true;
     }
     Node* HitTest(float, float) override { return nullptr; }   // text is not a target
 
 private:
     std::string t_;
     State<std::string>* s_ = nullptr;
-    bool bold_ = false;
+    TextStyle st_;
 };
 
 // ---- Button -----------------------------------------------------------------------------------
@@ -66,17 +83,18 @@ public:
     ButtonNode(std::string l, std::function<void()> f) : l_(std::move(l)), f_(std::move(f)) {}
 
     Size Measure(const Env& e, Constraints) override {
-        const float w = au_text_width(e.font, e.size, l_.c_str(), -1);
-        return Size{w + e.unit * 3, text_h(e) + e.unit * 1.75f};
+        const float w = au_text_width(e.face(st_), e.sized(st_), l_.c_str(), -1);
+        return Size{w + e.unit * 3, text_h(e, st_) + e.unit * 1.75f};
     }
+    void SetStyle(const TextStyle& st) override { st_ = st; }
     void Draw(au_surface* s, const Env& e) override {
         const au_color bg = down_ ? e.accent : (over_ ? e.surface_hi : e.surface);
         au_fill_round_rect(s, frame.box(), 7, 7, bg);
         // A visible focus ring, always. Hiding where focus is makes a keyboard user guess.
         if (focused_) au_stroke_rect(s, frame.box(), e.accent, 2);
-        const float tw = au_text_width(e.font, e.size, l_.c_str(), -1);
-        au_text_draw(s, e.font, e.size, l_.c_str(), -1, frame.x + (frame.w - tw) / 2,
-                     baseline_in(e, frame), down_ ? e.surface : e.fg);
+        const float tw = au_text_width(e.face(st_), e.sized(st_), l_.c_str(), -1);
+        au_text_draw(s, e.face(st_), e.sized(st_), l_.c_str(), -1, frame.x + (frame.w - tw) / 2,
+                     baseline_in(e, frame, st_), down_ ? e.surface : e.ink(st_));
     }
     void OnEnter() override { over_ = true; }
     void OnLeave() override { over_ = false; down_ = false; }
@@ -101,6 +119,7 @@ public:
 private:
     std::string l_;
     std::function<void()> f_;
+    TextStyle st_;
     bool over_ = false, down_ = false, focused_ = false;
 
 public:
@@ -370,6 +389,20 @@ public:
         return !out->empty();
     }
 
+    // A right-click targets the row under the pointer WITHOUT changing the selection, unless
+    // nothing is selected -- acting on a row you did not mean to select is how files get lost.
+    bool OnContext(float x, float y) override {
+        (void)x;
+        const int row = top_ + (int)((y - frame.y - head_h_ - 1) / row_h_);
+        if (row < 0 || row >= r_->Count()) return false;
+        ctx_row_ = row;
+        if (sel_ && *sel_ < 0) { *sel_ = row; rows_dirty_.push_back(row); dirty_ = true; }
+        if (on_ctx_) on_ctx_(row, x, y);
+        return true;
+    }
+    void SetContextHandler(std::function<void(int, float, float)> f) { on_ctx_ = std::move(f); }
+    int context_row() const { return ctx_row_; }
+
     bool take_dirty() { const bool d = dirty_; dirty_ = false; return d; }
     const std::string& ahead() const { return ahead_; }
     int rows_drawn() const { return rows_drawn_; }
@@ -381,6 +414,8 @@ private:
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;
+    std::function<void(int, float, float)> on_ctx_;
+    int ctx_row_ = -1;
     std::string ahead_;
     std::chrono::steady_clock::time_point last_type_{};
 };
@@ -747,6 +782,7 @@ Desc padding(Desc d, float units) { d->pad = Insets(units * 8); return d; }
 Desc padding(Desc d, Insets i) { d->pad = i; return d; }
 Desc weight(Desc d, float w) { d->weight = w; return d; }
 Desc named(Desc d, std::string n) { d->name = std::move(n); return d; }
+Desc styled(Desc d, TextStyle st) { d->SetStyle(st); return d; }
 
 // ---- primitives -------------------------------------------------------------------------------
 
@@ -764,6 +800,9 @@ Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
 Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
+void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
+    if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
+}
 Desc Reveal(State<bool>* shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
 }
@@ -773,6 +812,202 @@ Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch
                FieldOpts o) {
     return std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
                                        std::move(o));
+}
+
+// ---- Menu -------------------------------------------------------------------------------------
+
+namespace {
+
+// A glyph per effect class. Deliberately not colour alone: colour is the second signal, and a
+// person who cannot distinguish red from grey still has to be able to tell a delete from an open.
+const char* effect_mark(Effect e) {
+    switch (e) {
+        case Effect::Destructive: return "\xe2\x9c\x95";   // multiplication x
+        case Effect::External: return "\xe2\x86\x97";      // north-east arrow: leaves the machine
+        case Effect::Write: return "\xe2\x97\x8f";         // filled circle
+        default: return "";
+    }
+}
+
+// Default first, then by effect so reads precede writes, with destructive last behind a
+// separator. The plumber already ranks candidates; this preserves that order and only forces
+// the two rules the UI owes the user.
+std::vector<MenuItem> arrange(std::vector<MenuItem> in) {
+    std::vector<MenuItem> safe, destructive;
+    for (MenuItem& m : in) {
+        if (m.separator) continue;                       // callers do not place separators
+        (m.effect == Effect::Destructive ? destructive : safe).push_back(std::move(m));
+    }
+    std::stable_sort(safe.begin(), safe.end(),
+                     [](const MenuItem& a, const MenuItem& b) { return a.is_default > b.is_default; });
+    std::vector<MenuItem> out = std::move(safe);
+    if (!destructive.empty()) {
+        out.push_back(MenuItem::sep());
+        for (MenuItem& m : destructive) out.push_back(std::move(m));
+    }
+    return out;
+}
+
+}  // namespace
+
+Menu::Menu(Window* parent, float x, float y, std::vector<MenuItem> items)
+    : parent_(parent), items_(arrange(std::move(items))) {
+    if (!parent_ || !parent_->native()) return;
+    const Env& e = parent_->env_const();
+    scale_ = parent_->scale();
+    row_ = text_h(e) + e.unit * 1.25f;
+
+    float widest = 0;
+    for (const MenuItem& m : items_) {
+        if (m.separator) continue;
+        float wm = au_text_width(e.font, e.size, m.label.c_str(), -1) + e.unit * 4;
+        if (!m.note.empty()) wm += au_text_width(e.font, e.size - 1, m.note.c_str(), -1) + e.unit * 2;
+        widest = std::max(widest, wm);
+    }
+    w_ = std::max(140.0f, widest);
+    h_ = e.unit;
+    for (const MenuItem& m : items_) h_ += m.separator ? e.unit : row_;
+    h_ += e.unit;
+
+    sf_ = au_surface_new((int)w_, (int)h_, scale_);
+    win_ = au_wl_popup_create(parent_->display(), parent_->native(), (int)x, (int)y, (int)w_,
+                              (int)h_, &Menu::Event, this);
+    if (win_) au_wl_win_set_key_fn(win_, &Menu::Key);
+}
+
+Menu::~Menu() {
+    if (win_) au_wl_win_destroy(win_);
+    if (sf_) au_surface_free(sf_);
+}
+
+int Menu::at(float y) const {
+    const Env& e = parent_->env_const();
+    float cy = e.unit;
+    for (size_t i = 0; i < items_.size(); i++) {
+        const float hh = items_[i].separator ? e.unit : row_;
+        if (y >= cy && y < cy + hh) return items_[i].separator ? -1 : (int)i;
+        cy += hh;
+    }
+    return -1;
+}
+
+void Menu::Draw() {
+    if (!sf_) return;
+    const Env& e = parent_->env_const();
+    au_clear(sf_, au_color{32, 34, 45, 255});
+    au_fill_round_rect(sf_, au_rect{0, 0, w_ - 1, h_ - 1}, 8, 8, au_color{38, 41, 54, 255});
+    au_stroke_rect(sf_, au_rect{0, 0, w_ - 1, h_ - 1}, au_color{62, 66, 86, 255}, 1);
+
+    float cy = e.unit;
+    for (size_t i = 0; i < items_.size(); i++) {
+        const MenuItem& m = items_[i];
+        if (m.separator) {
+            au_stroke_line(sf_, e.unit, cy + e.unit / 2, w_ - e.unit - 1, cy + e.unit / 2,
+                           au_color{62, 66, 86, 255}, 1);
+            cy += e.unit;
+            continue;
+        }
+        if ((int)i == hover_ && m.enabled)
+            au_fill_round_rect(sf_, au_rect{4, cy, w_ - 5, cy + row_ - 1}, 6, 6, e.surface_hi);
+
+        // Disabled items are dimmed, never removed, and their note says why.
+        const au_color fg = !m.enabled ? e.dim
+                            : m.effect == Effect::Destructive ? au_color{240, 138, 138, 255}
+                                                              : e.fg;
+        const float base = cy + row_ * 0.72f;
+        const char* mark = effect_mark(m.effect);
+        float tx = e.unit;
+        if (*mark) {
+            au_text_draw(sf_, e.font, e.size - 1, mark, -1, tx, base, fg);
+            tx += e.unit * 1.75f;
+        } else {
+            tx += e.unit * 1.75f;
+        }
+        au_text_draw(sf_, m.is_default ? e.bold : e.font, e.size, m.label.c_str(), -1, tx, base, fg);
+        if (!m.note.empty()) {
+            const float nw = au_text_width(e.font, e.size - 1, m.note.c_str(), -1);
+            au_text_draw(sf_, e.font, e.size - 1, m.note.c_str(), -1, w_ - e.unit - nw, base, e.dim);
+        }
+        cy += row_;
+    }
+    au_wl_win_present_damage(win_, au_surface_pixels(sf_), au_surface_px_w(sf_),
+                             au_surface_px_h(sf_), (int)scale_, nullptr, 0);
+    dirty_ = false;
+}
+
+void Menu::Event(void* user, int kind, int a, int b) {
+    Menu* m = static_cast<Menu*>(user);
+    if (!m) return;
+    if (kind == AU_EV_CLOSE) { m->done_ = true; return; }
+    if (kind == AU_EV_POINTER_MOVE) {
+        const int h = m->at(b / 256.0f);
+        if (h != m->hover_) { m->hover_ = h; m->dirty_ = true; }
+        return;
+    }
+    if (kind == AU_EV_POINTER_LEAVE) {
+        if (m->hover_ != -1) { m->hover_ = -1; m->dirty_ = true; }
+        return;
+    }
+    if (kind == AU_EV_POINTER_BUTTON && a == 1 && !b) {
+        // Picked on RELEASE, not press: a press-and-drag off the item must be able to change its
+        // mind, which is how menus have always worked and how a mis-aimed click is survivable.
+        if (m->hover_ >= 0 && m->items_[m->hover_].enabled) m->picked_ = m->hover_;
+        m->done_ = true;
+    }
+}
+
+void Menu::Key(void* user, const au_key* k) {
+    Menu* m = static_cast<Menu*>(user);
+    if (!m || !k || !k->pressed) return;
+    const int n = (int)m->items_.size();
+    if (k->raw_char == 0x1b) { m->done_ = true; return; }                  // Escape
+    if (k->raw_char == 0x0a || k->raw_char == 0x0d) {                       // Enter
+        if (m->hover_ >= 0 && m->items_[m->hover_].enabled) m->picked_ = m->hover_;
+        m->done_ = true;
+        return;
+    }
+    const int step = k->raw_char == 0x1e ? -1 : (k->raw_char == 0x1f ? 1 : 0);
+    if (!step) return;
+    // Skip separators and disabled items: arrowing onto something you cannot pick is a dead end.
+    int i = m->hover_;
+    for (int tries = 0; tries < n; tries++) {
+        i = i < 0 ? (step > 0 ? 0 : n - 1) : ((i + step) % n + n) % n;
+        if (!m->items_[i].separator && m->items_[i].enabled) { m->hover_ = i; m->dirty_ = true; return; }
+    }
+}
+
+int Menu::Run(int max_ms) {
+    if (!win_) return -1;
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    Draw();
+    while (!done_) {
+        if (max_ms > 0 &&
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count() > max_ms)
+            break;
+        if (dirty_) { Draw(); continue; }
+        au_wl_wait(parent_->display(), 50);
+    }
+    if (picked_ >= 0 && picked_ < (int)items_.size() && items_[picked_].run) items_[picked_].run();
+    return picked_;
+}
+
+void Window::Defer(std::function<void()> f) {
+    {
+        std::lock_guard<std::mutex> g(deferred_mu_);
+        deferred_.push_back(std::move(f));
+    }
+    dirty_ = true;      // wake the loop so it drains promptly
+}
+
+int Window::ShowMenu(float x, float y, std::vector<MenuItem> items, int max_ms) {
+    Menu m(this, x, y, std::move(items));
+    if (getenv("AURORA_UI_TRACE"))
+        fprintf(stderr, "ui: menu at %.0f,%.0f -> %s\n", x, y, m.ok() ? "created" : "FAILED");
+    if (!m.ok()) return -1;
+    const int picked = m.Run(max_ms);
+    Invalidate();          // the menu covered part of the window; it owes a full frame back
+    return picked;
 }
 
 // ---- window -----------------------------------------------------------------------------------
@@ -785,9 +1020,26 @@ Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
     float sz = 13;
     if (au_font_system("plain", &env_.font, &sz)) env_.size = sz;
     if (!au_font_system("bold", &env_.bold, &sz)) env_.bold = env_.font;
+    // Italic is not a system font: Haiku's SystemFont only knows plain, bold and fixed. So find
+    // the plain face's family and ask for its italic sibling by name, falling back to upright
+    // rather than drawing nothing. "Oblique" is tried too, which is what many families call it.
+    env_.italic = env_.font;
+    env_.bold_italic = env_.bold;
+    char fam[128];
+    if (au_font_family_of(env_.font, fam, sizeof fam)) {
+        au_font f{};
+        if (au_font_lookup(fam, "Italic", &f) || au_font_lookup(fam, "Oblique", &f))
+            env_.italic = f;
+        if (au_font_lookup(fam, "Bold Italic", &f) || au_font_lookup(fam, "Bold Oblique", &f))
+            env_.bold_italic = f;
+    }
     sf_ = au_surface_new(lw_, lh_, scale_);
     win_ = au_wl_win_create(wl_, title, lw_, lh_, &Window::Event, this);
-    if (win_) au_wl_win_set_key_fn(win_, &Window::Key);
+    if (win_) {
+        au_wl_win_set_key_fn(win_, &Window::Key);
+        au_wl_win_extra_buttons(win_, 1);   // this toolkit distinguishes the secondary button
+        au_wl_popups_grab(wl_, 1);          // menus need a grab to receive keys at all
+    }
 }
 
 Window::~Window() {
@@ -940,6 +1192,13 @@ void Window::Event(void* user, int kind, int a, int b) {
             }
             break;
         case AU_EV_POINTER_BUTTON: {
+            if (a == 2 || a == 3) {        // secondary button: BTN_RIGHT arrives as 2 or 3
+                if (!b) break;             // act on press, as a context menu does
+                for (Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr; n;
+                     n = n->parent)
+                    if (n->OnContext(w->px_, w->py_)) { w->Invalidate(); break; }
+                break;
+            }
             if (a != 1) break;
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
             if (b) {
@@ -1097,6 +1356,17 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                     .count() > max_ms)
             break;
+        // Drain deferred work BEFORE drawing. An event handler cannot create a surface -- it
+        // runs on present_wl's event thread, which holds the display mutex, so au_wl_popup_create
+        // would deadlock against it. Handlers decide; the loop acts.
+        {
+            std::vector<std::function<void()>> todo;
+            {
+                std::lock_guard<std::mutex> g(deferred_mu_);
+                todo.swap(deferred_);
+            }
+            for (auto& f : todo) f();
+        }
         if (force_redraw) Invalidate();
         if (dirty_) {
             Draw();

@@ -10,7 +10,9 @@
 #include "../interface/appserver/text_backend.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 using aurora::Canvas;
@@ -151,6 +153,24 @@ int au_font_system(const char* which, au_font* out, float* size) {
     out->family = (uint16_t)k.family;
     out->style = (uint16_t)k.style;
     if (size) *size = sz;
+    return 1;
+}
+
+int au_font_lookup(const char* family, const char* style, au_font* out) {
+    if (!family || !style || !out) return 0;
+    aurora::text::FontKey k{};
+    uint16_t face = 0;
+    if (!TB()->Lookup(family, style, &k, &face)) return 0;
+    out->family = (uint16_t)k.family;
+    out->style = (uint16_t)k.style;
+    return 1;
+}
+
+int au_font_family_of(au_font f, char* buf, int cap) {
+    if (!buf || cap <= 0) return 0;
+    std::string name;
+    if (!TB()->FamilyName(f.family, &name)) return 0;
+    snprintf(buf, (size_t)cap, "%s", name.c_str());
     return 1;
 }
 

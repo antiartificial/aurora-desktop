@@ -50,6 +50,19 @@ void au_wl_win_destroy(au_wl_win*);
  * 1920x1200 window at scale 1.45 copies 19 MB every frame whether one pixel changed or not.
  * rects is nrects quadruples of {x, y, w, h} in BUFFER (device) pixels; nrects 0 damages all. */
 int au_wl_wait(au_wl*, int timeout_ms);
+
+/* Deliver the secondary and middle buttons to this window, as AU_EV_POINTER_BUTTON with a = 2
+ * (right) and a = 3 (middle). OFF by default, and that is deliberate: the app_server's own
+ * handler ignores `a` and treats every button as B_PRIMARY_MOUSE_BUTTON, so forwarding these
+ * unconditionally would make a right-click act as a left-click in every Haiku app. A toolkit
+ * that distinguishes them opts in. */
+void au_wl_win_extra_buttons(au_wl_win*, int on);
+
+/* Popups created after this take an explicit xdg_popup.grab, which is what gives a menu keyboard
+ * focus and exclusive pointer routing. OFF by default: the app_server's BMenu popups work
+ * without one, and a grab changes what a click outside a popup does. */
+void au_wl_popups_grab(au_wl*, int on);
+void au_wl_popup_grab(au_wl_win*);
 int au_wl_win_present_damage(au_wl_win*, const uint32_t* argb, int px_w, int px_h,
                              int buffer_scale, const int* rects, int nrects);
 

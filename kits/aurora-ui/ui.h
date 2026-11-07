@@ -27,6 +27,7 @@
 
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,18 +53,44 @@ struct Insets {
 // What a parent offers a child. -1 on an axis means "as much as you like, tell me what you want".
 struct Constraints { float max_w = -1, max_h = -1; };
 
+// ---- text style -------------------------------------------------------------------------------
+
+// Per-node text style. Size is a MULTIPLIER on the environment's size, not an absolute: a theme
+// that changes the base size then scales the whole interface, which is what a person increasing
+// their font size expects, rather than leaving every hand-set size behind.
+struct TextStyle {
+    float size = 1.0f;             // multiplier on Env::size
+    bool bold = false;
+    bool italic = false;
+    bool has_color = false;
+    au_color color{};              // only when has_color
+};
+
 // ---- the environment: what flows down, with explicit override points -------------------------
 
 struct Env {
     au_font font{};
     float size = 13;
     au_font bold{};
+    au_font italic{};
+    au_font bold_italic{};
     float unit = 8;                 // the spacing unit; padding(1) is one unit
     au_color fg{236, 239, 244, 255};
     au_color dim{150, 157, 178, 255};
     au_color accent{122, 162, 247, 255};
     au_color surface{38, 41, 54, 255};
     au_color surface_hi{52, 56, 73, 255};
+
+    // The face and size a style asks for. One place resolves this, so every component that draws
+    // text gets the same answer and a missing face falls back rather than drawing nothing.
+    au_font face(const TextStyle& st) const {
+        if (st.bold && st.italic) return bold_italic;
+        if (st.bold) return bold;
+        if (st.italic) return italic;
+        return font;
+    }
+    float sized(const TextStyle& st) const { return size * st.size; }
+    au_color ink(const TextStyle& st) const { return st.has_color ? st.color : fg; }
 };
 
 // ---- state: a cell, bound at build, that invalidates what it feeds ---------------------------
@@ -124,6 +151,9 @@ public:
     // between a press and its release, which is what selection, rubber-banding and a column
     // resize all need.
     virtual void OnPressAt(float x, float y, int clicks) { (void)x; (void)y; (void)clicks; OnPress(); }
+    // The secondary button. Returning true means handled; the window does not synthesise a
+    // primary press from it, because a right-click must not move a selection it is acting on.
+    virtual bool OnContext(float x, float y) { (void)x; (void)y; return false; }
     virtual void OnDragTo(float x, float y) { (void)x; (void)y; }
 
     // A node that animates asks for a tick. 0 means "never wake me". The window uses the
@@ -135,6 +165,10 @@ public:
     // Retarget is called each frame with whether motion is affordable; a node that animates
     // its own geometry answers true from Animating while it moves, which tells the window to
     // lay out again, because the node's size is part of the layout.
+    // Text style, for any node that draws text. The default ignores it, so a container does not
+    // have to care; a node that draws text overrides it.
+    virtual void SetStyle(const TextStyle& st) { (void)st; }
+
     virtual void Retarget(bool motion_allowed) { (void)motion_allowed; }
     virtual bool Animating() const { return false; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
@@ -185,6 +219,11 @@ Desc padding(Desc d, Insets i);
 Desc weight(Desc d, float w);
 Desc named(Desc d, std::string n);
 
+// Text style, on any node that draws text. Chains like the others:
+//   styled(Label("Atlas"), TextStyle{1.4f, true})          -- 40% larger and bold
+//   styled(Label(&note), TextStyle{0.85f, false, true})    -- smaller and italic
+Desc styled(Desc d, TextStyle st);
+
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string text);
@@ -221,6 +260,9 @@ public:
 };
 
 Desc ListView(Rows* rows, int* selected);
+// A right-click on a row calls this with (row, x, y) in window coordinates, so the app can open
+// a menu there. Set it on the Desc a ListView returned.
+void OnListContext(const Desc& list, std::function<void(int, float, float)> f);
 
 // ---- text input -------------------------------------------------------------------------------
 
@@ -317,6 +359,58 @@ private:
     bool all_ = true;        // a fresh window owes a full frame
 };
 
+// ---- menus ------------------------------------------------------------------------------------
+
+// The effect class a menu item carries, from decision 0009. It is the only authority signal in
+// the system and the menu's job is to show it BEFORE the user commits, not after.
+enum class Effect : uint8_t { Read, Write, Destructive, External };
+
+struct MenuItem {
+    std::string label;
+    std::string note;                  // a shortcut, or why it is disabled
+    Effect effect = Effect::Read;
+    bool enabled = true;
+    bool is_default = false;           // drawn bold and placed first
+    bool separator = false;
+    std::function<void()> run;
+
+    static MenuItem sep() {
+        MenuItem m;
+        m.separator = true;
+        m.enabled = false;
+        return m;
+    }
+};
+
+// A popup menu on its own Wayland surface, so it is not clipped by its parent window and the
+// compositor can place it. Ordering and marking follow docs/aurora-ui.md section 7 and the
+// plumber's ranking: the default first and bold, destructive items after a separator, and a
+// disabled item STAYS VISIBLE with its reason -- Apple's 1992 rule, "not eliminated from a
+// display but merely dimmed", because hiding what is unavailable teaches the wrong model.
+class Menu {
+public:
+    Menu(Window* parent, float x, float y, std::vector<MenuItem> items);
+    ~Menu();
+    bool ok() const { return win_ != nullptr; }
+    // Runs until something is picked or it is dismissed. Returns the index picked, or -1.
+    int Run(int max_ms = 0);
+
+private:
+    void Draw();
+    static void Event(void* user, int kind, int a, int b);
+    static void Key(void* user, const au_key* k);
+    int at(float y) const;
+
+    Window* parent_;
+    std::vector<MenuItem> items_;
+    au_wl_win* win_ = nullptr;
+    au_surface* sf_ = nullptr;
+    float w_ = 0, h_ = 0, row_ = 0;
+    double scale_ = 1;
+    int hover_ = -1, picked_ = -1;
+    bool done_ = false, dirty_ = true;
+};
+
 // ---- the window -------------------------------------------------------------------------------
 
 class Window {
@@ -348,6 +442,22 @@ public:
     Timing timing() const;
 
     au_surface* surface() const { return sf_; }
+    au_wl* display() const { return wl_; }
+    au_wl_win* native() const { return win_; }
+    const Env& env_const() const { return env_; }
+    double scale() const { return scale_; }
+
+    // Show a menu at a point in this window's coordinates. Returns the index picked, or -1.
+    //
+    // MUST NOT be called from an event handler. Handlers run on present_wl's event thread while
+    // it holds the display mutex, and creating a surface takes that same mutex: the result is a
+    // deadlock, which is exactly what happened the first time. Use Defer.
+    int ShowMenu(float x, float y, std::vector<MenuItem> items, int max_ms = 0);
+
+    // Run `f` on the main loop, after the current dispatch returns. This is how an event handler
+    // asks for anything that touches the display -- a menu, a dialog, a new window. The rule is
+    // simple and absolute: handlers decide, the loop acts.
+    void Defer(std::function<void()> f);
     Node* focus() const { return focus_; }
     size_t focusable_count() const { return focusables_.size(); }
     size_t keys_seen() const { return keys_seen_; }
@@ -382,6 +492,8 @@ private:
     float last_x_ = 0, last_y_ = 0;
     int clicks_ = 0;
     mutable size_t motion_degraded_ = 0;
+    std::vector<std::function<void()>> deferred_;
+    std::mutex deferred_mu_;        // the event thread writes it, the loop drains it
 
     au_wl* wl_ = nullptr;
     au_wl_win* win_ = nullptr;
