@@ -791,6 +791,139 @@ int main() {
         return true;
     });
 
+    // ---- deleting, which means the trash ---------------------------------------------------------
+    //
+    // Delete moves to the XDG trash (~/.local/share/Trash), it does not unlink. A file manager
+    // that destroys on one keystroke is one people learn to be frightened of, and "are you
+    // sure?" is a worse answer than "it is in the trash": a confirmation interrupts every
+    // deletion to guard against the rare wrong one, while the trash costs nothing and undoes
+    // all of them.
+    //
+    // The .trashinfo file is what makes it RECOVERABLE rather than merely hidden -- it records
+    // where the file came from, and without it a restore has nowhere to go. It is written
+    // BEFORE the move, so a crash in between leaves an orphaned info file (harmless) rather
+    // than a trashed file nobody can put back.
+    auto trash_dir = [&]() -> std::string {
+        const char* data = getenv("XDG_DATA_HOME");
+        const char* home = getenv("HOME");
+        if (data && *data) return std::string(data) + "/Trash";
+        return std::string(home ? home : "/tmp") + "/.local/share/Trash";
+    };
+
+    auto iso_now = [] {
+        const time_t t = time(nullptr);
+        struct tm tm {};
+        localtime_r(&t, &tm);
+        char buf[32];
+        strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%S", &tm);
+        return std::string(buf);
+    };
+
+    auto to_trash = [&](const std::vector<std::string>& paths) {
+        const std::string base = trash_dir();
+        const std::string files = base + "/files", info = base + "/info";
+        (void)base;
+        int done = 0;
+        std::string err;
+        for (const std::string& from : paths) {
+            const size_t slash = from.find_last_of('/');
+            const std::string leaf = slash == std::string::npos ? from : from.substr(slash + 1);
+            if (leaf.empty() || leaf == "." || leaf == "..") continue;
+            // A real mkdir -p. The first version created only Trash/files/info and assumed
+            // their parents existed; with XDG_DATA_HOME pointing somewhere new, creating
+            // Trash failed with ENOENT and every delete silently did nothing.
+            for (const std::string& d : {files, info}) {
+                for (size_t i = 1; i <= d.size(); i++) {
+                    if (i < d.size() && d[i] != '/') continue;
+                    const std::string part = d.substr(0, i);
+                    if (!part.empty() && part != "/") mkdir(part.c_str(), 0700);
+                }
+            }
+            // A name already in the trash does not overwrite what is there. Two files called
+            // notes.txt deleted on two days must both be recoverable.
+            std::string name = leaf;
+            struct stat st;
+            for (int n = 1; lstat((files + "/" + name).c_str(), &st) == 0 && n < 10000; n++)
+                name = leaf + "." + std::to_string(n);
+            const std::string info_path = info + "/" + name + ".trashinfo";
+            FILE* f = fopen(info_path.c_str(), "we");
+            if (!f) {
+                err = std::string("cannot write to the trash: ") + strerror(errno);
+                continue;
+            }
+            fprintf(f, "[Trash Info]\nPath=%s\nDeletionDate=%s\n", from.c_str(), iso_now().c_str());
+            fclose(f);
+            if (rename(from.c_str(), (files + "/" + name).c_str()) != 0) {
+                unlink(info_path.c_str());       // no orphan for a move that did not happen
+                err = errno == EXDEV
+                          ? std::string("the trash is on another filesystem; that needs a copy, which is a verb")
+                          : std::string(strerror(errno));
+                continue;
+            }
+            done++;
+        }
+        if (done) {
+            rows.Open(path.get());
+            rows.SetShowHidden(show_hidden.get());
+            rows.SetFilter(filter.get());
+            status.set(std::to_string(rows.Count()) + " items");
+            selected = -1;
+        }
+        std::string msg;
+        if (done) msg = "moved " + std::to_string(done) + (done == 1 ? " item" : " items") + " to the trash";
+        if (!err.empty()) msg += (msg.empty() ? "" : "; ") + ("refused: " + err);
+        if (!msg.empty()) last_action.set(msg);
+        w.Invalidate();
+    };
+
+    // What the current selection is, as paths. One place, because Delete, copy and the context
+    // menu must all mean the same thing by "what is selected".
+    auto selected_paths = [&]() -> std::vector<std::string> {
+        std::vector<std::string> out;
+        const std::string base = path.get() == "/" ? "" : path.get();
+        std::vector<int> rowsel = ListSelection(list);
+        if (rowsel.empty() && !list_view.get()) rowsel = IconsSelection(icons);
+        if (rowsel.empty() && selected >= 0) rowsel.push_back(selected);
+        for (int r : rowsel) {
+            std::string n = rows.Cell(r, 0).text;
+            if (n.empty()) continue;
+            if (n.back() == '/') n.pop_back();
+            out.push_back(base + "/" + n);
+        }
+        return out;
+    };
+
+    // A new folder, named by typing rather than by a dialog: it is created as "New Folder" and
+    // the list opens its rename field on it, so the keystrokes go straight into the name. A
+    // modal asking for a name before the thing exists is a step people have to read.
+    auto new_folder = [&] {
+        const std::string base = path.get() == "/" ? "" : path.get();
+        std::string name = "New Folder";
+        struct stat st;
+        for (int n = 2; lstat((base + "/" + name).c_str(), &st) == 0 && n < 1000; n++)
+            name = "New Folder " + std::to_string(n);
+        if (mkdir((base + "/" + name).c_str(), 0755) != 0) {
+            last_action.set(std::string("could not create a folder: ") + strerror(errno));
+            return;
+        }
+        rows.Open(path.get());
+        rows.SetShowHidden(show_hidden.get());
+        rows.SetFilter(filter.get());
+        status.set(std::to_string(rows.Count()) + " items");
+        // Find it in the new listing and open its name for editing.
+        for (int i = 0; i < rows.Count(); i++) {
+            std::string n = rows.Cell(i, 0).text;
+            if (!n.empty() && n.back() == '/') n.pop_back();
+            if (n == name) {
+                selected = i;
+                w.Defer([&, i] { BeginListRename(list, i); });
+                break;
+            }
+        }
+        last_action.set("created " + name);
+        w.Invalidate();
+    };
+
     // ---- dragging files ------------------------------------------------------------------------
     //
     // A drag inside Atlas MOVES, by rename(2). It is deliberately not a copy and deliberately
@@ -976,6 +1109,14 @@ int main() {
                                  [&, full] { w.RequestCopy(full); last_action.set("copied path"); }});
         items.push_back(MenuItem{"Rename", "F2", Effect::Write, true, false, false,
                                  [&, row] { w.Defer([&, row] { BeginListRename(list, row); }); }});
+        items.push_back(MenuItem{"New folder", "Ctrl+Shift+N", Effect::Write, true, false, false,
+                                 [&] { w.Defer([&] { new_folder(); }); }});
+        // Destructive, so it goes after a separator -- decision 0009's ordering, and the reason
+        // the menu has one. It says "the trash" rather than "Delete" because that is what it
+        // does, and a menu that overstates what it will do is one people hesitate over.
+        items.push_back(MenuItem::sep());
+        items.push_back(MenuItem{"Move to trash", "Delete", Effect::Destructive, true, false, false,
+                                 [&, full] { w.Defer([&, full] { to_trash({full}); }); }});
 
         // And what the plumber offers. Appended, so a daemon being down shortens the menu
         // rather than emptying it.
@@ -1150,6 +1291,19 @@ int main() {
         if (ctrl && rc == 'h') {                                         // Ctrl+H: dotfiles
             show_hidden.set(!show_hidden.get());
             apply_hidden();
+            return true;
+        }
+        if (ctrl && (k.mods & AU_MOD_SHIFT) && rc == 'n') {               // Ctrl+Shift+N
+            new_folder();
+            return true;
+        }
+        // Delete, and Shift+Delete is NOT a shortcut for destroying things here. Everything
+        // goes to the trash; a modifier that silently made it permanent would be a trap.
+        if (k.evdev == 111) {                                             // KEY_DELETE
+            const std::vector<std::string> sel = selected_paths();
+            if (getenv("AURORA_UI_TRACE"))
+                fprintf(stderr, "atlas: Delete, %zu selected\n", sel.size());
+            if (!sel.empty()) to_trash(sel);
             return true;
         }
         return false;
