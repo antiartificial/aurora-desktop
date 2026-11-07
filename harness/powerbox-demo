@@ -1,0 +1,82 @@
+#!/bin/sh
+# The whole grant path, end to end, with every real binary and no fakes:
+#
+#   powerbox  ->  aurora-chooser (a Wayland client on a real compositor)
+#             ->  the user's keys, through the compositor's test-input socket
+#             ->  one JSON line back
+#             ->  a minted ticket bound to the path that was chosen
+#
+# This is the seam no unit test reaches. The Go tests drive a fake chooser and
+# kits/interface/tests/chooser_ui.sh drives the chooser with no Go caller; only
+# this runs both halves against each other.
+#
+#   harness/powerbox-demo
+#
+# Needs: cargo build (compositor, debug), cmake --build kits/build, and a Go
+# toolchain. Exits 0 only if a ticket came back bound to the chosen file.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+COMP=$ROOT/compositor/target/debug/aurora-compositor
+CHOOSER=$ROOT/kits/build/interface/aurora-chooser
+for f in "$COMP" "$CHOOSER"; do
+    [ -x "$f" ] || { echo "powerbox-demo: no $f; build it first" >&2; exit 77; }
+done
+
+# Short path: a unix socket path cannot exceed 108 bytes, and the compositor
+# says so rather than binding (see docs and --trusted-socket).
+R=$(mktemp -d /tmp/pbd.XXXXXX); export R
+D=$R/home; mkdir -p "$D/sub"
+printf hello > "$D/a.txt"
+printf b > "$D/b.txt"
+head -c 32 /dev/urandom > "$R/pb.key"; chmod 600 "$R/pb.key"
+PB=$R/powerbox
+( cd "$ROOT/shell" && go build -o "$PB" ./cmd/powerbox ) || { echo "powerbox-demo: go build failed" >&2; exit 1; }
+
+CP=""
+cleanup() { [ -n "$CP" ] && kill "$CP" 2>/dev/null; pkill -f "aurora-chooser .*$R" 2>/dev/null; rm -rf "$R"; }
+trap cleanup EXIT
+
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$R" "$COMP" --headless=1280x800 --test-input "$R/ti" \
+    >"$R/comp.log" 2>&1 &
+CP=$!
+for _ in $(seq 200); do [ -S "$R/ti" ] && grep -aq 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
+SOCK=$(grep -aoE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
+[ -n "$SOCK" ] || { echo "powerbox-demo: the compositor made no socket" >&2; exit 1; }
+echo "compositor on $SOCK; offering $(ls "$D" | tr '\n' ' ')"
+
+( env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$SOCK" HOME="$D" \
+      AURORA_POWERBOX_KEY="$R/pb.key" AURORA_CHOOSER="$CHOOSER" \
+      "$PB" --app org.aurora.notes --verb read@v1 --mode ro --start "$D" \
+      >"$R/out" 2>"$R/err"; echo $? >"$R/rc" ) &
+sleep 1.5
+
+# Each key is ONE argument to ti.py. Passing "key Down" as two words sends
+# nothing at all and the run simply times out, which is worth knowing.
+python3 -I "$ROOT/demos/kitchen-sink/ti.py" "$R/ti" --pause 0.12 \
+    "key Down" "key Down" "key Return" >/dev/null 2>&1
+for _ in $(seq 100); do [ -e "$R/rc" ] && break; sleep 0.1; done
+
+rc=$(cat "$R/rc" 2>/dev/null || echo TIMEOUT)
+echo "powerbox exit=$rc"
+[ "$rc" = 0 ] || { echo "FAIL: no grant"; sed -n 1,5p "$R/err"; exit 1; }
+WANT=$D/a.txt python3 -I -c '
+import base64, json, os, sys
+d = json.load(open(os.environ["R"] + "/out"))
+want = os.environ["WANT"]
+c = d["ticket"].split(".")[0]; c += "=" * (-len(c) % 4)
+claims = json.loads(base64.urlsafe_b64decode(c))
+print("  granted :", d["path"])
+print("  claims  :", {k: claims[k] for k in ("path", "mode", "app", "verb")})
+print("  content :", repr(open(d["path"]).read()))
+bad = [m for m, ok in [
+    ("stdout path is not the chosen file", d["path"] == want),
+    ("ticket binds a different path", claims["path"] == want),
+    ("mode is not ro", claims["mode"] == "ro" == d["mode"]),
+    ("app is wrong", claims["app"] == "org.aurora.notes"),
+    ("verb is wrong", claims["verb"] == "read@v1"),
+    ("granted the wrong file", open(d["path"]).read() == "hello"),
+] if not ok]
+if bad:
+    print("FAIL: " + "; ".join(bad)); sys.exit(1)
+print("OK: the key the user pressed chose the file the ticket binds")
+' || exit 1

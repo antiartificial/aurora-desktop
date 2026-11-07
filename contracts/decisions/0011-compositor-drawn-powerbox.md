@@ -46,6 +46,92 @@ What would be built (not built yet; see "What is built"):
 - Save mode for a `write` verb: the terminal flow runs the picker a second time for the output and mints an `rw` ticket for the directory. How that appears as one flow in the compositor, and what it shows about the directory grant being as wide as the directory, is open.
 - Whether the picker remembers the last folder per app. A memory is a convenience and also a record of what the user chose; it would want its own record.
 
+## Amendment, 2026-11-07: a graphical picker is built, and it is a client
+
+What this record proposed is a picker the COMPOSITOR draws. What was built
+instead splits the job, and the reasoning belongs here because it diverges:
+
+- **Browsing is an ordinary aurora-ui client.** `kits/interface/chooser.cpp`
+  builds `aurora-chooser`, a Wayland client with the places sidebar, the file
+  list, a breadcrumb and single selection, sharing Atlas's file-browsing model
+  (`kits/aurora-ui/filebrowse.h`, extracted for the purpose). It holds no key and
+  cannot mint. It prints one JSON line, `{"path": ...}`, and exits 0, 3 (cancel),
+  2 (no display) or 64 (bad arguments).
+- **`shell/cmd/powerbox` runs it** when `$WAYLAND_DISPLAY` is set and the binary
+  is found, and keeps the terminal picker for everything else (`--tty` forces
+  it). Its own stdout contract, `{path, mode, ticket}`, is unchanged, so
+  `shell/launcher` needed no edit and `aurora open --pick` works as before.
+- **The confirm on the trusted path exists and is OFF by default** (`--attest`,
+  default `off`; `shell/picker/confirm.go`). It needs no compositor change: the
+  existing `op:"approve"` request already carries `grants: [{path, mode, source}]`
+  and the existing reply is already signed.
+
+### Why the listing stayed out of the compositor
+
+This record's own "What gets weaker" says it: the compositor would take on
+directory listing, attacker-chosen filenames and threading, and a bug there
+becomes a bug in the process that draws every approval prompt. The split keeps
+that code where a compromise of it still cannot mint anything.
+
+### Why the confirm ships off
+
+Two independent adversarial reviews agreed, and each claim was checked in the
+source before being accepted:
+
+1. Against an unconfined same-uid process it buys nothing. That process reads
+   `powerbox.key` and mints directly, as 0007 already states. Against a
+   domain-confined app nothing changes either: it could never read the key nor
+   reach the socket.
+2. A pick carries no domain identity, so `verify.rs:84` returns `Unverified` and
+   the panel draws `CLAIMED "" (NOT VERIFIED)` with the warning band on **every
+   file open**. That band is the signal the real approval prompt depends on.
+   Teaching the user to dismiss it daily is a net LOSS against the baseline.
+   This is the finding that decided it.
+3. The reply's MAC covers the request id and the decision, not the grant that
+   was drawn, so a verified allow cannot be read as "the user saw this path".
+
+The one property the split does buy, stated narrowly: the chooser is the newest
+and most exposed code in the flow, and it holds no key, so a bug in it still has
+to get a human to press a key on a surface it cannot draw or capture. That is an
+integrity check on an honest chooser, not a boundary against a hostile one. It is
+not a trust claim and must not be written as one.
+
+### Defects this work found in code that predated it
+
+- **The terminal powerbox showed one path and granted another.** `confirm`
+  resolved only to test for an error, printed the path as typed, and `Mint`
+  resolved a second time afterwards. A symlink swapped in between bound a file
+  the user never saw, which the controller then re-resolved and agreed with.
+  Fixed by resolving once and showing what was resolved;
+  `TestTheShownPathIsThePathThatBinds` fails on the old code.
+- **A cut path kept its tail**, so two files sharing a long suffix drew as one
+  identical line. Paths now elide their middle (`draw::Elide`).
+- **Display text was reduced to printable ASCII**, so every non-ASCII name drew
+  as `?` and two paths in the user's own language were indistinguishable. The
+  reason given was the 8x16 bitmap font, which the text stack stopped being.
+  Controls and bidi characters are now named escapes and everything else is kept.
+- **A prompt could be answered by the user's own typing.** `a` allowed on one
+  press with no arming delay, so a prompt raised mid-sentence was allowed by the
+  next `a`. There is now a 400ms window (`trusted::ARM`) and a queue cap
+  (`MAX_QUEUED`), since nothing bounded the queue either.
+- **`--path` skipped the confirm**, so `--attest=required` answered deny and
+  still minted.
+
+### Still open, and unchanged by this
+
+The key question, which this record already calls the thing that decides whether
+any of it buys more than an interface. A ticket is still `HMAC(key, claims)`
+under a 0600 file any same-uid process can read. Both reviews converged on the
+same next step, which is also this record's own "Not decided": a new op distinct
+from `approve`, with its own panel wording and no domain row, where the
+compositor resolves the path itself, signs the claims rather than a decision, and
+holds a key the picker cannot read. `shell/picker/confirm.go` is a tested client
+of this protocol and is the seam for that work.
+
+Also still open: `clean` cannot help a name whose script has no installed font.
+This machine has no CJK face at all, so two Chinese paths still draw as identical
+boxes. Keeping Unicode is what makes installing one fix it.
+
 ## What is built
 
 The verb menu only: a dock click shows the app's verbs with each one's summary and effect class, and choosing one runs `aurora open --pick --app ID --verb NAME` so that only the file grant is left to the terminal powerbox. That removes the numbered "pick a verb" prompt and changes nothing about trust. The picker, the trusted-socket request and any signing in the compositor are not built. The reason for stopping there is that the picker is not just a listing: it needs a new request on the trusted socket, a launcher change to prefer it, a scrolling listing with its own bounds and threading, a save flow, and the key question above, which is a decision and not code. It is better reviewed as a record first.
