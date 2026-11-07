@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cmath>
 #include <set>
+#include <sys/stat.h>
 
 namespace aurora {
 namespace ui {
@@ -259,6 +260,164 @@ private:
 
 public:
     bool is_focused() const { return focused_; }
+};
+
+// ---- glyph buttons -----------------------------------------------------------------------------
+
+// The toolbar's glyphs, drawn from strokes inside the box they are given, so one routine serves
+// a 28 px toolbar button and whatever size a theme asks for next.
+void draw_glyph(au_surface* s, Rect r, Glyph g, au_color c, float pen) {
+    const float cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    const float a = r.w * 0.22f;
+    switch (g) {
+        case Glyph::Back:
+            au_stroke_line(s, cx + a * 0.5f, cy - a, cx - a * 0.5f, cy, c, pen);
+            au_stroke_line(s, cx - a * 0.5f, cy, cx + a * 0.5f, cy + a, c, pen);
+            break;
+        case Glyph::Forward:
+            au_stroke_line(s, cx - a * 0.5f, cy - a, cx + a * 0.5f, cy, c, pen);
+            au_stroke_line(s, cx + a * 0.5f, cy, cx - a * 0.5f, cy + a, c, pen);
+            break;
+        case Glyph::Up:
+            au_stroke_line(s, cx - a, cy + a * 0.5f, cx, cy - a * 0.5f, c, pen);
+            au_stroke_line(s, cx, cy - a * 0.5f, cx + a, cy + a * 0.5f, c, pen);
+            break;
+        case Glyph::Sidebar:
+            // A pane with its left third filled: the thing the button shows and hides.
+            au_stroke_rect(s, au_rect{cx - a, cy - a, cx + a, cy + a}, c, pen);
+            au_fill_rect(s, au_rect{cx - a, cy - a, cx - a * 0.25f, cy + a}, c);
+            break;
+        case Glyph::Preview:
+            au_stroke_rect(s, au_rect{cx - a, cy - a, cx + a, cy + a}, c, pen);
+            au_fill_rect(s, au_rect{cx + a * 0.25f, cy - a, cx + a, cy + a}, c);
+            break;
+        case Glyph::View:
+            for (int i = 0; i < 3; i++) {
+                const float y = cy - a + i * a;
+                au_stroke_line(s, cx - a, y, cx + a, y, c, pen);
+            }
+            break;
+        case Glyph::Filter:
+            au_stroke_line(s, cx - a, cy - a, cx + a, cy - a, c, pen);
+            au_stroke_line(s, cx - a, cy - a, cx - a * 0.1f, cy + a * 0.2f, c, pen);
+            au_stroke_line(s, cx + a, cy - a, cx + a * 0.1f, cy + a * 0.2f, c, pen);
+            au_stroke_line(s, cx - a * 0.1f, cy + a * 0.2f, cx + a * 0.1f, cy + a, c, pen);
+            break;
+        case Glyph::Search: {
+            const float rr = a * 0.7f;
+            au_stroke_round_rect(s, au_rect{cx - a, cy - a, cx - a + rr * 2, cy - a + rr * 2}, rr,
+                                 rr, c, pen);
+            au_stroke_line(s, cx - a + rr * 1.7f, cy - a + rr * 1.7f, cx + a, cy + a, c, pen);
+            break;
+        }
+        case Glyph::Plus:
+            au_stroke_line(s, cx - a, cy, cx + a, cy, c, pen);
+            au_stroke_line(s, cx, cy - a, cx, cy + a, c, pen);
+            break;
+        case Glyph::Minus:
+            au_stroke_line(s, cx - a, cy, cx + a, cy, c, pen);
+            break;
+        case Glyph::More:
+            for (int i = -1; i <= 1; i++)
+                au_fill_ellipse(s, au_rect{cx + i * a - pen, cy - pen, cx + i * a + pen, cy + pen},
+                                c);
+            break;
+        case Glyph::Refresh:
+            au_stroke_line(s, cx - a, cy + a * 0.4f, cx - a, cy - a * 0.4f, c, pen);
+            au_stroke_line(s, cx - a, cy - a * 0.4f, cx + a, cy - a * 0.4f, c, pen);
+            au_stroke_line(s, cx + a * 0.4f, cy - a, cx + a, cy - a * 0.4f, c, pen);
+            au_stroke_line(s, cx + a * 0.4f, cy + a * 0.2f, cx + a, cy - a * 0.4f, c, pen);
+            break;
+        case Glyph::Close:
+            au_stroke_line(s, cx - a, cy - a, cx + a, cy + a, c, pen);
+            au_stroke_line(s, cx + a, cy - a, cx - a, cy + a, c, pen);
+            break;
+    }
+}
+
+// A chevron, for the menu button. Drawn rather than typed, for the same reason the sort
+// indicator is: an arrow glyph is a font's opinion and half of them have none.
+void draw_chevron(au_surface* s, float cx, float cy, float r, au_color c) {
+    au_stroke_line(s, cx - r, cy - r * 0.4f, cx, cy + r * 0.4f, c, 1.5f);
+    au_stroke_line(s, cx, cy + r * 0.4f, cx + r, cy - r * 0.4f, c, 1.5f);
+}
+
+class GlyphButtonNode : public Node {
+public:
+    GlyphButtonNode(Glyph g, std::function<void()> f, State<bool>* enabled)
+        : g_(g), f_(std::move(f)), enabled_(enabled) {
+        if (enabled_) enabled_->attach(this);
+    }
+    // The menu form: the items are asked for at PRESS time, so a tick in the menu shows the
+    // state now and not the state the tree was built in.
+    GlyphButtonNode(Glyph g, std::function<std::vector<MenuItem>()> items)
+        : g_(g), items_(std::move(items)), chevron_(true) {}
+
+    Size Measure(const Env& e, Constraints) override {
+        side_ = std::round(e.unit * 3.5f);                 // 28 at the unit of 8
+        return Size{side_ + (chevron_ ? e.unit * 1.25f : 0), side_};
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        const bool on = enabled();
+        // A disabled button keeps its resting fill and dims its GLYPH. It stays visible for the
+        // reason a disabled menu item does: hiding what is unavailable teaches the wrong model.
+        const au_color bg = !on ? e.surface
+                                : (down_ ? au_color{(uint8_t)(e.surface_hi.r * 9 / 10),
+                                                    (uint8_t)(e.surface_hi.g * 9 / 10),
+                                                    (uint8_t)(e.surface_hi.b * 9 / 10), 255}
+                                         : (over_ ? e.surface_hi : e.surface));
+        au_fill_round_rect(s, frame.box(), 6, 6, bg);
+        if (focused_) au_stroke_round_rect(s, frame.box(), 6, 6, e.focus_ring, 1);
+        const au_color ink = on ? e.fg : e.dim3;
+        // The glyph does not MOVE when pressed. A glyph that shifts a pixel under the pointer
+        // reads as the button wobbling, and at 28 px it is a third of the mark.
+        draw_glyph(s, Rect{frame.x, frame.y, side_, side_}, g_, ink, 1.5f);
+        if (chevron_)
+            draw_chevron(s, frame.x + side_ + e.unit * 0.5f, frame.y + side_ * 0.5f, 3.5f, ink);
+    }
+
+    void OnEnter() override { over_ = true; }
+    void OnLeave() override { over_ = false; down_ = false; }
+    void OnPress() override { down_ = true; }
+    void OnRelease(bool inside) override {
+        down_ = false;
+        if (!inside || !enabled()) return;
+        fire();
+    }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+    void Attached(Window* w) override { win_ = w; }
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed || !enabled()) return false;
+        if (k.utf8[0] == ' ' || k.utf8[0] == '\r' || k.utf8[0] == '\n') {
+            fire();
+            return true;
+        }
+        return false;
+    }
+
+private:
+    void fire() {
+        if (f_) { f_(); return; }
+        if (!items_ || !win_) return;
+        // Deferred, and it has to be: a handler runs on present_wl's event thread holding the
+        // display mutex, and creating the menu surface takes that same mutex. Handlers decide,
+        // the loop acts.
+        Window* w = win_;
+        const Rect r = frame;
+        std::function<std::vector<MenuItem>()> items = items_;
+        w->Defer([w, r, items] { w->ShowMenu(r.x, r.y + r.h + 2, items()); });
+    }
+    bool enabled() const { return !enabled_ || enabled_->get(); }
+
+    Glyph g_;
+    std::function<void()> f_;
+    std::function<std::vector<MenuItem>()> items_;
+    State<bool>* enabled_ = nullptr;
+    Window* win_ = nullptr;
+    float side_ = 28;
+    bool chevron_ = false, over_ = false, down_ = false, focused_ = false;
 };
 
 class SpacerNode : public Node {
@@ -580,9 +739,90 @@ Desc make_field(State<std::string>* t, std::function<void(const std::string&)> c
 // inside the anonymous namespace, which is one entity per translation unit, so these name the
 // definitions below rather than a second pair the linker cannot find.
 namespace {
-enum class FileKind : uint8_t;
-FileKind classify(const std::string& name, bool dir);
-void draw_icon(au_surface* s, Rect r, FileKind k, double scale, bool on_accent);
+// Defined with the icon family further down. `pane` is the colour the icon will sit on, which
+// the badge plate needs: a link badge is a plate of the pane colour with an arrow on it, and a
+// plate drawn in the wrong colour is a grey square over the icon.
+void draw_icon(au_surface* s, Rect r, const IconSpec& sp, double scale, bool on_accent,
+               au_color pane);
+}  // namespace
+
+// ---- eliding ----------------------------------------------------------------------------------
+//
+// By BINARY SEARCH over the kept length, not by shrinking one character at a time. The first
+// version did the latter and cost up to twenty au_text_width calls per cell; at a hundred tiles
+// that is two thousand shaping calls a frame, and it measured p50 8.665 ms with four of five
+// frames over the 8 ms budget. Binary search is at most seven, and the result is identical.
+//
+// Middle for a name, end for anything else. The middle is not a preference: truncating the tail
+// of a file name hides the extension, which is the part that says what the thing is.
+namespace {
+
+// A UTF-8 code point boundary at or before `i`, so an elision never cuts a character in half.
+size_t utf8_back(const std::string& s, size_t i) {
+    while (i > 0 && i < s.size() && ((unsigned char)s[i] & 0xC0) == 0x80) i--;
+    return i;
+}
+
+std::string elide_middle(au_font f, float size, const std::string& t, float maxw) {
+    if (maxw <= 0) return std::string();
+    if (au_text_width(f, size, t.c_str(), -1) <= maxw) return t;
+    const char* ell = "\xe2\x80\xa6";
+    if (t.size() <= 4) return ell;
+    size_t lo = 0, hi = t.size();
+    std::string best = ell;
+    while (lo <= hi) {
+        const size_t keep = (lo + hi) / 2;
+        const size_t half = utf8_back(t, keep / 2);
+        const size_t tail = utf8_back(t, t.size() - (keep - keep / 2));
+        const std::string cand = t.substr(0, half) + ell + t.substr(tail);
+        if (au_text_width(f, size, cand.c_str(), -1) <= maxw) {
+            best = cand;
+            lo = keep + 1;
+        } else {
+            if (keep == 0) break;
+            hi = keep - 1;
+        }
+    }
+    return best;
+}
+
+std::string elide_end(au_font f, float size, const std::string& t, float maxw) {
+    if (maxw <= 0) return std::string();
+    if (au_text_width(f, size, t.c_str(), -1) <= maxw) return t;
+    const char* ell = "\xe2\x80\xa6";
+    size_t lo = 0, hi = t.size();
+    std::string best = ell;
+    while (lo <= hi) {
+        const size_t keep = utf8_back(t, (lo + hi) / 2);
+        const std::string cand = t.substr(0, keep) + ell;
+        if (au_text_width(f, size, cand.c_str(), -1) <= maxw) {
+            best = cand;
+            lo = (lo + hi) / 2 + 1;
+        } else {
+            if ((lo + hi) / 2 == 0) break;
+            hi = (lo + hi) / 2 - 1;
+        }
+    }
+    return best;
+}
+
+// ---- the focus halo -----------------------------------------------------------------------------
+//
+// Which element the keyboard is on, drawn as a 2 px ring in `focus` with a 1 px gap of the
+// surface colour under it, at a radius two larger than the element's own
+// (docs/atlas-design.md 6.3). The gap is the part that is easy to leave out and the part that
+// makes it work: without it, a ring around an `accent` fill and the fill are one shape.
+//
+// It is drawn AROUND the element, which for a 24 px row means overlapping the 3 px of the rows
+// either side. That is deliberate -- it keeps the row at 24 and the fill at 22, which a 17.7 px
+// line of text needs -- and it is why the damage hint for a cursor row is the row plus 3 px.
+void draw_halo(au_surface* s, au_rect fill, float fill_radius, au_color ring, au_color gap) {
+    au_stroke_round_rect(s, au_rect{fill.l - 1, fill.t - 1, fill.r + 1, fill.b + 1},
+                         fill_radius + 1, fill_radius + 1, gap, 1);
+    au_stroke_round_rect(s, au_rect{fill.l - 3, fill.t - 3, fill.r + 3, fill.b + 3},
+                         fill_radius + 2, fill_radius + 2, ring, 2);
+}
+
 }  // namespace
 
 class ListNode : public Node {
@@ -590,8 +830,11 @@ public:
     ListNode(Rows* r, int* sel) : r_(r), sel_(sel), edit_text_("") {}
 
     Size Measure(const Env& e, Constraints c) override {
-        row_h_ = text_h(e) + e.unit * 0.75f;
-        head_h_ = row_h_ + 2;
+        // Whole pixels. The design's row is round(text_h + 6) = 24 at the base size of 13 with
+        // the Noto metrics the kits load; a fractional row height puts every row's text on a
+        // different sub-pixel baseline and the list looks unevenly spaced for no nameable reason.
+        row_h_ = std::round(text_h(e) + e.unit * 0.75f);
+        head_h_ = std::round(row_h_ + 2);
         return Size{c.max_w >= 0 ? c.max_w : 400, c.max_h >= 0 ? c.max_h : 300};
     }
 
@@ -608,52 +851,56 @@ public:
             multi_.clear();
             anchor_ = -1;
         }
-        au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
-
-        // Column widths come from the Rows source and have nothing to do with how much room the
-        // list was given, so every column has to be clipped to the list's own right edge and a
-        // column starting past it skipped. Without this the header and the cells carried on
-        // across the neighbour: opening the preview pane left "Size" and "Mod" painted inside it.
-        const float edge = frame.x + frame.w - 1;
+        au_fill_rect(s, frame.box(), e.content);
+        solve(frame.w);
 
         // header
         const int sort_col = r_->SortColumn();
+        au_fill_rect(s, au_rect{frame.x, frame.y, frame.x + frame.w - 1, frame.y + head_h_ - 1},
+                     e.surface);
         float x = frame.x;
-        for (int col = 0; col < r_->Columns() && x <= edge; col++) {
-            const float cw = r_->ColumnWidth(col);
+        for (int col = 0; col < (int)colw_.size(); col++) {
+            const float cw = colw_[col];
+            if (cw <= 0) continue;               // dropped at this width: not drawn, not hit
+            const ColumnSpec sp = r_->Column(col);
             const bool sorted = col == sort_col;
-            au_clip_set(s, au_rect{x, frame.y, std::min(x + cw - 6, edge), frame.y + head_h_});
-            const float tx = x + e.unit * 0.75f;
-            au_text_draw(s, e.bold, e.size - 1, r_->ColumnTitle(col).c_str(), -1, tx,
-                         frame.y + head_h_ * 0.72f, sorted ? e.fg : e.dim);
+            const float l = x + (col == 0 ? e.unit * 1.5f : e.unit);
+            const float rgt = x + cw - e.unit;
+            au_clip_set(s, au_rect{l, frame.y, rgt, frame.y + head_h_ - 1});
+            // Caption size, never bold: the sorted column changes INK, not weight, so the
+            // header's width does not move when the sort does.
+            const float cap = e.size * 0.85f;
+            const float tw = au_text_width(e.font, cap, sp.title.c_str(), -1);
+            const float chev = sorted ? e.unit * 1.75f : 0;
+            const float tx = sp.align == Align::Right ? std::max(l, rgt - tw - chev) : l;
+            au_text_draw(s, e.font, cap, sp.title.c_str(), -1, tx, frame.y + head_h_ * 0.72f,
+                         sorted ? e.fg : e.dim);
             if (sorted) {
                 // A chevron after the title, pointing the way the rows run. Drawn rather than
                 // typed: an arrow glyph is a font's opinion and half of them have none.
-                const float ax = tx + au_text_width(e.bold, e.size - 1,
-                                                    r_->ColumnTitle(col).c_str(), -1) +
-                                 e.unit * 0.5f;
+                const float ax = tx + tw + e.unit * 0.5f;
                 const float ay = frame.y + head_h_ * 0.5f;
-                const float r = 3;
+                const float rr = 3;
                 const float dir = r_->SortAscending() ? -1.0f : 1.0f;
-                au_stroke_line(s, ax, ay - r * dir * 0.5f, ax + r, ay + r * dir * 0.5f, e.fg, 1.5f);
-                au_stroke_line(s, ax + r, ay + r * dir * 0.5f, ax + r * 2, ay - r * dir * 0.5f,
-                               e.fg, 1.5f);
+                au_stroke_line(s, ax, ay - rr * dir * 0.5f, ax + rr, ay + rr * dir * 0.5f, e.fg,
+                               1.5f);
+                au_stroke_line(s, ax + rr, ay + rr * dir * 0.5f, ax + rr * 2,
+                               ay - rr * dir * 0.5f, e.fg, 1.5f);
             }
             au_clip_reset(s);
             x += cw;
         }
         au_stroke_line(s, frame.x, frame.y + head_h_, frame.x + frame.w - 1,
-                       frame.y + head_h_, au_color{60, 64, 82, 255}, 1);
-        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+                       frame.y + head_h_, e.divider, 1);
         if (!ahead_.empty()) {
             // What you typed, shown where you are looking. Type-ahead that gives no feedback
             // feels like the program ignoring you.
             const float w = au_text_width(e.bold, e.size, ahead_.c_str(), -1) + e.unit * 2;
             const au_rect box{frame.x + frame.w - w - 8, frame.y + head_h_ + 6,
                               frame.x + frame.w - 8, frame.y + head_h_ + 6 + row_h_ + 4};
-            au_fill_round_rect(s, box, 6, 6, e.accent);
+            au_fill_round_rect(s, box, 8, 8, e.accent);
             au_text_draw(s, e.bold, e.size, ahead_.c_str(), -1, box.l + e.unit,
-                         box.t + row_h_ * 0.78f + 2, au_color{24, 26, 34, 255});
+                         box.t + row_h_ * 0.78f + 2, e.accent_ink);
         }
 
         const int n = r_->Count();
@@ -668,53 +915,85 @@ public:
                 // The field replaces the row's first cell. Placed every frame because the row
                 // moves when the list scrolls, and measured once here rather than in Measure:
                 // the list's own size does not depend on it.
-                const Rect fr{frame.x + 2, ry - 1, r_->ColumnWidth(0) - 4, row_h_ + 2};
+                const Rect fr{frame.x + 2, ry - 1, (colw_.empty() ? frame.w : colw_[0]) - 4,
+                              row_h_ + 2};
                 edit_field_->Measure(e, Constraints{fr.w, fr.h});
                 edit_field_->Place(fr);
                 edit_field_->Draw(s, e);
                 continue;
             }
             const bool picked = is_selected(i);
-            if (picked)
-                au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
-                             e.accent);
-            else if (sel_ && *sel_ == i && focused_)
-                // The cursor without the selection: it happens after a Ctrl-click that
-                // DESELECTED a row, and losing sight of where the keyboard is would make the
-                // next Shift-click a guess.
-                au_stroke_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
-                               e.surface_hi, 1);
-            float cx = frame.x;
-            for (int col = 0; col < r_->Columns() && cx <= edge; col++) {
-                const CellValue v = r_->Cell(i, col);
-                const char* txt = v.state == CellState::Unknown ? "unknown" : v.text.c_str();
-                if (v.state == CellState::Pending) txt = "";
-                const au_color c = picked ? au_color{24, 26, 34, 255}
-                                          : (v.state == CellState::Ready ? e.fg : e.dim);
-                au_clip_set(s, au_rect{cx, ry, std::min(cx + r_->ColumnWidth(col) - 6, edge),
-                                       ry + row_h_ - 1});
-                float tx = cx + e.unit * 0.75f;
-                // The first column carries the name, so it is the one that gets an icon. A
-                // directory is told by the trailing '/', the same signal the icon grid reads, so
-                // no Rows implementation has to grow a field to opt in.
-                std::string shown;
-                if (icons_ && col == 0 && v.state == CellState::Ready) {
-                    shown = v.text;
-                    const bool dir = !shown.empty() && shown.back() == '/';
-                    if (dir) shown.pop_back();   // the icon says it; the slash would say it twice
-                    static const bool no_icons = getenv("AURORA_UI_NO_ICONS") != nullptr;
-                    const float side = row_h_ - 6;
-                    if (!no_icons) {
-                        draw_icon(s, Rect{tx, ry + 3, side, side}, classify(shown, dir),
-                                  au_surface_scale(s), picked);
-                        tx += side + e.unit * 0.5f;
-                    }
-                    txt = shown.c_str();
-                }
-                au_text_draw(s, e.font, e.size, txt, -1, tx, ry + row_h_ * 0.72f, c);
-                au_clip_reset(s);
-                cx += r_->ColumnWidth(col);
+            const bool cursor = sel_ && *sel_ == i;
+            const au_rect band{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1};
+            // Zebra first: it is the row's own colour, and everything else sits on it. Odd
+            // rows, by absolute index, so the stripes do not swap when the list scrolls.
+            if (i & 1) au_fill_rect(s, band, e.content_alt);
+            // The fill inset of docs/atlas-design.md 3.3: 4 horizontally, 1 vertically, radius 5.
+            const au_rect in{band.l + 4, band.t + 1, band.r - 4, band.b - 1};
+            if (picked) {
+                // Focused and unfocused selection are DIFFERENT FILLS, not the same fill at two
+                // alphas: the states (selected-focused, selected-unfocused, cursor-only) have to
+                // be different pictures. Two of them drawn alike is the bug this codebase has
+                // shipped four times.
+                au_fill_round_rect(s, in, 5, 5, focused_ ? e.accent : e.sel_unfocused);
+            } else if (i == hover_row_ && !(cursor && focused_ && halo())) {
+                // Hover is instant on enter and on leave, and it loses to the selection: a
+                // hover fill over a selected row would say the pointer had changed what is
+                // chosen. Damage is this row plus the one the pointer left (DamageHint).
+                au_fill_round_rect(s, in, 5, 5, e.hover);
             }
+            float cx = frame.x;
+            for (int col = 0; col < (int)colw_.size(); col++) {
+                const float cw = colw_[col];
+                if (cw <= 0) continue;
+                const ColumnSpec sp = r_->Column(col);
+                const CellValue v = r_->Cell(i, col);
+                std::string txt = v.state == CellState::Unknown ? "unknown" : v.text;
+                if (v.state == CellState::Pending) txt.clear();
+                const au_color c = picked && focused_
+                                       ? e.accent_ink
+                                       : (v.state == CellState::Ready ? e.fg : e.dim);
+                const float lpad = col == 0 ? e.unit * 1.5f : e.unit;
+                float tx = cx + lpad;
+                const float rgt = cx + cw - e.unit;
+                au_clip_set(s, au_rect{cx + (col == 0 ? 0 : lpad), ry, rgt, ry + row_h_ - 1});
+                if (icons_ && col == 0 && v.state == CellState::Ready) {
+                    const bool dir = !txt.empty() && txt.back() == '/';
+                    if (dir) txt.pop_back();   // the icon says it; the slash would say it twice
+                    static const bool no_icons = getenv("AURORA_UI_NO_ICONS") != nullptr;
+                    if (!no_icons) {
+                        // 16 at the design's 24 px row, and the row height's share of it below
+                        // that, so a smaller base size does not crop the glyph.
+                        const float side = std::min(16.0f, row_h_ - 6);
+                        draw_icon(s, Rect{tx, ry + (row_h_ - side) / 2, side, side},
+                                  r_->Icon(i), au_surface_scale(s), picked && focused_,
+                                  (i & 1) ? e.content_alt : e.content);
+                        tx += side + e.unit;
+                    }
+                }
+                // A value is elided, never cut: the fixed columns are wide enough for what they
+                // hold (that is what the drop rule is for), and the Name column is the one that
+                // has to give, so it gives in the middle and keeps its extension.
+                const float room = rgt - tx;
+                const std::string shown =
+                    col == 0 ? elide_middle(e.font, e.size, txt, room)
+                             : elide_end(e.font, e.size, txt, room);
+                if (sp.align == Align::Right) {
+                    const float w = au_text_width(e.font, e.size, shown.c_str(), -1);
+                    tx = std::max(tx, rgt - w);
+                }
+                au_text_draw(s, e.font, e.size, shown.c_str(), -1, tx, ry + row_h_ * 0.72f, c);
+                au_clip_reset(s);
+                cx += cw;
+            }
+        }
+        // The halo last, over every row, because it overlaps the rows either side (6.3).
+        // Cursor-only ALWAYS shows it: it is the only thing marking a row that has no fill.
+        const int cur = sel_ ? *sel_ : -1;
+        if (focused_ && cur >= first && cur <= last && (halo() || !is_selected(cur))) {
+            const float ry = frame.y + head_h_ + 1 + (cur - first) * row_h_;
+            draw_halo(s, au_rect{frame.x + 4, ry + 1, frame.x + frame.w - 5, ry + row_h_ - 2}, 5,
+                      e.focus_ring, (cur & 1) ? e.content_alt : e.content);
         }
         rows_drawn_ = last >= first ? (last - first + 1) : 0;
 
@@ -724,8 +1003,8 @@ public:
         if (drop_active_) {
             if (drop_row_ >= first && drop_row_ <= last) {
                 const float ry = frame.y + head_h_ + 1 + (drop_row_ - first) * row_h_;
-                au_stroke_rect(s, au_rect{frame.x + 1, ry, frame.x + frame.w - 2, ry + row_h_ - 1},
-                               e.accent, 2);
+                au_stroke_round_rect(s, au_rect{frame.x + 4, ry + 1, frame.x + frame.w - 5,
+                                                ry + row_h_ - 2}, 5, 5, e.accent, 2);
             } else if (drop_row_ < 0) {
                 au_stroke_rect(s, frame.box(), e.accent, 2);
             }
@@ -736,41 +1015,83 @@ public:
         sb_.draw(s, e);
     }
 
+    // ---- columns ----
+    //
+    // The rule, in one place, so the header, the cells and the hit test cannot disagree about
+    // where a column is: see SolveColumns.
+    void solve(float avail) {
+        if (avail == solved_for_ && (int)colw_.size() == r_->Columns()) return;
+        colw_ = SolveColumns(r_, avail);
+        solved_for_ = avail;
+    }
+    const std::vector<float>& widths() const { return colw_; }
+
+    // ---- hover ----
+    //
+    // The pointer moved inside the list. Two rows change and the window is told exactly those
+    // two: this is the whole reason the damage machinery exists, and the measurement that
+    // proves it is the mean damage fraction of a run that hovers down a listing.
+    bool OnHoverAt(float x, float y) override {
+        (void)x;
+        const int was = hover_row_;
+        hover_row_ = row_at(y);
+        if (hover_row_ == was) return false;
+        rows_dirty_.push_back(was);
+        rows_dirty_.push_back(hover_row_);
+        hinted_ = true;
+        dirty_ = true;
+        return true;
+    }
+    // The pointer left. `hinted_` is set even when no row was hovered -- over the header, say --
+    // because DamageHint's "false" means "repaint my whole frame", and a list that answered
+    // false here repainted the pane every time the pointer crossed its edge. That cost four
+    // full-list frames in a sixty-move hover and showed up as the measured damage fraction
+    // rising by half.
+    void OnLeave() override {
+        hinted_ = true;
+        if (hover_row_ < 0) return;
+        rows_dirty_.push_back(hover_row_);
+        hover_row_ = -1;
+        dirty_ = true;
+    }
+
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     void OnPress() override {}
+
+    // The selection happens on the PRESS (see OnPressAt). What is left for the release is the
+    // second click of a double-click, which is activation: a folder opens when the second click
+    // is let go, not half way through it.
     void OnRelease(bool inside) override {
-        if (header_press_) { header_press_ = false; return; }   // a sort, not a row click
-        if (sb_.dragging) { sb_.dragging = false; return; }
-        if (on_bar_) { on_bar_ = false; return; }   // a press on the bar is never a row click
-        if (!inside || !sel_) return;
+        const bool was_header = header_press_, was_bar = on_bar_ || sb_.dragging;
+        header_press_ = false;
+        on_bar_ = false;
+        sb_.dragging = false;
+        if (was_header || was_bar || !inside || !sel_) return;
         const int i = row_at(click_y_);
-        if (i < 0) {
-            // Empty space below the rows clears the selection, the way every file manager does.
-            // Not with a modifier held: that is someone part-way through building a selection.
-            if (!(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) set_only(-1);
-            return;
-        }
-        const uint32_t m = mods_now();
-        if (m & AU_MOD_CTRL) toggle_one(i);
-        else if (m & AU_MOD_SHIFT) extend_to(i);
-        else select(i);
-        if (clicks_ >= 2 && on_act_ && !(m & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
+        if (i < 0) return;
+        if (clicks_ >= 2 && on_act_ && !(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
     }
 
     // A single-select list reads no modifiers, so Ctrl-click and Shift-click are plain clicks.
     uint32_t mods_now() const { return win_ && !single_ ? win_->mods() : 0u; }
+
+    // Whether the focus halo shows: it follows keyboard use, so the window answers. Without a
+    // window (a headless layout test) the keyboard is the only input there is.
+    bool halo() const { return !win_ || win_->keyboard_driven(); }
     void SetIcons(bool on) { icons_ = on; dirty_ = true; whole_ = true; }
 
     void SetSingleSelect() { single_ = true; }
     void OnPressAt(float x, float y, int clicks) override {
         click_y_ = y;
         clicks_ = clicks;
+        solve(frame.w);
         // A click in the header sorts by that column, and clicking the sorted one reverses it.
         // Nothing else in the header is clickable, so this is checked before anything else.
         if (y < frame.y + head_h_ && r_->SortColumn() >= -1) {
             float cx = frame.x;
-            for (int col = 0; col < r_->Columns(); col++) {
-                const float cw = r_->ColumnWidth(col);
+            for (int col = 0; col < (int)colw_.size(); col++) {
+                const float cw = colw_[col];
+                if (cw <= 0) continue;        // a dropped column is not on screen to be clicked
                 if (x >= cx && x < cx + cw) {
                     const bool same = col == r_->SortColumn();
                     r_->Sort(col, same ? !r_->SortAscending() : true);
@@ -785,9 +1106,27 @@ public:
         }
         header_press_ = false;
         on_bar_ = sb_.hit(x, y);
-        if (!on_bar_) return;
-        const int to = sb_.press(y, r_->Count(), visible(), top_);
-        if (to != top_) { top_ = to; whole_ = true; dirty_ = true; }
+        if (on_bar_) {
+            const int to = sb_.press(y, r_->Count(), visible(), top_);
+            if (to != top_) { top_ = to; whole_ = true; dirty_ = true; }
+            return;
+        }
+        // Selection on the PRESS, not the release. That is what lets a drag start on a row that
+        // was not selected: by the time the pointer has moved 6 px the row is already the
+        // selection, so the drag carries what the person pointed at. On release it was always
+        // one frame late, and a drag from an unselected row carried the previous selection.
+        if (!sel_) return;
+        const int i = row_at(y);
+        if (i < 0) {
+            // Empty space below the rows clears the selection, the way every file manager does.
+            // Not with a modifier held: that is someone part-way through building a selection.
+            if (!(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) set_only(-1);
+            return;
+        }
+        const uint32_t m = mods_now();
+        if (m & AU_MOD_CTRL) toggle_one(i);
+        else if (m & AU_MOD_SHIFT) extend_to(i);
+        else select(i);
     }
     void OnDragTo(float, float y) override {
         if (!sb_.dragging) return;
@@ -930,6 +1269,18 @@ public:
     void select(int row) {
         set_only(row);
         anchor_ = row;
+    }
+
+    // The cursor with nothing selected. The same state a Ctrl-click that DESELECTED a row
+    // leaves behind, reachable by an app that has just navigated or just deleted something.
+    void SetCursorOnly(int row) {
+        mark_all_dirty();
+        multi_.clear();
+        if (sel_) *sel_ = row;
+        anchor_ = row;
+        dirty_ = true;
+        if (on_sel_) on_sel_(row);
+        if (on_multi_) on_multi_(selection());
     }
 
     void set_only(int row) {
@@ -1080,19 +1431,33 @@ public:
     // repaints two rows; a scroll or a focus change repaints the list, and says so by returning
     // false. Reported in layout units, clipped to the list's own frame.
     bool DamageHint(std::vector<Rect>* out) override {
-        if (whole_) { whole_ = false; rows_dirty_.clear(); return false; }
-        if (rows_dirty_.empty()) return false;
+        if (whole_) { whole_ = false; rows_dirty_.clear(); hinted_ = false; return false; }
+        const bool said = hinted_;
+        hinted_ = false;
+        if (rows_dirty_.empty()) return said;   // nothing changed is not "repaint everything"
+        // The rows that changed appearance: a selection moving one row, or a hover crossing from
+        // one row to the next, is two rectangles of 24 units -- not the pane. Measured at 0.906
+        // of the window before this existed, against 0.03 for a hover.
         for (int row : rows_dirty_) {
             if (row < top_ || row >= top_ + visible()) continue;
             const float ry = frame.y + head_h_ + 1 + (row - top_) * row_h_;
-            out->push_back(Rect{frame.x, ry, frame.w, row_h_});
+            // The cursor row, and only the cursor row, is 3 px taller each way: its halo is
+            // drawn OUTSIDE the row, and a hint that named only the row would leave the old
+            // halo's top and bottom edges behind as two hairlines that never go away. A hovered
+            // row has no halo, so paying for the overhang on every hovered row would be a
+            // measurable waste -- it took the damage fraction of a hover from 0.078 to 0.097.
+            const bool has_halo = sel_ && *sel_ == row;
+            const float pad = has_halo ? 3.0f : 0.0f;
+            out->push_back(Rect{frame.x, std::max(frame.y, ry - pad), frame.w, row_h_ + pad * 2});
         }
         rows_dirty_.clear();
         // The type-ahead badge sits top-right of the list and changes with the buffer.
         if (!ahead_.empty())
             out->push_back(Rect{frame.x + frame.w * 0.5f, frame.y + head_h_,
                                 frame.w * 0.5f, row_h_ + 12});
-        return !out->empty();
+        // True even when every dirty row is off screen: the list KNOWS what changed, and
+        // "nothing visible changed" is a smaller answer than "repaint the pane".
+        return true;
     }
 
     // A right-click targets the row under the pointer WITHOUT changing the selection, unless
@@ -1118,6 +1483,8 @@ public:
 
     bool take_dirty() { const bool d = dirty_; dirty_ = false; return d; }
     const std::string& ahead() const { return ahead_; }
+    float row_height() const { return row_h_; }
+    float header_height() const { return head_h_; }
     int rows_drawn() const { return rows_drawn_; }
 
 private:
@@ -1136,6 +1503,10 @@ private:
     int drop_row_ = -1;
     bool drop_active_ = false, header_press_ = false;
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
+    std::vector<float> colw_;
+    float solved_for_ = -1;
+    int hover_row_ = -1;
+    bool hinted_ = false;
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;
     std::function<void(int, float, float)> on_ctx_;
@@ -1150,83 +1521,781 @@ private:
     std::chrono::steady_clock::time_point last_type_{};
 };
 
-// ---- procedural icons -------------------------------------------------------------------------
-
-namespace {
-
-enum class FileKind : uint8_t { Dir, Code, Image, Archive, Doc, Exec, Plain };
-
-// Classified from the EXTENSION, which is all we have: MIME here would mean sniffing content,
-// and content sniffing is a read of a file the list has not been asked to open. Decision 0019's
-// rule applies -- the cheap honest signal, and the UI must not imply more than it knows.
-FileKind classify(const std::string& name, bool dir) {
-    if (dir) return FileKind::Dir;
-    const size_t d = name.find_last_of('.');
-    if (d == std::string::npos || d + 1 >= name.size()) return FileKind::Plain;
-    std::string e = name.substr(d + 1);
-    for (char& c : e) c = (char)tolower((unsigned char)c);
-    if (e == "c" || e == "h" || e == "cpp" || e == "hpp" || e == "rs" || e == "go" || e == "py" ||
-        e == "js" || e == "ts" || e == "sh" || e == "toml" || e == "json" || e == "yaml")
-        return FileKind::Code;
-    if (e == "png" || e == "jpg" || e == "jpeg" || e == "gif" || e == "svg" || e == "webp" ||
-        e == "bmp" || e == "ppm")
-        return FileKind::Image;
-    if (e == "zip" || e == "gz" || e == "xz" || e == "bz2" || e == "tar" || e == "zst" ||
-        e == "7z" || e == "rpm" || e == "deb")
-        return FileKind::Archive;
-    if (e == "md" || e == "txt" || e == "pdf" || e == "doc" || e == "odt" || e == "html")
-        return FileKind::Doc;
-    if (e == "so" || e == "a" || e == "o" || e == "ko") return FileKind::Exec;
-    return FileKind::Plain;
-}
-
-au_color kind_color(FileKind k) {
-    switch (k) {
-        case FileKind::Dir: return au_color{122, 162, 247, 255};      // blue
-        case FileKind::Code: return au_color{158, 206, 106, 255};     // green
-        case FileKind::Image: return au_color{187, 154, 247, 255};    // violet
-        case FileKind::Archive: return au_color{224, 175, 104, 255};  // amber
-        case FileKind::Doc: return au_color{125, 207, 255, 255};      // cyan
-        case FileKind::Exec: return au_color{247, 118, 142, 255};     // red
-        default: return au_color{130, 138, 158, 255};                 // grey
-    }
-}
-
-// Rasterise once per (kind, device size) and blit thereafter.
+// ---- icons ------------------------------------------------------------------------------------
+//
+// A kind, a mark inside it and a badge over it, rasterised once per
+// (kind, mark, badge, variant, size, scale) and blitted thereafter.
 //
 // Drawing the geometry per tile measured 62% of the frame: 8.418 ms with icons against 3.248 ms
 // without, at about a hundred tiles. Round-rect fills compute per-pixel coverage for their
-// corners, so a 36x40 icon is ~1,400 pixels of coverage maths and a grid is 140,000. Cached, each
-// kind is rasterised once and every tile after that is a copy.
+// corners, so a 36x40 icon is ~1,400 pixels of coverage maths and a grid is 140,000. Cached,
+// each icon is rasterised once and every tile after that is a copy.
 //
-// This is also the shape HVIF wants when it lands: a vector icon is decoded and rasterised once
-// at the size in use, then cached. The widget does not change.
-void draw_icon_geometry(au_surface* s, Rect r, FileKind k, bool on_accent);
+// SCALE is part of the key, and that is a fix rather than a flourish: the old key was
+// (kind, w * 1000 + h) and the surface it cached was rasterised at whatever scale asked first.
+// One window has one scale so nothing had gone wrong yet, but at the 1.45 a real display here
+// asks for, the first 16-unit icon decided the device size of every 16-unit icon afterwards.
+//
+// A vector or a bitmap icon enters the same cache through the same key, because the bargain is
+// the same one: decode once at the size in use, blit after that.
+
+namespace {
+
+au_color kind_color(IconKind k) {
+    switch (k) {
+        case IconKind::Folder: return au_color{122, 162, 247, 255};      // #7AA2F7
+        case IconKind::Document: return au_color{125, 207, 255, 255};    // #7DCFFF
+        case IconKind::Code: return au_color{158, 206, 106, 255};        // #9ECE6A
+        case IconKind::Image: return au_color{187, 154, 247, 255};       // #BB9AF7
+        case IconKind::Audio: return au_color{255, 158, 100, 255};       // #FF9E64
+        case IconKind::Video: return au_color{224, 114, 158, 255};       // #E0729E
+        case IconKind::Archive: return au_color{224, 175, 104, 255};     // #E0AF68
+        case IconKind::Executable: return au_color{247, 118, 142, 255};  // #F7768E
+        default: return au_color{138, 146, 166, 255};                    // #8A92A6
+    }
+}
+
+// ---- the vector reader (a subset of SVG; see IconSpec for exactly which) ----------------------
+
+struct VecShape {
+    std::vector<float> xy;          // x,y pairs, loops end to end
+    std::vector<int> counts;        // points per loop
+    au_color color{0, 0, 0, 255};
+    bool use_kind_hue = false;      // fill="currentColor"
+};
+
+struct VecIcon {
+    float vw = 0, vh = 0;           // the viewBox, which everything is a fraction of
+    std::vector<VecShape> shapes;
+};
+
+std::string attr(const std::string& tag, const char* name) {
+    const std::string pat = std::string(name) + "=";
+    size_t at = 0;
+    while ((at = tag.find(pat, at)) != std::string::npos) {
+        // Only an attribute boundary, so `fill=` does not match `fill-opacity=` or `xfill=`.
+        const bool left = at == 0 || isspace((unsigned char)tag[at - 1]);
+        if (left && at + pat.size() < tag.size()) {
+            const char q = tag[at + pat.size()];
+            if (q == '"' || q == '\'') {
+                const size_t b = at + pat.size() + 1;
+                const size_t e = tag.find(q, b);
+                if (e == std::string::npos) return std::string();
+                return tag.substr(b, e - b);
+            }
+        }
+        at += pat.size();
+    }
+    return std::string();
+}
+
+bool parse_color(const std::string& v, au_color* out, bool* kind_hue) {
+    *kind_hue = false;
+    std::string t;
+    for (char c : v)
+        if (!isspace((unsigned char)c)) t += (char)tolower((unsigned char)c);
+    if (t.empty()) return false;
+    if (t == "currentcolor") { *kind_hue = true; return true; }
+    if (t == "black") { *out = au_color{0, 0, 0, 255}; return true; }
+    if (t == "white") { *out = au_color{255, 255, 255, 255}; return true; }
+    if (t[0] != '#') return false;                       // url(#grad), rgb(), a name: refused
+    const std::string h = t.substr(1);
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    for (char c : h)
+        if (hex(c) < 0) return false;
+    if (h.size() == 3) {
+        *out = au_color{(uint8_t)(hex(h[0]) * 17), (uint8_t)(hex(h[1]) * 17),
+                        (uint8_t)(hex(h[2]) * 17), 255};
+        return true;
+    }
+    if (h.size() == 6) {
+        *out = au_color{(uint8_t)(hex(h[0]) * 16 + hex(h[1])),
+                        (uint8_t)(hex(h[2]) * 16 + hex(h[3])),
+                        (uint8_t)(hex(h[4]) * 16 + hex(h[5])), 255};
+        return true;
+    }
+    return false;
+}
+
+// Numbers as SVG writes them: separated by spaces, commas, or by a sign.
+struct NumScan {
+    const std::string& s;
+    size_t i = 0;
+    explicit NumScan(const std::string& t) : s(t) {}
+    void skip() {
+        while (i < s.size() && (isspace((unsigned char)s[i]) || s[i] == ',')) i++;
+    }
+    bool more() {
+        skip();
+        return i < s.size() && (isdigit((unsigned char)s[i]) || s[i] == '-' || s[i] == '+' ||
+                                s[i] == '.');
+    }
+    bool next(float* out) {
+        skip();
+        if (i >= s.size()) return false;
+        const char* b = s.c_str() + i;
+        char* e = nullptr;
+        const double v = strtod(b, &e);
+        if (e == b) return false;
+        i += (size_t)(e - b);
+        *out = (float)v;
+        return true;
+    }
+};
+
+void flatten_cubic(std::vector<float>* p, float x0, float y0, float x1, float y1, float x2,
+                   float y2, float x3, float y3) {
+    // A fixed 12 segments. The icons here are 16 to 80 units across, where the error of 12
+    // segments is well under a device pixel, and a subdivision loop would be code with a
+    // tolerance nobody can state.
+    const int N = 12;
+    for (int k = 1; k <= N; k++) {
+        const float t = (float)k / N, u = 1 - t;
+        const float x = u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3;
+        const float y = u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3;
+        p->push_back(x);
+        p->push_back(y);
+    }
+}
+
+// One `d` attribute into loops. Returns false on anything outside the documented subset, which
+// makes the whole FILE unreadable rather than drawing half a shape.
+bool parse_path(const std::string& d, VecShape* sh) {
+    NumScan n(d);
+    float cx = 0, cy = 0, sx = 0, sy = 0;        // current point, subpath start
+    float lcx = 0, lcy = 0;                      // last cubic control, for S
+    float lqx = 0, lqy = 0;                      // last quadratic control, for T
+    char prev = 0;
+    std::vector<float> loop;
+    auto close_loop = [&]() {
+        if (loop.size() >= 6) {
+            sh->counts.push_back((int)(loop.size() / 2));
+            sh->xy.insert(sh->xy.end(), loop.begin(), loop.end());
+        }
+        loop.clear();
+    };
+    while (true) {
+        n.skip();
+        if (n.i >= d.size()) break;
+        char c = d[n.i];
+        if (isalpha((unsigned char)c)) {
+            n.i++;
+        } else if (prev) {
+            c = prev == 'M' ? 'L' : (prev == 'm' ? 'l' : prev);    // an implicit repeat
+        } else {
+            return false;
+        }
+        const bool rel = islower((unsigned char)c) != 0;
+        const char u = (char)toupper((unsigned char)c);
+        float a[6];
+        switch (u) {
+            case 'M':
+                if (!n.next(&a[0]) || !n.next(&a[1])) return false;
+                close_loop();
+                cx = rel ? cx + a[0] : a[0];
+                cy = rel ? cy + a[1] : a[1];
+                sx = cx; sy = cy;
+                loop.push_back(cx); loop.push_back(cy);
+                break;
+            case 'L':
+                if (!n.next(&a[0]) || !n.next(&a[1])) return false;
+                cx = rel ? cx + a[0] : a[0];
+                cy = rel ? cy + a[1] : a[1];
+                loop.push_back(cx); loop.push_back(cy);
+                break;
+            case 'H':
+                if (!n.next(&a[0])) return false;
+                cx = rel ? cx + a[0] : a[0];
+                loop.push_back(cx); loop.push_back(cy);
+                break;
+            case 'V':
+                if (!n.next(&a[0])) return false;
+                cy = rel ? cy + a[0] : a[0];
+                loop.push_back(cx); loop.push_back(cy);
+                break;
+            case 'C': {
+                for (int k = 0; k < 6; k++)
+                    if (!n.next(&a[k])) return false;
+                const float x1 = rel ? cx + a[0] : a[0], y1 = rel ? cy + a[1] : a[1];
+                const float x2 = rel ? cx + a[2] : a[2], y2 = rel ? cy + a[3] : a[3];
+                const float x3 = rel ? cx + a[4] : a[4], y3 = rel ? cy + a[5] : a[5];
+                flatten_cubic(&loop, cx, cy, x1, y1, x2, y2, x3, y3);
+                lcx = x2; lcy = y2;
+                cx = x3; cy = y3;
+                break;
+            }
+            case 'S': {
+                for (int k = 0; k < 4; k++)
+                    if (!n.next(&a[k])) return false;
+                const bool had = prev == 'C' || prev == 'c' || prev == 'S' || prev == 's';
+                const float x1 = had ? 2 * cx - lcx : cx, y1 = had ? 2 * cy - lcy : cy;
+                const float x2 = rel ? cx + a[0] : a[0], y2 = rel ? cy + a[1] : a[1];
+                const float x3 = rel ? cx + a[2] : a[2], y3 = rel ? cy + a[3] : a[3];
+                flatten_cubic(&loop, cx, cy, x1, y1, x2, y2, x3, y3);
+                lcx = x2; lcy = y2;
+                cx = x3; cy = y3;
+                break;
+            }
+            case 'Q': {
+                for (int k = 0; k < 4; k++)
+                    if (!n.next(&a[k])) return false;
+                const float qx = rel ? cx + a[0] : a[0], qy = rel ? cy + a[1] : a[1];
+                const float ex = rel ? cx + a[2] : a[2], ey = rel ? cy + a[3] : a[3];
+                flatten_cubic(&loop, cx, cy, cx + 2.0f / 3 * (qx - cx), cy + 2.0f / 3 * (qy - cy),
+                              ex + 2.0f / 3 * (qx - ex), ey + 2.0f / 3 * (qy - ey), ex, ey);
+                lqx = qx; lqy = qy;
+                cx = ex; cy = ey;
+                break;
+            }
+            case 'T': {
+                for (int k = 0; k < 2; k++)
+                    if (!n.next(&a[k])) return false;
+                const bool had = prev == 'Q' || prev == 'q' || prev == 'T' || prev == 't';
+                const float qx = had ? 2 * cx - lqx : cx, qy = had ? 2 * cy - lqy : cy;
+                const float ex = rel ? cx + a[0] : a[0], ey = rel ? cy + a[1] : a[1];
+                flatten_cubic(&loop, cx, cy, cx + 2.0f / 3 * (qx - cx), cy + 2.0f / 3 * (qy - cy),
+                              ex + 2.0f / 3 * (qx - ex), ey + 2.0f / 3 * (qy - ey), ex, ey);
+                lqx = qx; lqy = qy;
+                cx = ex; cy = ey;
+                break;
+            }
+            case 'Z':
+                close_loop();
+                cx = sx; cy = sy;
+                break;
+            default:
+                return false;          // A (arc) and anything else: refused, and said so
+        }
+        prev = c;
+    }
+    close_loop();
+    return !sh->counts.empty();
+}
+
+void push_rect_loop(VecShape* sh, float x, float y, float w, float h) {
+    const float p[8] = {x, y, x + w, y, x + w, y + h, x, y + h};
+    sh->counts.push_back(4);
+    sh->xy.insert(sh->xy.end(), p, p + 8);
+}
+
+void push_ellipse_loop(VecShape* sh, float cx, float cy, float rx, float ry) {
+    const int N = 32;
+    for (int k = 0; k < N; k++) {
+        const float t = (float)(2 * M_PI * k / N);
+        sh->xy.push_back(cx + rx * cosf(t));
+        sh->xy.push_back(cy + ry * sinf(t));
+    }
+    sh->counts.push_back(N);
+}
+
+bool parse_points(const std::string& v, VecShape* sh) {
+    NumScan n(v);
+    std::vector<float> loop;
+    float x = 0, y = 0;
+    while (n.more()) {
+        if (!n.next(&x) || !n.next(&y)) return false;
+        loop.push_back(x);
+        loop.push_back(y);
+    }
+    if (loop.size() < 6) return false;
+    sh->counts.push_back((int)(loop.size() / 2));
+    sh->xy.insert(sh->xy.end(), loop.begin(), loop.end());
+    return true;
+}
+
+bool svg_read(const std::string& path, VecIcon* out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::string text;
+    char buf[4096];
+    size_t got = 0;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0) {
+        text.append(buf, got);
+        if (text.size() > 1u << 20) { fclose(f); return false; }   // an icon, not a document
+    }
+    fclose(f);
+    if (text.empty()) return false;
+
+    // The viewBox, which every coordinate is a fraction of. Without one there is no way to know
+    // what the numbers mean, so width and height are tried and then it is refused.
+    const size_t sv = text.find("<svg");
+    if (sv == std::string::npos) return false;
+    const size_t sve = text.find('>', sv);
+    if (sve == std::string::npos) return false;
+    const std::string head = text.substr(sv, sve - sv);
+    const std::string vb = attr(head, "viewBox");
+    if (!vb.empty()) {
+        NumScan n(vb);
+        float v[4];
+        for (int k = 0; k < 4; k++)
+            if (!n.next(&v[k])) return false;
+        // A non-zero origin would need a translate, which is the transform case: refused.
+        if (v[0] != 0 || v[1] != 0) return false;
+        out->vw = v[2];
+        out->vh = v[3];
+    } else {
+        out->vw = (float)atof(attr(head, "width").c_str());
+        out->vh = (float)atof(attr(head, "height").c_str());
+    }
+    if (!(out->vw > 0) || !(out->vh > 0)) return false;
+
+    au_color inherited{0, 0, 0, 255};
+    bool inherited_hue = false, have_inherited = false;
+    const std::string svg_fill = attr(head, "fill");
+    if (!svg_fill.empty()) {
+        if (!parse_color(svg_fill, &inherited, &inherited_hue)) {
+            if (svg_fill != "none") return false;
+        } else {
+            have_inherited = true;
+        }
+    }
+
+    size_t at = sve;
+    while ((at = text.find('<', at)) != std::string::npos) {
+        const size_t end = text.find('>', at);
+        if (end == std::string::npos) break;
+        std::string tag = text.substr(at, end - at + 1);
+        at = end + 1;
+        if (tag.size() < 2) continue;
+        // Comments, declarations, closing tags and the containers we do not read.
+        if (tag[1] == '!' || tag[1] == '?' || tag[1] == '/') continue;
+        std::string name;
+        for (size_t i = 1; i < tag.size() && (isalnum((unsigned char)tag[i]) || tag[i] == ':'); i++)
+            name += (char)tolower((unsigned char)tag[i]);
+        if (name == "svg") continue;
+        // Anything positioned or painted in a way this reader does not model makes the file
+        // unreadable. Half-drawing an icon is worse than drawing the wrong one: the fallback is
+        // at least a correct picture of a kind.
+        if (!attr(tag, "transform").empty()) return false;
+        if (!attr(tag, "style").empty()) return false;
+        const std::string stroke = attr(tag, "stroke");
+        if (!stroke.empty() && stroke != "none") return false;
+        if (name == "g" || name == "defs" || name == "title" || name == "desc" ||
+            name == "metadata") {
+            if (name == "g") {
+                const std::string gf = attr(tag, "fill");
+                if (!gf.empty() && gf != "none") {
+                    if (!parse_color(gf, &inherited, &inherited_hue)) return false;
+                    have_inherited = true;
+                }
+            }
+            continue;
+        }
+        if (name != "path" && name != "rect" && name != "circle" && name != "ellipse" &&
+            name != "polygon" && name != "polyline")
+            return false;
+
+        VecShape sh;
+        const std::string fill = attr(tag, "fill");
+        if (fill == "none") continue;
+        if (!fill.empty()) {
+            if (!parse_color(fill, &sh.color, &sh.use_kind_hue)) return false;
+        } else if (have_inherited) {
+            sh.color = inherited;
+            sh.use_kind_hue = inherited_hue;
+        } else {
+            sh.use_kind_hue = true;      // no fill stated anywhere: the kind's hue, not black
+        }
+        const std::string fo = attr(tag, "fill-opacity");
+        if (!fo.empty()) {
+            const double a = atof(fo.c_str());
+            if (a < 0 || a > 1) return false;
+            sh.color.a = (uint8_t)(a * 255 + 0.5);
+        }
+
+        if (name == "path") {
+            if (!parse_path(attr(tag, "d"), &sh)) return false;
+        } else if (name == "rect") {
+            const float x = (float)atof(attr(tag, "x").c_str());
+            const float y = (float)atof(attr(tag, "y").c_str());
+            const float w = (float)atof(attr(tag, "width").c_str());
+            const float h = (float)atof(attr(tag, "height").c_str());
+            if (!(w > 0) || !(h > 0)) return false;
+            push_rect_loop(&sh, x, y, w, h);
+        } else if (name == "circle") {
+            const float r = (float)atof(attr(tag, "r").c_str());
+            if (!(r > 0)) return false;
+            push_ellipse_loop(&sh, (float)atof(attr(tag, "cx").c_str()),
+                              (float)atof(attr(tag, "cy").c_str()), r, r);
+        } else if (name == "ellipse") {
+            const float rx = (float)atof(attr(tag, "rx").c_str());
+            const float ry = (float)atof(attr(tag, "ry").c_str());
+            if (!(rx > 0) || !(ry > 0)) return false;
+            push_ellipse_loop(&sh, (float)atof(attr(tag, "cx").c_str()),
+                              (float)atof(attr(tag, "cy").c_str()), rx, ry);
+        } else {
+            if (!parse_points(attr(tag, "points"), &sh)) return false;
+        }
+        out->shapes.push_back(sh);
+    }
+    return !out->shapes.empty();
+}
+
+// Draw a parsed vector into a box, scaling the viewBox to fit and keeping its aspect.
+void draw_vector(au_surface* s, Rect r, const VecIcon& v, au_color hue) {
+    const float k = std::min(r.w / v.vw, r.h / v.vh);
+    const float ox = r.x + (r.w - v.vw * k) / 2, oy = r.y + (r.h - v.vh * k) / 2;
+    std::vector<float> pts;
+    for (const VecShape& sh : v.shapes) {
+        pts.resize(sh.xy.size());
+        for (size_t i = 0; i + 1 < sh.xy.size(); i += 2) {
+            pts[i] = ox + sh.xy[i] * k;
+            pts[i + 1] = oy + sh.xy[i + 1] * k;
+        }
+        au_color c = sh.use_kind_hue ? hue : sh.color;
+        if (sh.use_kind_hue) c.a = sh.color.a;
+        au_fill_polys(s, pts.data(), sh.counts.data(), (int)sh.counts.size(), c);
+    }
+}
+
+// ---- the bitmap reader (PPM / PAM: no decoder, by design) --------------------------------------
+
+struct Bitmap {
+    std::vector<uint32_t> px;
+    int w = 0, h = 0;
+};
+
+bool pnm_read(const std::string& path, Bitmap* out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    // A tiny header scanner: P6 (RGB) or P5 (grey), comments allowed, maxval 255.
+    auto tok = [&](std::string* t) {
+        t->clear();
+        int c;
+        while ((c = fgetc(f)) != EOF) {
+            if (c == '#') { while ((c = fgetc(f)) != EOF && c != '\n') {} continue; }
+            if (isspace(c)) { if (!t->empty()) return true; continue; }
+            *t += (char)c;
+        }
+        return !t->empty();
+    };
+    std::string magic, w, h, mx;
+    if (!tok(&magic) || !tok(&w) || !tok(&h) || !tok(&mx)) { fclose(f); return false; }
+    if (magic != "P6" && magic != "P5") { fclose(f); return false; }
+    const int iw = atoi(w.c_str()), ih = atoi(h.c_str());
+    if (iw <= 0 || ih <= 0 || iw > 4096 || ih > 4096 || atoi(mx.c_str()) != 255) {
+        fclose(f);
+        return false;
+    }
+    const int comps = magic == "P6" ? 3 : 1;
+    std::vector<uint8_t> raw((size_t)iw * ih * comps);
+    if (fread(raw.data(), 1, raw.size(), f) != raw.size()) { fclose(f); return false; }
+    fclose(f);
+    out->w = iw;
+    out->h = ih;
+    out->px.resize((size_t)iw * ih);
+    for (size_t i = 0; i < out->px.size(); i++) {
+        const uint8_t r = raw[i * comps];
+        const uint8_t g = comps == 3 ? raw[i * comps + 1] : r;
+        const uint8_t b = comps == 3 ? raw[i * comps + 2] : r;
+        out->px[i] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    }
+    return true;
+}
+
+// ---- the procedural family ---------------------------------------------------------------------
+
+// Everything is a fraction of the box, so one routine draws 16, 24, 48 and 80. The radii are
+// per size because a fraction of 16 rounds badly (docs/atlas-design.md section 4.3).
+float icon_radius(float side) { return side <= 20 ? 2.0f : (side <= 56 ? 4.0f : 6.0f); }
+float icon_stroke(float side) { return side <= 20 ? 1.5f : (side <= 56 ? 2.5f : 3.5f); }
+
+void draw_mark(au_surface* s, Rect r, IconMark m, au_color c, float pen);
+
+void draw_kind(au_surface* s, Rect r, IconKind k, IconMark mark, au_color c, au_color dim) {
+    const float rad = icon_radius(r.w);
+    const float pen = icon_stroke(r.w);
+    const bool small = r.w <= 20;
+    if (k == IconKind::Folder) {
+        // tab, then body: drawn tab-first so the body's corner radius covers the seam
+        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.12f, r.x + r.w * 0.45f, r.y + r.h * 0.35f},
+                           rad, rad, dim);
+        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.26f, r.x + r.w - 1, r.y + r.h - 1}, rad,
+                           rad, c);
+        // A special folder carries its mark on the body, which is what tells Documents from
+        // Downloads without reading either name.
+        if (mark != IconMark::None)
+            draw_mark(s, Rect{r.x + r.w * 0.2f, r.y + r.h * 0.42f, r.w * 0.6f, r.h * 0.46f}, mark,
+                      dim, pen);
+        return;
+    }
+    if (k == IconKind::Executable) {
+        // Not a page: a rounded square with a prompt in it.
+        const float in = r.w * 0.08f;
+        au_fill_round_rect(s, au_rect{r.x + in, r.y + in, r.x + r.w - 1 - in, r.y + r.h - 1 - in},
+                           rad + 1, rad + 1, c);
+        const float cx = r.x + r.w * 0.30f, cy = r.y + r.h * 0.50f, a = r.w * 0.10f;
+        au_stroke_line(s, cx - a * 0.5f, cy - a, cx + a * 0.5f, cy, dim, pen);
+        au_stroke_line(s, cx + a * 0.5f, cy, cx - a * 0.5f, cy + a, dim, pen);
+        au_stroke_line(s, r.x + r.w * 0.54f, r.y + r.h * 0.68f, r.x + r.w * 0.78f,
+                       r.y + r.h * 0.68f, dim, pen);
+        return;
+    }
+    // The page, with its folded corner, for every file kind.
+    const float px0 = r.x + r.w * 0.12f, px1 = r.x + r.w * 0.88f;
+    const float fold = r.w * 0.34f;
+    au_fill_round_rect(s, au_rect{px0, r.y, px1, r.y + r.h - 1}, rad, rad, c);
+    for (int i = 0; i < (int)fold; i++) {
+        const float y = r.y + 1 + i;
+        au_stroke_line(s, px1 - fold + i, y, px1 - 1, y, dim, 1);
+    }
+    // The mark lives in the page's lower 55%.
+    const Rect page{px0, r.y, px1 - px0, r.h};
+    const float mx = page.x, mw = page.w;
+    switch (k) {
+        case IconKind::Document: {
+            const float lens[3] = {0.56f, 0.56f, 0.36f};
+            const float ys[3] = {0.60f, 0.72f, 0.84f};
+            for (int i = 0; i < 3; i++) {
+                const float y = r.y + r.h * ys[i];
+                au_stroke_line(s, mx + mw * 0.24f, y, mx + mw * (0.24f + lens[i]), y, dim,
+                               small ? 1.0f : pen * 0.7f);
+            }
+            break;
+        }
+        case IconKind::Code: {
+            const float cy = r.y + r.h * 0.70f, a = mw * 0.11f;
+            const float l = mx + mw * 0.34f, rr = mx + mw * 0.66f;
+            au_stroke_line(s, l + a, cy - a, l - a, cy, dim, small ? 1.4f : pen);
+            au_stroke_line(s, l - a, cy, l + a, cy + a, dim, small ? 1.4f : pen);
+            au_stroke_line(s, rr - a, cy - a, rr + a, cy, dim, small ? 1.4f : pen);
+            au_stroke_line(s, rr + a, cy, rr - a, cy + a, dim, small ? 1.4f : pen);
+            break;
+        }
+        case IconKind::Image: {
+            // The mountain always; the sun only where there is room for it to read as a sun.
+            au_stroke_line(s, mx + mw * 0.24f, r.y + r.h * 0.86f, mx + mw * 0.48f,
+                           r.y + r.h * 0.60f, dim, small ? 1.4f : pen);
+            au_stroke_line(s, mx + mw * 0.48f, r.y + r.h * 0.60f, mx + mw * 0.72f,
+                           r.y + r.h * 0.86f, dim, small ? 1.4f : pen);
+            if (!small) {
+                const float d = mw * 0.18f;
+                au_fill_ellipse(s, au_rect{mx + mw * 0.62f - d / 2, r.y + r.h * 0.55f - d / 2,
+                                           mx + mw * 0.62f + d / 2, r.y + r.h * 0.55f + d / 2},
+                                dim);
+            }
+            break;
+        }
+        case IconKind::Audio: {
+            const float xs[4] = {0.32f, 0.44f, 0.56f, 0.68f};
+            const float hs[4] = {0.18f, 0.36f, 0.28f, 0.44f};
+            const int n = small ? 3 : 4;
+            for (int i = 0; i < n; i++) {
+                const float x = mx + mw * xs[i], b = r.y + r.h * 0.84f;
+                au_stroke_line(s, x, b, x, b - r.h * hs[i], dim, small ? 1.4f : pen);
+            }
+            break;
+        }
+        case IconKind::Video: {
+            const float ax = mx + mw * 0.66f, ay = r.y + r.h * 0.70f;
+            const float bx = mx + mw * 0.36f;
+            au_stroke_line(s, bx, r.y + r.h * 0.56f, ax, ay, dim, small ? 1.6f : pen);
+            if (!small) {
+                au_stroke_line(s, ax, ay, bx, r.y + r.h * 0.84f, dim, pen);
+                au_stroke_line(s, bx, r.y + r.h * 0.56f, bx, r.y + r.h * 0.84f, dim, pen);
+            }
+            break;
+        }
+        case IconKind::Archive: {
+            // A dashed seam down the middle, which is what a zip looks like from the side.
+            const float x = mx + mw * 0.5f;
+            const float step = r.h * (small ? 0.14f : 0.14f);
+            for (float y = r.y + r.h * 0.10f; y < r.y + r.h * 0.90f; y += step)
+                au_stroke_line(s, x, y, x, std::min(y + r.h * 0.08f, r.y + r.h * 0.90f), dim,
+                               small ? 1.4f : pen);
+            break;
+        }
+        default:
+            break;             // Generic: the page, no mark
+    }
+}
+
+// The special-folder marks. Each is strokes inside the box it is handed, so the same routine
+// serves 16 and 48 with only the pen changing.
+void draw_mark(au_surface* s, Rect r, IconMark m, au_color c, float pen) {
+    const float p = std::max(1.0f, pen * 0.7f);
+    switch (m) {
+        case IconMark::Home:
+            au_stroke_line(s, r.x, r.y + r.h * 0.55f, r.x + r.w * 0.5f, r.y + r.h * 0.1f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.5f, r.y + r.h * 0.1f, r.x + r.w, r.y + r.h * 0.55f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.18f, r.y + r.h * 0.5f, r.x + r.w * 0.18f, r.y + r.h, c, p);
+            au_stroke_line(s, r.x + r.w * 0.82f, r.y + r.h * 0.5f, r.x + r.w * 0.82f, r.y + r.h, c, p);
+            au_stroke_line(s, r.x + r.w * 0.18f, r.y + r.h, r.x + r.w * 0.82f, r.y + r.h, c, p);
+            break;
+        case IconMark::Documents:
+            for (int i = 0; i < 3; i++) {
+                const float y = r.y + r.h * (0.25f + 0.25f * i);
+                au_stroke_line(s, r.x + r.w * 0.15f, y, r.x + r.w * (i == 2 ? 0.6f : 0.85f), y, c, p);
+            }
+            break;
+        case IconMark::Downloads:
+            au_stroke_line(s, r.x + r.w * 0.5f, r.y + r.h * 0.1f, r.x + r.w * 0.5f, r.y + r.h * 0.6f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.28f, r.y + r.h * 0.38f, r.x + r.w * 0.5f, r.y + r.h * 0.6f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.72f, r.y + r.h * 0.38f, r.x + r.w * 0.5f, r.y + r.h * 0.6f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.2f, r.y + r.h * 0.85f, r.x + r.w * 0.8f, r.y + r.h * 0.85f, c, p);
+            break;
+        case IconMark::Pictures:
+            au_stroke_line(s, r.x + r.w * 0.1f, r.y + r.h * 0.85f, r.x + r.w * 0.45f, r.y + r.h * 0.35f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.45f, r.y + r.h * 0.35f, r.x + r.w * 0.8f, r.y + r.h * 0.85f, c, p);
+            break;
+        case IconMark::Music:
+            au_stroke_line(s, r.x + r.w * 0.35f, r.y + r.h * 0.9f, r.x + r.w * 0.35f, r.y + r.h * 0.35f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.65f, r.y + r.h * 0.9f, r.x + r.w * 0.65f, r.y + r.h * 0.15f, c, p);
+            break;
+        case IconMark::Videos:
+            au_stroke_line(s, r.x + r.w * 0.3f, r.y + r.h * 0.2f, r.x + r.w * 0.8f, r.y + r.h * 0.5f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.8f, r.y + r.h * 0.5f, r.x + r.w * 0.3f, r.y + r.h * 0.8f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.3f, r.y + r.h * 0.2f, r.x + r.w * 0.3f, r.y + r.h * 0.8f, c, p);
+            break;
+        case IconMark::Trash:
+            au_stroke_line(s, r.x + r.w * 0.2f, r.y + r.h * 0.2f, r.x + r.w * 0.8f, r.y + r.h * 0.2f, c, p);
+            for (int i = 0; i < 3; i++) {
+                const float x = r.x + r.w * (0.32f + 0.18f * i);
+                au_stroke_line(s, x, r.y + r.h * 0.32f, x, r.y + r.h * 0.85f, c, p);
+            }
+            break;
+        case IconMark::Desktop:
+            au_stroke_line(s, r.x + r.w * 0.15f, r.y + r.h * 0.25f, r.x + r.w * 0.85f, r.y + r.h * 0.25f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.15f, r.y + r.h * 0.25f, r.x + r.w * 0.15f, r.y + r.h * 0.7f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.85f, r.y + r.h * 0.25f, r.x + r.w * 0.85f, r.y + r.h * 0.7f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.15f, r.y + r.h * 0.7f, r.x + r.w * 0.85f, r.y + r.h * 0.7f, c, p);
+            au_stroke_line(s, r.x + r.w * 0.3f, r.y + r.h * 0.9f, r.x + r.w * 0.7f, r.y + r.h * 0.9f, c, p);
+            break;
+        default:
+            break;
+    }
+}
+
+// The badge: a plate of the pane colour at the bottom-left with an arrow on it. Part of the
+// CACHED image, so a link costs no more per frame than anything else.
+void draw_badge(au_surface* s, Rect r, IconBadge b, au_color plate, au_color ink) {
+    if (b == IconBadge::None) return;
+    const float side = std::max(7.0f, r.w * 0.44f);
+    const float rad = side <= 8 ? 2.0f : (side <= 18 ? 4.0f : 6.0f);
+    const au_rect box{r.x, r.y + r.h - side, r.x + side - 1, r.y + r.h - 1};
+    au_fill_round_rect(s, box, rad, rad, plate);
+    const float pen = side <= 8 ? 1.0f : 1.6f;
+    // A curved arrow, drawn as a corner and a head: at 7 px there is no room for a curve.
+    au_stroke_line(s, box.l + side * 0.25f, box.t + side * 0.72f, box.l + side * 0.25f,
+                   box.t + side * 0.35f, ink, pen);
+    au_stroke_line(s, box.l + side * 0.25f, box.t + side * 0.35f, box.l + side * 0.75f,
+                   box.t + side * 0.35f, ink, pen);
+    au_stroke_line(s, box.l + side * 0.55f, box.t + side * 0.15f, box.l + side * 0.78f,
+                   box.t + side * 0.35f, ink, pen);
+    au_stroke_line(s, box.l + side * 0.55f, box.t + side * 0.55f, box.l + side * 0.78f,
+                   box.t + side * 0.35f, ink, pen);
+}
+
+// ---- the cache ---------------------------------------------------------------------------------
+
+uint64_t hash64(const std::string& s) {
+    uint64_t h = 1469598103934665603ull;
+    for (char c : s) { h ^= (unsigned char)c; h *= 1099511628211ull; }
+    return h;
+}
+
+struct IconKey {
+    uint32_t a = 0;          // kind, mark, badge, variant, format
+    int w = 0, h = 0;
+    int scale_q = 0;         // scale * 256: a 1.45 window must not be served a 1.0 rasterisation
+    uint64_t src = 0;        // the vector/bitmap identity, 0 for procedural
+    bool operator==(const IconKey& o) const {
+        return a == o.a && w == o.w && h == o.h && scale_q == o.scale_q && src == o.src;
+    }
+};
 
 struct IconCache {
     struct Entry {
         au_surface* sf = nullptr;
         int w = 0, h = 0;
     };
-    // Seven kinds; one size in practice, but keyed by size so a zoom does not reuse the wrong
-    // rasterisation.
-    std::vector<std::pair<std::pair<int, int>, Entry>> e;
+    std::vector<std::pair<IconKey, Entry> > e;
+    size_t rasterised = 0;        // what the cost rule is checked against
 
-    const Entry* get(FileKind k, int w, int h, double scale, bool on_accent) {
-        // The variant is part of the KEY, not a tint applied after: the glyphs are cached as
-        // rendered surfaces, so a second palette is a second entry rather than a recolour.
-        const std::pair<int, int> key{(int)k + (on_accent ? 100 : 0), w * 1000 + h};
+    const Entry* get(const IconSpec& sp, int w, int h, double scale, bool on_accent,
+                     au_color pane) {
+        if (w <= 0 || h <= 0) return nullptr;
+        IconKey key;
+        key.a = (uint32_t)sp.kind | ((uint32_t)sp.mark << 4) | ((uint32_t)sp.badge << 9) |
+                ((uint32_t)(on_accent ? 1 : 0) << 12) | ((uint32_t)(sp.dimmed ? 1 : 0) << 13) |
+                ((uint32_t)sp.format << 14);
+        key.w = w;
+        key.h = h;
+        key.scale_q = (int)(scale * 256 + 0.5);
+        if (sp.format == IconFormat::Vector) key.src = hash64(sp.path);
+        else if (sp.format == IconFormat::Bitmap) key.src = sp.id ? sp.id : hash64(sp.path);
         for (auto& it : e)
             if (it.first == key) return &it.second;
+
         Entry fresh;
         fresh.sf = au_surface_new(w, h, scale);
         if (!fresh.sf) return nullptr;
         au_clear(fresh.sf, au_color{0, 0, 0, 0});
-        draw_icon_geometry(fresh.sf, Rect{0, 0, (float)w, (float)h}, k, on_accent);
+        rasterise(fresh.sf, sp, w, h, on_accent, pane);
         fresh.w = au_surface_px_w(fresh.sf);
         fresh.h = au_surface_px_h(fresh.sf);
-        e.push_back({key, fresh});
+        rasterised++;
+        e.push_back(std::make_pair(key, fresh));
         return &e.back().second;
+    }
+
+    void rasterise(au_surface* sf, const IconSpec& sp, int w, int h, bool on_accent,
+                   au_color pane) {
+        const Rect box{0, 0, (float)w, (float)h};
+        // On a focused selection the fill is the accent, which is light. The row's text already
+        // switches to a dark ink there; an icon that did not came out as a faint outline, and
+        // the selected row was the one row whose type you could not read. Same hues, taken down
+        // far enough to carry on a light fill.
+        const au_color base = kind_color(sp.kind);
+        const au_color c = on_accent
+                               ? au_color{(uint8_t)(base.r * 2 / 5), (uint8_t)(base.g * 2 / 5),
+                                          (uint8_t)(base.b * 2 / 5), 255}
+                               : base;
+        const au_color dim{(uint8_t)(c.r * 2 / 3), (uint8_t)(c.g * 2 / 3), (uint8_t)(c.b * 2 / 3),
+                           255};
+        bool drawn = false;
+        if (sp.format == IconFormat::Vector) {
+            VecIcon v;
+            if (svg_read(sp.path, &v)) {
+                draw_vector(sf, box, v, c);
+                drawn = true;
+            }
+        } else if (sp.format == IconFormat::Bitmap) {
+            if (sp.argb && sp.argb_w > 0 && sp.argb_h > 0) {
+                au_draw_image(sf, sp.argb, sp.argb_w, sp.argb_h,
+                              au_rect{0, 0, (float)w - 1, (float)h - 1});
+                drawn = true;
+            } else {
+                Bitmap bm;
+                if (pnm_read(sp.path, &bm)) {
+                    au_draw_image(sf, bm.px.data(), bm.w, bm.h,
+                                  au_rect{0, 0, (float)w - 1, (float)h - 1});
+                    drawn = true;
+                }
+            }
+        }
+        // A source that could not be read falls back to the kind's own glyph. A wrong icon is a
+        // picture; a missing one is a hole, and a half-read one is a lie.
+        if (!drawn) draw_kind(sf, box, sp.kind, sp.mark, c, dim);
+        draw_badge(sf, box, sp.badge,
+                   sp.badge == IconBadge::Broken ? au_color{240, 138, 138, 255} : pane,
+                   sp.badge == IconBadge::Broken ? pane : c);
+        // Hidden entries are drawn at 55% -- as a variant of the CACHED image and not as a
+        // per-frame blend, which is the cost rule of section 4.5. Straight alpha over the pane
+        // is exactly "mixed toward the pane colour".
+        if (sp.dimmed) {
+            uint32_t* px = au_surface_pixels_mut(sf);
+            const int n = au_surface_px_w(sf) * au_surface_px_h(sf);
+            for (int i = 0; i < n && px; i++) {
+                const uint32_t p = px[i];
+                const uint32_t a = ((p >> 24) & 0xFF) * 55 / 100;
+                px[i] = (a << 24) | (p & 0x00FFFFFFu);
+            }
+        }
     }
 };
 
@@ -1235,40 +2304,13 @@ IconCache& icons_cache() {
     return *c;
 }
 
-void draw_icon(au_surface* s, Rect r, FileKind k, double scale, bool on_accent) {
-    const IconCache::Entry* en = icons_cache().get(k, (int)r.w, (int)r.h, scale, on_accent);
+void draw_icon(au_surface* s, Rect r, const IconSpec& sp, double scale, bool on_accent,
+               au_color pane) {
+    const IconCache::Entry* en =
+        icons_cache().get(sp, (int)r.w, (int)r.h, scale, on_accent, pane);
     if (!en || !en->sf) return;
     au_draw_image(s, au_surface_pixels(en->sf), en->w, en->h,
                   au_rect{r.x, r.y, r.x + r.w - 1, r.y + r.h - 1});
-}
-
-// A folder, or a page with a folded corner. Everything is a canvas primitive: no bitmap, no
-// decoder, and it scales because it is geometry rather than pixels.
-void draw_icon_geometry(au_surface* s, Rect r, FileKind k, bool on_accent) {
-    // On a selected row the background is the accent, which is light. The row's TEXT already
-    // switches to a dark ink there; an icon that did not came out as a faint outline and the
-    // selected row was the one row whose type you could not read. Same hues, taken down far
-    // enough to carry on a light fill, so a folder is still blue and an archive still amber.
-    const au_color base = kind_color(k);
-    const au_color c = on_accent ? au_color{(uint8_t)(base.r * 2 / 5), (uint8_t)(base.g * 2 / 5),
-                                            (uint8_t)(base.b * 2 / 5), 255}
-                                 : base;
-    const au_color dim{(uint8_t)(c.r * 2 / 3), (uint8_t)(c.g * 2 / 3), (uint8_t)(c.b * 2 / 3), 255};
-    if (k == FileKind::Dir) {
-        // tab, then body: drawn tab-first so the body's corner radius covers the seam
-        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.12f, r.x + r.w * 0.45f, r.y + r.h * 0.35f},
-                           3, 3, dim);
-        au_fill_round_rect(s, au_rect{r.x, r.y + r.h * 0.26f, r.x + r.w - 1, r.y + r.h - 1}, 4, 4, c);
-        return;
-    }
-    const float fold = r.w * 0.34f;
-    au_fill_round_rect(s, au_rect{r.x + r.w * 0.12f, r.y, r.x + r.w * 0.88f, r.y + r.h - 1}, 4, 4,
-                       c);
-    // The folded corner, as a stack of shortening lines: a triangle without a polygon fill.
-    for (int i = 0; i < (int)fold; i++) {
-        const float y = r.y + 1 + i;
-        au_stroke_line(s, r.x + r.w * 0.88f - fold + i, y, r.x + r.w * 0.88f - 1, y, dim, 1);
-    }
 }
 
 }  // namespace
@@ -1529,8 +2571,10 @@ public:
 
     Size Measure(const Env& e, Constraints c) override {
         env_ = e;
-        tile_w_ = 96;
-        tile_h_ = 84;
+        // 112 x 104 around a 48 px icon (docs/atlas-design.md 5.2). Fixed, not derived from the
+        // text size: a tile is a grid cell and the grid's pitch is a pixel decision.
+        tile_w_ = 112;
+        tile_h_ = 104;
         return Size{c.max_w >= 0 ? c.max_w : 400, c.max_h >= 0 ? c.max_h : 300};
     }
 
@@ -1539,8 +2583,7 @@ public:
 
     void Draw(au_surface* s, const Env& e) override {
         env_ = e;
-        au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
-        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        au_fill_rect(s, frame.box(), e.content);
 
         const int n = r_->Count();
         const int c = cols();
@@ -1555,9 +2598,16 @@ public:
             const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
             if (t.y > frame.y + frame.h) break;
             const bool is_sel = is_selected(i);
-            if (is_sel)
-                au_fill_round_rect(s, au_rect{t.x + 3, t.y + 3, t.x + t.w - 4, t.y + t.h - 4}, 8, 8,
-                                   e.accent);
+            const bool cursor = sel_ && *sel_ == i;
+            // Inset 3, radius 8 (3.3). The same three states as a row, drawn as three different
+            // pictures: the fill says selected, WHICH fill says whether this pane has the
+            // keyboard, and a ring with no fill says the cursor is here and nothing is chosen.
+            const au_rect in{t.x + 3, t.y + 3, t.x + t.w - 4, t.y + t.h - 4};
+            if (is_sel) {
+                au_fill_round_rect(s, in, 8, 8, focused_ ? e.accent : e.sel_unfocused);
+            } else if (i == hover_ && !(cursor && focused_ && halo())) {
+                au_fill_round_rect(s, in, 8, 8, e.hover);
+            }
 
             const CellValue v = r_->Cell(i, 0);
             std::string name = v.text;
@@ -1567,41 +2617,21 @@ public:
             // the tile is expensive costs one run.
             static const bool no_icons = getenv("AURORA_UI_NO_ICONS") != nullptr;
             static const bool no_labels = getenv("AURORA_UI_NO_LABELS") != nullptr;
+            // The halo, when the keyboard is what put the cursor here, and always for a tile
+            // that is the cursor without being selected -- there is nothing else marking it.
+            if (focused_ && cursor && (halo() || !is_sel))
+                draw_halo(s, in, 8, e.focus_ring, e.content);
             if (!no_icons)
-                draw_icon(s, Rect{t.x + t.w / 2 - 18, t.y + 10, 36, 40}, classify(name, dir),
-                          au_surface_scale(s), is_sel);
+                draw_icon(s, Rect{t.x + t.w / 2 - 24, t.y + 10, 48, 48}, r_->Icon(i),
+                          au_surface_scale(s), is_sel && focused_, e.content);
             if (no_labels) continue;
 
             // One line, middle-elided: a tile is narrower than most names, and truncating the
             // tail hides the extension, which is the part that tells you what the thing is.
-            const float maxw = t.w - 10;
-            // Eliding by BINARY SEARCH over the kept length, not by shrinking one character at
-            // a time. The first version did the latter and cost up to twenty au_text_width calls
-            // per tile; at a hundred tiles that is two thousand shaping calls a frame, and it
-            // measured p50 8.665 ms with four of five frames over the 8 ms budget. Binary search
-            // is at most seven, and the result is identical.
-            std::string shown = name;
-            if (au_text_width(e.font, e.size - 1, name.c_str(), -1) > maxw && name.size() > 6) {
-                size_t lo = 6, hi = name.size();
-                std::string best = name.substr(0, 3) + "\xe2\x80\xa6";
-                while (lo <= hi) {
-                    const size_t keep = (lo + hi) / 2;
-                    const size_t half = keep / 2;
-                    const std::string cand = name.substr(0, half) + "\xe2\x80\xa6" +
-                                             name.substr(name.size() - (keep - half));
-                    if (au_text_width(e.font, e.size - 1, cand.c_str(), -1) <= maxw) {
-                        best = cand;
-                        lo = keep + 1;
-                    } else {
-                        if (keep == 0) break;
-                        hi = keep - 1;
-                    }
-                }
-                shown = best;
-            }
-            const float tw = au_text_width(e.font, e.size - 1, shown.c_str(), -1);
-            au_text_draw(s, e.font, e.size - 1, shown.c_str(), -1, t.x + (t.w - tw) / 2,
-                         t.y + t.h - 14, is_sel ? au_color{24, 26, 34, 255} : e.fg);
+            const std::string shown = elide_middle(e.font, e.size, name, t.w - 12);
+            const float tw = au_text_width(e.font, e.size, shown.c_str(), -1);
+            au_text_draw(s, e.font, e.size, shown.c_str(), -1, t.x + (t.w - tw) / 2,
+                         t.y + t.h - 16, is_sel && focused_ ? e.accent_ink : e.fg);
         }
         if (band_) {
             const au_rect b{std::min(bx0_, bx1_), std::min(by0_, by1_),
@@ -1612,6 +2642,39 @@ public:
         sb_.set(frame, grid_rows(), visible_rows(), top_row_);
         sb_.draw(s, e);
         au_clip_reset(s);
+    }
+
+    // The tile under the pointer, and the two tiles the window has to repaint when it changes.
+    bool OnHoverAt(float x, float y) override {
+        const int was = hover_;
+        hover_ = index_at(x, y);
+        if (hover_ == was) return false;
+        hinted_ = true;
+        hint_.clear();
+        if (was >= 0) hint_.push_back(was);
+        if (hover_ >= 0) hint_.push_back(hover_);
+        return true;
+    }
+    void OnLeave() override {
+        hinted_ = true;
+        if (hover_ < 0) return;
+        hint_.clear();
+        hint_.push_back(hover_);
+        hover_ = -1;
+    }
+    bool DamageHint(std::vector<Rect>* out) override {
+        const bool said = hinted_;
+        hinted_ = false;
+        if (hint_.empty()) return said;   // see ListNode::OnLeave
+        const int c = cols();
+        for (int i : hint_) {
+            const int row = i / c - top_row_, col = i % c;
+            if (row < 0) continue;
+            out->push_back(Rect{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_,
+                                tile_h_});
+        }
+        hint_.clear();
+        return !out->empty();
     }
 
     int grid_rows() const { return (r_->Count() + cols() - 1) / std::max(1, cols()); }
@@ -1802,6 +2865,7 @@ public:
     }
 
     uint32_t mods_now() const { return win_ ? win_->mods() : 0u; }
+    bool halo() const { return !win_ || win_->keyboard_driven(); }
     void Attached(Window* w) override { win_ = w; }
 
     bool OnDragStart(float x, float y, DragData* out) override {
@@ -1835,9 +2899,12 @@ private:
     int anchor_ = -1;
     std::function<void(const std::vector<int>&)> on_multi_;
     std::function<std::vector<std::string>(int)> drag_paths_;
-    float tile_w_ = 96, tile_h_ = 84;
+    float tile_w_ = 112, tile_h_ = 104;
     int top_row_ = 0;
     bool focused_ = false;
+    int hover_ = -1;
+    bool hinted_ = false;
+    std::vector<int> hint_;        // the tiles whose appearance changed, for DamageHint
     std::function<void(int)> on_act_;
     std::function<void(int, float, float)> on_ctx_;
 };
@@ -2211,7 +3278,7 @@ private:
 class RevealNode : public Node {
 public:
     RevealNode(State<bool>* shown, Desc child, Transition t)
-        : shown_(shown), c_(std::move(child)), t_(t) {
+        : shown_(shown), c_(std::move(child)), t_(t), eff_(t) {
         if (shown_) shown_->attach(this);
         e_.target(shown_ && shown_->get() ? 1.0f : 0.0f, 0);   // start at the end state
         e_.snap();
@@ -2220,7 +3287,15 @@ public:
     Size Measure(const Env& env, Constraints c) override {
         nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
         want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
-        if (t_.motion == Motion::None) e_.snap();
+        // Resolve the transition against the environment's table EVERY pass, so a theme that
+        // turns motion down (or a frame budget that cannot afford it) is honoured at run time
+        // rather than at the moment the tree was built. The axis is not resolvable -- it is what
+        // this node IS -- so it comes from the transition the caller gave, and `eff_` only ever
+        // decides how long the move takes, or whether it moves at all.
+        eff_ = env.motion.resolve(t_, affordable_);
+        eff_none_ = eff_.motion == Motion::None;
+        eff_.motion = t_.motion;
+        if (eff_none_) e_.snap();
         const float f = e_.value();
         applied_ = f;
         return t_.motion == Motion::RevealX ? Size{nat_.w * f, nat_.h} : Size{nat_.w, nat_.h * f};
@@ -2258,9 +3333,22 @@ public:
     void OnTick() override { e_.tick(); }
 
     void Retarget(bool allowed) override {
+        affordable_ = allowed;
         want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
-        if (!allowed || t_.motion == Motion::None) { e_.target(want_, 0); e_.snap(); return; }
-        e_.target(want_, t_.ms);
+        // Three ways not to move, and they resolve in ONE place: the caller asked for none,
+        // the theme turned motion down (eff_none_, decided in Measure against Env's table), or
+        // the frame budget cannot afford it. Each must land on the end state THIS frame, which
+        // is what Animating() then reports against the fraction the layout actually used.
+        if (!allowed || eff_none_ || t_.motion == Motion::None) {
+            e_.target(want_, 0);
+            e_.snap();
+            return;
+        }
+        // The duration and the curve come from the table the environment carried in, through
+        // Measure: one Transition value, not two numbers read at this call site.
+        Transition run = eff_;
+        run.motion = Motion::Reveal;     // "it moves"; the axis is this node's own
+        e_.target(want_, run);
     }
     // Running is not the only way to be stale. When motion is NOT allowed -- Motion::None, or
     // the budget gate degrading under frame pressure -- Retarget SNAPS and nothing is running,
@@ -2277,6 +3365,8 @@ private:
     State<bool>* shown_;
     Desc c_;
     Transition t_;
+    Transition eff_;
+    bool affordable_ = true, eff_none_ = false;
     Ease e_;
     float applied_ = -1;
     Size nat_{};
@@ -2284,6 +3374,159 @@ private:
 };
 
 }  // namespace
+
+// ---- columns ----------------------------------------------------------------------------------
+
+// The column rule, in one function, because the header, the cells and the hit test all have to
+// agree about where a column is -- and because this IS the fix for the loudest defect in Atlas
+// today, so it belongs somewhere a test can call without a window.
+//
+// Three steps, in this order:
+//   1. Drop every column whose `visible_from` is wider than the list. A narrow window shows
+//      Name and Size; it does not show a sixth of a Modified.
+//   2. Give each remaining column its natural width. If they do not fit, take the flexible ones
+//      down to their floors, and then DROP from the right until the rest fit whole. A column is
+//      never clipped to make room, which is what "cut off mid-value" was.
+//   3. Share the slack among the flexible columns in proportion to `flex`. If nothing flexes the
+//      slack stays empty, which is honest: no column pretends to be wider than it is.
+// The first column is never dropped -- a listing with no names is not a listing -- so it is the
+// one that may be narrower than its floor, and its text elides.
+std::vector<float> SolveColumns(const Rows* rows, float avail) {
+    const int n = rows ? rows->Columns() : 0;
+    std::vector<float> w((size_t)std::max(n, 0), 0.0f);
+    if (n <= 0) return w;
+    std::vector<ColumnSpec> sp((size_t)n);
+    std::vector<bool> show((size_t)n, false);
+    for (int i = 0; i < n; i++) {
+        sp[(size_t)i] = rows->Column(i);
+        show[(size_t)i] = i == 0 || sp[(size_t)i].visible_from <= avail;
+    }
+    auto total = [&](bool floors) {
+        float t = 0;
+        for (int i = 0; i < n; i++) {
+            if (!show[(size_t)i]) continue;
+            const ColumnSpec& c = sp[(size_t)i];
+            t += (floors && c.flex > 0) ? std::min(c.width, c.min) : c.width;
+        }
+        return t;
+    };
+    if (total(false) > avail) {
+        // The flexible columns give first, down to their floors.
+        if (total(true) > avail) {
+            for (int i = n - 1; i > 0; i--) {
+                if (!show[(size_t)i]) continue;
+                show[(size_t)i] = false;
+                if (total(true) <= avail) break;
+            }
+        }
+    }
+    float fixed = 0, flex_sum = 0, flex_floor = 0;
+    for (int i = 0; i < n; i++) {
+        if (!show[(size_t)i]) continue;
+        const ColumnSpec& c = sp[(size_t)i];
+        if (c.flex > 0) {
+            flex_sum += c.flex;
+            flex_floor += std::min(c.width, c.min);
+        } else {
+            fixed += c.width;
+        }
+    }
+    const float slack = avail - fixed - flex_floor;
+    for (int i = 0; i < n; i++) {
+        if (!show[(size_t)i]) continue;
+        const ColumnSpec& c = sp[(size_t)i];
+        if (c.flex > 0 && flex_sum > 0)
+            w[(size_t)i] = std::max(0.0f, std::min(c.width, c.min) +
+                                              std::max(0.0f, slack) * (c.flex / flex_sum));
+        else
+            w[(size_t)i] = c.width;
+    }
+    // Nothing flexes and the fixed columns still overflow: only the first column is left to
+    // give, and it gives rather than painting over its neighbour or over the next pane.
+    float sum = 0;
+    for (int i = 0; i < n; i++) sum += w[(size_t)i];
+    if (sum > avail && w[0] > 0) w[0] = std::max(0.0f, w[0] - (sum - avail));
+    return w;
+}
+
+// ---- classification ----------------------------------------------------------------------------
+
+// From the EXTENSION and directory-ness, which is all a listing has before a stat lands. MIME
+// here would mean sniffing content, and content sniffing is a read of a file nobody asked to
+// open. Decision 0019's rule: the cheap honest signal, and never imply more than is known.
+IconSpec IconFromName(const std::string& name, bool dir) {
+    IconSpec sp;
+    if (dir) {
+        sp.kind = IconKind::Folder;
+        // The special folders, by their XDG names and their English fallbacks. Matched on the
+        // LEAF name, so any Pictures directory gets the mark, which is what makes the mark
+        // information rather than a reward for being in $HOME.
+        std::string leaf = name;
+        const size_t sl = leaf.find_last_of('/');
+        if (sl != std::string::npos) leaf = leaf.substr(sl + 1);
+        std::string low;
+        for (char c : leaf) low += (char)tolower((unsigned char)c);
+        if (low == "home") sp.mark = IconMark::Home;
+        else if (low == "desktop") sp.mark = IconMark::Desktop;
+        else if (low == "documents") sp.mark = IconMark::Documents;
+        else if (low == "downloads") sp.mark = IconMark::Downloads;
+        else if (low == "pictures") sp.mark = IconMark::Pictures;
+        else if (low == "music") sp.mark = IconMark::Music;
+        else if (low == "videos") sp.mark = IconMark::Videos;
+        else if (low == "trash") sp.mark = IconMark::Trash;
+        if (!leaf.empty() && leaf[0] == '.') sp.dimmed = true;
+        return sp;
+    }
+    if (!name.empty() && name[0] == '.') sp.dimmed = true;
+    const size_t d = name.find_last_of('.');
+    if (d == std::string::npos || d == 0 || d + 1 >= name.size()) {
+        sp.kind = IconKind::Generic;
+        return sp;
+    }
+    std::string e = name.substr(d + 1);
+    for (char& c : e) c = (char)tolower((unsigned char)c);
+    static const char* doc[] = {"txt", "md", "rst", "pdf", "doc", "docx", "odt", "rtf", "html",
+                                "htm", "tex", "epub", nullptr};
+    static const char* code[] = {"c", "h", "cc", "cpp", "hpp", "cxx", "rs", "go", "py", "js",
+                                 "ts", "tsx", "jsx", "java", "kt", "swift", "sh", "bash", "fish",
+                                 "zsh", "rb", "lua", "toml", "json", "yaml", "yml", "xml", "ini",
+                                 "cfg", "cmake", "mk", "make", "nix", "sql", nullptr};
+    static const char* img[] = {"png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ppm", "tiff",
+                                "tif", "heic", "avif", "ico", nullptr};
+    static const char* aud[] = {"mp3", "flac", "ogg", "oga", "wav", "aac", "m4a", "opus", "mid",
+                                nullptr};
+    static const char* vid[] = {"mp4", "mkv", "webm", "mov", "avi", "m4v", nullptr};
+    static const char* arc[] = {"zip", "gz", "xz", "bz2", "tar", "tgz", "zst", "7z", "rar", "rpm",
+                                "deb", nullptr};
+    static const char* exe[] = {"so", "a", "o", "ko", "exe", "appimage", nullptr};
+    struct Table { const char** ext; IconKind kind; };
+    const Table tables[] = {{doc, IconKind::Document}, {code, IconKind::Code},
+                            {img, IconKind::Image},    {aud, IconKind::Audio},
+                            {vid, IconKind::Video},    {arc, IconKind::Archive},
+                            {exe, IconKind::Executable}};
+    for (const Table& t : tables)
+        for (const char** p = t.ext; *p; p++)
+            if (e == *p) { sp.kind = t.kind; return sp; }
+    sp.kind = IconKind::Generic;
+    return sp;
+}
+
+bool IconVectorOk(const std::string& svg_path) {
+    VecIcon v;
+    return svg_read(svg_path, &v);
+}
+
+// The default for any Rows: the first cell's text, with the trailing '/' that meant "directory"
+// before IconSpec existed kept as its input. That is what lets every existing source go on
+// working without growing a field.
+IconSpec Rows::Icon(int row) const {
+    std::string name = Cell(row, 0).text;
+    const bool dir = !name.empty() && name.back() == '/';
+    if (dir) name.pop_back();
+    return IconFromName(name, dir);
+}
+
+size_t IconsRasterised() { return icons_cache().rasterised; }
 
 // ---- Tree -------------------------------------------------------------------------------------
 
@@ -2294,15 +3537,19 @@ public:
     }
 
     Size Measure(const Env& e, Constraints c) override {
-        row_h_ = text_h(e) + e.unit * 0.5f;
+        // 26 at the base size of 13, which is the sidebar row of docs/atlas-design.md 2.3, and
+        // whole pixels for the same reason the list's row is.
+        row_h_ = std::round(text_h(e) + e.unit);
         unit_ = e.unit;
         return Size{c.max_w >= 0 ? c.max_w : 200, c.max_h >= 0 ? c.max_h : 300};
     }
 
     void Draw(au_surface* s, const Env& e) override {
         unit_ = e.unit;
-        au_fill_rect(s, frame.box(), au_color{26, 28, 37, 255});
-        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        au_fill_rect(s, frame.box(), e.sidebar);
+        // No ring around the pane. A frame drawn on focus is a box the design does not have
+        // (check C3.5); which pane has the keyboard is said by the selection's own colour, and
+        // by the ring on the cursor row below.
         // Rebuilt here and not in Measure: the flattening asks the source for children, and the
         // tree's own size does not depend on the answer. Rebuilding in Measure would ask on
         // every layout pass instead of only when something actually opened or closed.
@@ -2315,25 +3562,46 @@ public:
         for (int i = first; i <= last; i++) {
             const Row& r = flat_[i];
             const float ry = frame.y + (i - first) * row_h_;
+            // A section header is a label, not a row: no fill, no hover, no selection, and the
+            // keyboard steps over it. One widget then draws a sidebar with "Places" and
+            // "Filesystem" in it, which two stacked widgets could not do -- they would scroll
+            // apart from each other.
+            if (r.section) {
+                const float sx = frame.x + e.unit * 1.5f;
+                au_clip_set(s, au_rect{sx, ry, frame.x + frame.w - 2, ry + row_h_ - 1});
+                au_text_draw(s, e.font, e.size * 0.85f, r.label.c_str(), -1, sx,
+                             ry + row_h_ * 0.78f, e.dim);
+                au_clip_reset(s);
+                continue;
+            }
             const bool is_sel = sel_ && sel_->get() == r.id;
-            if (is_sel)
-                au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
-                             e.accent);
-            else if (i == cur_ && focused_)
-                // The keyboard cursor, distinct from the selection. They are usually the same
-                // row; they come apart when the app sets the selection from elsewhere, and a
-                // tree that showed only one of them would lose the user's place.
-                au_stroke_rect(s, au_rect{frame.x + 1, ry, frame.x + frame.w - 2, ry + row_h_ - 1},
-                               e.surface_hi, 1);
+            // Inset 6 horizontally and 1 vertically, radius 6 (3.3). Three states, three
+            // pictures: which fill says whether this pane has the keyboard, and a ring with no
+            // fill is the cursor with nothing selected.
+            const au_rect in{frame.x + 6, ry + 1, frame.x + frame.w - 7, ry + row_h_ - 2};
+            const bool cursor = i == cur_ && focused_;
+            if (is_sel) {
+                au_fill_round_rect(s, in, 6, 6, focused_ ? e.accent : e.sel_unfocused);
+            } else if (i == hover_ && !(cursor && halo_)) {
+                au_fill_round_rect(s, in, 6, 6, e.hover);
+            }
+            // The keyboard cursor, distinct from the selection. They are usually the same row;
+            // they come apart when the app sets the selection from elsewhere, and a tree that
+            // showed only one of them would lose the user's place.
+            if (cursor && (halo_ || !is_sel)) draw_halo(s, in, 6, e.focus_ring, e.sidebar);
 
-            const float ind = frame.x + e.unit * 0.5f + r.depth * e.unit * 1.5f;
-            const au_color ink = is_sel ? au_color{24, 26, 34, 255} : e.fg;
-            if (r.expandable) chevron(s, ind + e.unit * 0.5f, ry + row_h_ * 0.5f,
-                                     open_.count(r.id) != 0, is_sel ? ink : e.dim);
+            const float ind = frame.x + e.unit * 1.5f + r.depth * e.unit * 2;
+            const au_color ink = is_sel && focused_ ? e.accent_ink : e.fg;
+            // A flat item has no chevron and no children: Places are destinations, the
+            // Filesystem is a tree, and one widget draws both.
+            if (r.expandable && !r.flat)
+                chevron(s, ind + e.unit * 0.5f, ry + row_h_ * 0.5f, open_.count(r.id) != 0,
+                        is_sel && focused_ ? ink : e.dim);
             const float tx = ind + e.unit * 1.5f;
             au_clip_set(s, au_rect{tx, ry, frame.x + frame.w - 2, ry + row_h_ - 1});
-            au_text_draw(s, is_sel ? e.bold : e.font, e.size, r.label.c_str(), -1, tx,
-                         ry + row_h_ * 0.74f, ink);
+            // Never bold on selection: a bolder label changes its width, so the row's text
+            // would shift as the selection moved over it (3.1).
+            au_text_draw(s, e.font, e.size, r.label.c_str(), -1, tx, ry + row_h_ * 0.74f, ink);
             au_clip_reset(s);
             // A node whose children are not here yet says so, rather than looking like a leaf.
             if (r.expandable && open_.count(r.id) && pending_.count(r.id))
@@ -2352,7 +3620,26 @@ public:
 
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     bool CanFocus() const override { return true; }
-    void OnFocus(bool g) override { focused_ = g; }
+    void OnFocus(bool g) override { focused_ = g; whole_ = true; }
+
+    // The row under the pointer, and the two rows the window repaints when it changes. A
+    // section header never hovers: there is nothing to click.
+    bool OnHoverAt(float x, float y) override {
+        (void)x;
+        ensure();
+        const int i = top_ + (int)((y - frame.y) / row_h_);
+        const int to = (i >= 0 && i < (int)flat_.size() && !flat_[(size_t)i].section) ? i : -1;
+        if (to == hover_) return false;
+        dirty_rows_.push_back(hover_);
+        dirty_rows_.push_back(to);
+        hover_ = to;
+        return true;
+    }
+    void OnLeave() override {
+        if (hover_ < 0) return;
+        dirty_rows_.push_back(hover_);
+        hover_ = -1;
+    }
 
     bool OnWheel(float dy) override {
         const int before = top_;
@@ -2377,13 +3664,15 @@ public:
         }
         const int i = top_ + (int)((y - frame.y) / row_h_);
         if (i < 0 || i >= (int)flat_.size()) return;
+        halo_ = false;                               // a pointer press puts the halo away
+        if (flat_[(size_t)i].section) return;        // a heading is not a row to press
         cur_ = i;
         const Row& r = flat_[i];
         // Hitting the twisty toggles without selecting. Clicking the row selects. These are
         // different intents -- "show me what is in there" is not "go there" -- and a tree that
         // conflates them navigates every time someone peeks.
-        const float tw = frame.x + unit_ * 0.5f + r.depth * unit_ * 1.5f + unit_ * 1.5f;
-        if (r.expandable && x < tw) {
+        const float tw = frame.x + unit_ * 1.5f + r.depth * unit_ * 2 + unit_ * 1.5f;
+        if (r.expandable && !r.flat && x < tw) {
             toggle(i);
             return;
         }
@@ -2393,6 +3682,7 @@ public:
 
     bool OnKey(const au_key& k) override {
         if (!k.pressed) return false;
+        halo_ = true;                                // keyboard navigation shows the halo
         ensure();
         const int n = (int)flat_.size();
         if (n == 0) return false;
@@ -2523,6 +3813,8 @@ private:
         std::string id, label;
         int depth = 0;
         bool expandable = false;
+        bool section = false;
+        bool flat = false;
     };
 
     int visible() const { return std::max(1, (int)(frame.h / row_h_)); }
@@ -2533,6 +3825,11 @@ private:
 
     void move(int to) {
         if (to == cur_ || to < 0 || to >= (int)flat_.size()) return;
+        // A heading is not a stop. Step past it in the direction of travel, so Down from the
+        // last Place lands on the first Filesystem row and not on the word "Filesystem".
+        const int dir = to > cur_ ? 1 : -1;
+        while (to >= 0 && to < (int)flat_.size() && flat_[(size_t)to].section) to += dir;
+        if (to < 0 || to >= (int)flat_.size() || to == cur_) return;
         dirty_rows_.push_back(cur_);
         dirty_rows_.push_back(to);
         cur_ = to;
@@ -2541,6 +3838,7 @@ private:
     }
 
     void select(int i) {
+        if (i < 0 || i >= (int)flat_.size() || flat_[(size_t)i].section) return;
         dirty_rows_.push_back(i);
         cur_ = i;
         const std::string& id = flat_[i].id;
@@ -2598,8 +3896,17 @@ private:
             return;
         }
         for (const TreeItem& k : kids) {
-            flat_.push_back(Row{k.id, k.label, depth, k.expandable});
-            if (k.expandable && open_.count(k.id)) walk(k.id, depth + 1);
+            Row r;
+            r.id = k.id;
+            r.label = k.label;
+            r.depth = depth;
+            r.expandable = k.expandable && !k.flat && !k.section;
+            r.section = k.section;
+            r.flat = k.flat;
+            flat_.push_back(r);
+            // A flat item is a destination and a section is a heading: neither is ever asked
+            // for children, which is the whole cost bargain of the tree kept for both.
+            if (r.expandable && open_.count(k.id)) walk(k.id, depth + 1);
         }
     }
 
@@ -2612,7 +3919,8 @@ private:
     Scroller sb_;
     std::function<bool(const std::string&, const DragData&)> on_drop_;
     float row_h_ = 16, unit_ = 8;
-    int top_ = 0, cur_ = -1, drop_row_ = -1;
+    int top_ = 0, cur_ = -1, drop_row_ = -1, hover_ = -1;
+    bool halo_ = true;        // the focus halo follows keyboard use; see Window::keyboard_driven
     bool focused_ = false, flat_valid_ = false, whole_ = true;
 };
 
@@ -2779,6 +4087,24 @@ private:
 
 // ---- Ease -------------------------------------------------------------------------------------
 
+// The curves, as one function of a value. Nothing else in the toolkit may shape a transition:
+// an easing written at a call site is the thing that makes motion unexplorable later.
+//
+// There is no ease-IN for anything a person initiated: a slow start reads as the program
+// hesitating. EaseInOut is here for motion the program begins by itself, which Phase 1 has none
+// of and Phase 2's glass promotion will.
+float curve_at(Curve c, float t) {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    switch (c) {
+        case Curve::Linear: return t;
+        case Curve::EaseInOut:
+            return t < 0.5f ? 4 * t * t * t : 1 - (-2 * t + 2) * (-2 * t + 2) * (-2 * t + 2) / 2;
+        case Curve::EaseOut:
+        default: return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);   // cubic
+    }
+}
+
 void Ease::target(float t, uint32_t ms) {
     if (t == want_ && running_) return;      // already heading there
     from_ = cur_;                            // resume from where it got to, not from the start
@@ -2789,16 +4115,21 @@ void Ease::target(float t, uint32_t ms) {
     if (!running_) cur_ = want_;
 }
 
+void Ease::target(float t, Transition tr) {
+    curve_ = tr.curve;
+    // Motion::None is not a zero-length animation with a curve: it is no animation, and it has
+    // to land on the end state in the same frame. Resolving it here means no animating node has
+    // to remember to.
+    target(t, tr.motion == Motion::None ? 0u : tr.ms);
+}
+
 bool Ease::tick() {
     if (!running_) return false;
     const double el =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0_).count();
     float p = ms_ > 0 ? (float)(el / ms_) : 1.0f;
     if (p >= 1.0f) { cur_ = want_; running_ = false; return false; }
-    // Cubic ease-out. No ease-in anywhere in this toolkit: for anything the user initiated it
-    // reads as the program hesitating.
-    const float k = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);
-    cur_ = from_ + (want_ - from_) * k;
+    cur_ = from_ + (want_ - from_) * curve_at(curve_, p);
     return true;
 }
 
@@ -2876,6 +4207,14 @@ Desc Button(std::string l, std::function<void()> f, State<bool>* enabled) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f), enabled);
 }
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
+
+Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled) {
+    return std::make_shared<GlyphButtonNode>(g, std::move(on_click), enabled);
+}
+
+Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items) {
+    return std::make_shared<GlyphButtonNode>(g, std::move(items));
+}
 
 Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> f) {
     return std::make_shared<ToggleNode>(std::move(label), on, false, std::move(f));
@@ -2956,6 +4295,20 @@ void ListIcons(const Desc& list, bool on) {
     if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetIcons(on);
 }
 
+float ListRowHeight(const Desc& list) {
+    const ListNode* l = dynamic_cast<const ListNode*>(list.get());
+    return l ? l->row_height() : 0;
+}
+
+float ListHeaderHeight(const Desc& list) {
+    const ListNode* l = dynamic_cast<const ListNode*>(list.get());
+    return l ? l->header_height() : 0;
+}
+
+void ListSetCursor(const Desc& list, int row) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetCursorOnly(row);
+}
+
 void ListSingleSelect(const Desc& list) {
     if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetSingleSelect();
 }
@@ -3012,6 +4365,11 @@ std::string TreeRowId(const Desc& tree, int row) {
 int TreeRowDepth(const Desc& tree, int row) {
     TreeNode* t = dynamic_cast<TreeNode*>(tree.get());
     return t ? t->row_depth(row) : -1;
+}
+
+int TreeCursor(const Desc& tree) {
+    TreeNode* t = dynamic_cast<TreeNode*>(tree.get());
+    return t ? t->cursor() : -1;
 }
 
 Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
@@ -3275,13 +4633,31 @@ int Window::ShowMenu(float x, float y, std::vector<MenuItem> items, int max_ms) 
 
 // ---- window -----------------------------------------------------------------------------------
 
+// The base text size a window starts at.
+//
+// The plain system font reports 12 -- a size the shell abandoned for 14 -- and the window used
+// to adopt it. Every size in a design is a multiplier on this base (TextStyle::size), so that
+// put the whole interface one step low, with nothing on screen to say why and every caller
+// having to remember `env().size = 13` to get the design they were handed. The toolkit states
+// its own base instead, and a person who wants a bigger interface says so once.
+float default_base_size() {
+    if (const char* s = getenv("AURORA_UI_SIZE")) {
+        const float v = (float)atof(s);
+        if (v >= 8 && v <= 48) return v;
+    }
+    return Env::kBaseSize;
+}
+
+
 Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
     wl_ = au_wl_connect();
     if (!wl_) return;
     scale_ = au_wl_output_scale(wl_);
     if (scale_ < 1) scale_ = 1;
+    // The FACE comes from the system; the SIZE does not. See default_base_size.
     float sz = 13;
-    if (au_font_system("plain", &env_.font, &sz)) env_.size = sz;
+    au_font_system("plain", &env_.font, &sz);
+    env_.size = default_base_size();
     if (!au_font_system("bold", &env_.bold, &sz)) env_.bold = env_.font;
     // Italic is not a system font: Haiku's SystemFont only knows plain, bold and fixed. So find
     // the plain face's family and ask for its italic sibling by name, falling back to upright
@@ -3372,6 +4748,9 @@ void Window::Draw() {
     au_clip_set(sf_, clip.box());
     au_fill_rect(sf_, clip.box(), au_color{24, 26, 34, 255});
     if (root_) root_->Draw(sf_, env_);
+    // Last, and by the window: a ghost has to be able to leave the widget it came from, and a
+    // node can only draw inside its own frame.
+    draw_ghost();
     au_clip_reset(sf_);
 
     // AURORA_UI_SLOW_MS burns that many milliseconds inside the draw. It exists to prove the
@@ -3512,8 +4891,10 @@ void Window::HandleEvent(int kind, int a, int b) {
             }
             break;
         case AU_EV_POINTER_MOVE: {
+            if (w->ghost_on_) w->Invalidate(w->drag_ghost_rect());    // where it was
             w->px_ = a / 256.0f;
             w->py_ = b / 256.0f;
+            if (w->ghost_on_) w->Invalidate(w->drag_ghost_rect());    // where it is now
             // A drag goes to the node the press landed on, not to whatever is under the
             // pointer now: dragging a selection past the end of a field must keep selecting in
             // that field rather than hand the motion to a neighbour.
@@ -3532,10 +4913,16 @@ void Window::HandleEvent(int kind, int a, int b) {
                 // The payoff: a hover repaints the two nodes whose appearance changed, not the
                 // window. Before damage tracking this was a full repaint of every frame a
                 // pointer crossed a button.
-                if (w->hover_) { w->hover_->OnLeave(); w->Invalidate(w->hover_->frame); }
+                if (w->hover_) { w->hover_->OnLeave(); w->damage_hinted(w->hover_); }
                 w->hover_ = n;
-                if (n) { n->OnEnter(); w->Invalidate(n->frame); }
+                if (n) { n->OnEnter(); n->OnHoverAt(w->px_, w->py_); w->damage_hinted(n); }
+                break;
             }
+            // The pointer moved INSIDE the node it was already in, which for a list or a grid
+            // is a different row under it. The node says whether that changed anything, and
+            // then says which rectangles: a hover down a listing is two rows per step, not the
+            // pane, and a node that does not track the pointer answers false and costs nothing.
+            if (n && n->OnHoverAt(w->px_, w->py_)) w->damage_hinted(n);
             break;
         }
         case AU_EV_POINTER_LEAVE:
@@ -3578,6 +4965,7 @@ void Window::HandleEvent(int kind, int a, int b) {
                 w->last_y_ = w->py_;
 
                 w->pressed_ = n;
+                w->keyboard_driven_ = false;      // a press puts the halo away
                 // Arm, do not start: whether this press is a drag is not known until it moves.
                 w->drag_armed_ = n != nullptr;
                 w->drag_x0_ = w->px_;
@@ -3630,6 +5018,8 @@ void Window::HandleKey(const au_key& kk) {
     Window* w = this;
     const au_key* k = &kk;
     w->keys_seen_++;
+    // The focus halo follows keyboard use: see Window::keyboard_driven.
+    if (k->pressed) w->keyboard_driven_ = true;
     // The app's accelerators first: they must work wherever the focus is.
     if (w->key_hook_ && w->key_hook_(*k)) return;
     // Tab moves focus. It is handled before the focused node sees the key, because a widget that
@@ -3796,6 +5186,24 @@ void Window::drag_motion(float x, float y) {
         drag_ = std::move(d);
         drag_src_ = pressed_;
         drag_live_ = true;
+        // The ghost, built once here from what is being dragged. The window can do this
+        // because a uri-list IS the payload: the leaf name and the count are in it, and an app
+        // that wants a different ghost says so with SetDragGhost. Without a default, every app
+        // would have to build one and the gesture would have no feedback until it did -- and
+        // the presenter cannot change the cursor, so the ghost is the only feedback there is.
+        if (!drag_.paths.empty()) {
+            DragGhost g;
+            std::string leaf = drag_.paths[0];
+            while (!leaf.empty() && leaf.back() == '/') leaf.pop_back();
+            const size_t sl = leaf.find_last_of('/');
+            if (sl != std::string::npos) leaf = leaf.substr(sl + 1);
+            struct stat st;
+            const bool dir = stat(drag_.paths[0].c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+            g.label = leaf;
+            g.icon = IconFromName(leaf, dir);
+            g.count = (int)drag_.paths.size();
+            SetDragGhost(g);
+        }
         if (getenv("AURORA_UI_TRACE"))
             fprintf(stderr, "ui: drag START %zu path(s) first=%s\n", drag_.paths.size(),
                     drag_.paths.empty() ? "-" : drag_.paths[0].c_str());
@@ -3827,6 +5235,7 @@ void Window::drag_motion(float x, float y) {
 }
 
 void Window::drag_finish(float x, float y) {
+    ClearDragGhost();
     drag_armed_ = false;
     if (!drag_live_) return;
     Node* tgt = drag_tgt_;
@@ -3857,6 +5266,88 @@ void Window::drag_finish(float x, float y) {
 //
 // A node whose size is part of the layout owes the window a full frame anyway; Draw's own
 // `moving` branch already says so with damage_.all(). This is that same rule, one step earlier.
+// ---- the drag ghost -----------------------------------------------------------------------
+//
+// The plate is 85% opaque in the design; the surface is opaque, so the plate is MIXED with what
+// it covers rather than blended per pixel -- which is also what keeps it one fill instead of a
+// read-modify-write over the frame underneath.
+static au_color mix(au_color a, au_color b, float t) {
+    return au_color{(uint8_t)(a.r + (b.r - a.r) * t), (uint8_t)(a.g + (b.g - a.g) * t),
+                    (uint8_t)(a.b + (b.b - a.b) * t), 255};
+}
+
+void Window::SetDragGhost(const DragGhost& g) {
+    if (ghost_on_) Invalidate(drag_ghost_rect());      // where it was
+    ghost_ = g;
+    ghost_on_ = true;
+    Invalidate(drag_ghost_rect());                     // where it is
+}
+
+void Window::ClearDragGhost() {
+    if (!ghost_on_) return;
+    Invalidate(drag_ghost_rect());
+    ghost_on_ = false;
+}
+
+Rect Window::drag_ghost_rect() const {
+    if (!ghost_on_) return Rect{};
+    const float u = env_.unit;
+    const float icon = ghost_.has_icon ? u * 3 : 0;          // 24 at the unit of 8
+    const float label = std::min(ghost_.max_label,
+                                 au_text_width(env_.font, env_.size, ghost_.label.c_str(), -1));
+    const float w = u + icon + (icon > 0 ? u : 0) + label + u;
+    const float h = std::max(icon, text_h(env_)) + u;
+    // Offset from the pointer, not under it: a ghost centred on the pointer hides the row it is
+    // about to be dropped on. Clamped into the window, because the offset puts it outside near
+    // the right and bottom edges, and a ghost you cannot see is a drag with no feedback at all
+    // -- which is the state this exists to fix, the presenter having no cursor to change.
+    const float x = std::max(0.0f, std::min(px_ + 12, (float)lw_ - w));
+    const float y = std::max(0.0f, std::min(py_ + 12, (float)lh_ - h));
+    return Rect{x, y, w, h};
+}
+
+void Window::draw_ghost() {
+    if (!ghost_on_) return;
+    const Rect r = drag_ghost_rect();
+    const float u = env_.unit;
+    au_fill_round_rect(sf_, r.box(), 6, 6, mix(env_.content, env_.surface_hi, 0.85f));
+    float x = r.x + u;
+    if (ghost_.has_icon) {
+        draw_icon(sf_, Rect{x, r.y + (r.h - u * 3) / 2, u * 3, u * 3}, ghost_.icon,
+                  au_surface_scale(sf_), false, env_.surface_hi);
+        x += u * 3 + u;
+    }
+    const std::string shown = elide_middle(env_.font, env_.size, ghost_.label, ghost_.max_label);
+    au_text_draw(sf_, env_.font, env_.size, shown.c_str(), -1, x,
+                 baseline_in(env_, Rect{x, r.y, r.w, r.h}), env_.fg);
+    if (ghost_.count > 1) {
+        // The count, in a circle at the plate's top-right corner. A drag of three files that
+        // looked like a drag of one is how two of them get left behind.
+        const float d = u * 2.25f;
+        const au_rect b{r.x + r.w - d * 0.6f, r.y - d * 0.4f, r.x + r.w + d * 0.4f,
+                        r.y + d * 0.6f};
+        au_fill_ellipse(sf_, b, env_.accent);
+        char n[16];
+        snprintf(n, sizeof n, "%d", ghost_.count > 99 ? 99 : ghost_.count);
+        const float tw = au_text_width(env_.font, env_.size * 0.85f, n, -1);
+        au_text_draw(sf_, env_.font, env_.size * 0.85f, n, -1, (b.l + b.r) / 2 - tw / 2,
+                     (b.t + b.b) / 2 + env_.size * 0.3f, env_.accent_ink);
+    }
+}
+
+// Damage what a node says changed, or its whole frame when it has nothing better to say. The
+// same three lines were written out at every call site that handled an event; a hover is the
+// one where getting it wrong is a full repaint per pointer move.
+void Window::damage_hinted(Node* n) {
+    if (!n) return;
+    std::vector<Rect> hint;
+    if (n->DamageHint(&hint)) {
+        for (const Rect& r : hint) Invalidate(r);
+        return;
+    }
+    Invalidate(n->frame);
+}
+
 void Window::damage_for(Node* n) {
     if (n->Animating()) Invalidate();
     else Invalidate(n->frame);

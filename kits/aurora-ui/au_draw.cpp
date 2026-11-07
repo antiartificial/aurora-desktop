@@ -96,6 +96,12 @@ int au_surface_px_h(const au_surface* s) { return s ? s->canvas.Height() : 0; }
 double au_surface_scale(const au_surface* s) { return s ? s->canvas.Scale() : 1.0; }
 const uint32_t* au_surface_pixels(const au_surface* s) { return s ? s->canvas.Pixels() : nullptr; }
 
+uint32_t* au_surface_pixels_mut(au_surface* s) {
+    // Canvas::Pixels() is const and the buffer is not. One const_cast, named and explained here,
+    // is better than a second accessor on Canvas that every other caller could reach for.
+    return s ? const_cast<uint32_t*>(s->canvas.Pixels()) : nullptr;
+}
+
 // ---- drawing ----------------------------------------------------------------------------------
 
 void au_clear(au_surface* s, au_color c) { if (s) s->canvas.Clear(C(c)); }
@@ -120,6 +126,12 @@ void au_stroke_line(au_surface* s, float x0, float y0, float x1, float y1, au_co
 }
 void au_fill_ellipse(au_surface* s, au_rect r, au_color c) {
     if (s) s->canvas.FillEllipse(R(r), C(c));
+}
+void au_stroke_round_rect(au_surface* s, au_rect r, float rx, float ry, au_color c, float pen) {
+    if (s) s->canvas.StrokeRoundRect(R(r), rx, ry, C(c), pen);
+}
+void au_fill_polys(au_surface* s, const float* xy, const int* counts, int loops, au_color c) {
+    if (s && xy && counts && loops > 0) s->canvas.FillPolygons(xy, counts, loops, C(c));
 }
 
 void au_draw_image(au_surface* s, const uint32_t* argb, int sw, int sh, au_rect dst) {

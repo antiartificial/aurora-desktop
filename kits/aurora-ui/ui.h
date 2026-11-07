@@ -67,20 +67,106 @@ struct TextStyle {
     au_color color{};              // only when has_color
 };
 
+// ---- motion ------------------------------------------------------------------------------------
+//
+// Durations and curves are VALUES carried in the environment, not constants at call sites. The
+// reason is in docs/atlas-design.md section 7: motion is meant to be explored once the rest
+// settles, and an exploration that means editing twelve call sites is a rewrite rather than a
+// setting. So every duration in a window comes from one table, a curve is a function of a value,
+// and turning motion down is one call -- MotionTable::resolve -- instead of a condition that
+// every animating node repeats and one of them gets wrong.
+//
+// Two axes rather than one, because the axis is a property of the TRANSITION and not of the
+// parent: a bar that slid down inside a row would be wrong, and a single Reveal used on the
+// wrong axis is silently wrong rather than refused. I made exactly that mistake -- a height
+// Reveal in an HStack reserved its full natural WIDTH while invisible, and the pane it was
+// hiding swallowed the hit test.
+enum class Motion : uint8_t { None, Reveal, RevealX, Fade };
+enum class Curve : uint8_t { EaseOut, Linear, EaseInOut };
+
+struct Transition {
+    Motion motion = Motion::Reveal;
+    uint32_t ms = 140;                 // matches the shell's chrome
+    Curve curve = Curve::EaseOut;
+};
+
+// Eased progress of a normalised t, as a free function: a curve is then a value a caller passes,
+// and a new curve is one case here rather than a new branch inside every animating node.
+float curve_at(Curve c, float t);
+
+// The named motions of the design and the two switches that turn them down. A node asks for the
+// motion it MEANS (`env.motion.pane`), which is what makes a duration change one edit.
+struct MotionTable {
+    bool enabled = true;       // [motion] enabled = false snaps everything, the fade included
+    bool reduced = false;      // [motion] reduced: sizes snap; opacity may still move
+
+    Transition pane{Motion::RevealX, 160, Curve::EaseOut};   // sidebar and preview reveals
+    Transition fade{Motion::Fade, 100, Curve::Linear};       // the type-ahead pill
+    Transition tint{Motion::Fade, 200, Curve::EaseOut};      // a colour promotion (glass)
+
+    // What a transition becomes here and now. `affordable` is the window's frame-budget verdict
+    // (Window::motion_allowed), so degradation and preference resolve in ONE place and a node
+    // cannot honour one and forget the other.
+    Transition resolve(Transition t, bool affordable = true) const {
+        if (!enabled || !affordable) { t.motion = Motion::None; return t; }
+        if (reduced && t.motion != Motion::Fade) t.motion = Motion::None;
+        return t;
+    }
+};
+
 // ---- the environment: what flows down, with explicit override points -------------------------
 
 struct Env {
+    // The toolkit's base text size, and the one number a caller must NOT have to remember.
+    //
+    // Every size in a design is a multiplier on this (TextStyle::size), so the base decides the
+    // whole interface. The plain system font reports 12 -- a size the shell abandoned for 14 --
+    // and a window that adopted it put every size in docs/atlas-design.md one step low with
+    // nothing on screen to say why. So the base is stated here, the system font supplies the
+    // FACE and not the size, and a person who wants a larger interface sets AURORA_UI_SIZE.
+    static constexpr float kBaseSize = 13;
+
     au_font font{};
-    float size = 13;
+    float size = kBaseSize;
     au_font bold{};
     au_font italic{};
     au_font bold_italic{};
     float unit = 8;                 // the spacing unit; padding(1) is one unit
-    au_color fg{236, 239, 244, 255};
-    au_color dim{150, 157, 178, 255};
-    au_color accent{122, 162, 247, 255};
-    au_color surface{38, 41, 54, 255};
-    au_color surface_hi{52, 56, 73, 255};
+
+    // ---- colour roles (docs/atlas-design.md section 3.6, the dark scheme) ----
+    //
+    // The first five keep their old names because every widget already draws with them:
+    // fg = text, dim = text-2, surface = chrome, surface_hi = raised. The rest were hard-coded
+    // inside the list, the grid and the tree -- three different near-blacks, none of them
+    // nameable by a theme -- and are named here so a scheme is data and not a literal in a draw
+    // routine. The theme reader that fills them from [theme.ui] is Phase 2.
+    au_color fg{236, 239, 244, 255};            // text      #ECEFF4
+    au_color dim{163, 170, 191, 255};           // text-2    #A3AABF
+    au_color dim3{110, 117, 138, 255};          // text-3    #6E758A  disabled, placeholder, em dash
+    au_color accent{122, 162, 247, 255};        // accent    #7AA2F7
+    au_color accent_ink{24, 26, 34, 255};       // accent-ink #181A22 text on a focused selection
+    au_color surface{38, 41, 54, 255};          // chrome    #262936
+    au_color surface_hi{52, 56, 73, 255};       // raised    #343849
+    au_color content{30, 32, 42, 255};          // content   #1E202A  the list and grid panes
+    au_color content_alt{33, 35, 48, 255};      // content-alt #212330 zebra rows
+    au_color sidebar{26, 28, 37, 255};          // sidebar   #1A1C25
+    au_color field{22, 24, 32, 255};            // field     #161820
+    au_color hover{39, 43, 56, 255};            // hover     #272B38  row and tile hover fill
+    au_color hairline{62, 66, 86, 255};         // hairline  #3E4256
+    au_color divider{44, 48, 64, 255};          // divider   #2C3040  under the column header
+    // The selection fill when the pane does NOT have focus, and the focus ring. Both exist so
+    // that selected-and-focused, selected-and-unfocused and cursor-only are three different
+    // pictures rather than two: a state that renders like another state is a correctness bug in
+    // this codebase, not a cosmetic one.
+    au_color sel_unfocused{58, 65, 88, 255};    // selection-unfocused #3A4158
+    au_color focus_ring{122, 162, 247, 255};    // accent, nameable apart from it
+    au_color destructive{240, 138, 138, 255};   // destructive #F08A8A
+    au_color warning{224, 175, 104, 255};       // warning   #E0AF68
+    au_color success{158, 206, 106, 255};       // success   #9ECE6A
+
+    // Every duration and curve in the window, in one place. A node animates with
+    // `env.motion.resolve(env.motion.pane, allowed)` and never names a number.
+    MotionTable motion;
 
     // The face and size a style asks for. One place resolves this, so every component that draws
     // text gets the same answer and a missing face falls back rather than drawing nothing.
@@ -93,6 +179,12 @@ struct Env {
     float sized(const TextStyle& st) const { return size * st.size; }
     au_color ink(const TextStyle& st) const { return st.has_color ? st.color : fg; }
 };
+
+// The base size a Window starts at: Env::kBaseSize, or AURORA_UI_SIZE when a person asked for
+// a larger interface. A FUNCTION, and public, so the rule can be checked without a display: the
+// window's constructor needs a compositor, and a base size one step low is exactly the kind of
+// mistake that only shows up in a running app and then only to someone who knows the design.
+float default_base_size();
 
 // ---- state: a cell, bound at build, that invalidates what it feeds ---------------------------
 
@@ -162,6 +254,14 @@ public:
     virtual Node* HitTest(float x, float y) { return frame.has(x, y) ? this : nullptr; }
     virtual void OnEnter() {}
     virtual void OnLeave() {}
+
+    // The pointer MOVED inside this node, which for a list or a grid is a different row under
+    // it and a different two rectangles to repaint. Return true when something about the way
+    // this node draws has changed; the window then takes DamageHint, so a hover down a list
+    // costs two rows and not the pane. Returning false means "nothing changed", and the window
+    // damages NOTHING -- which is why the default is false: a node that does not track the
+    // pointer must not make every pointer move a repaint of itself.
+    virtual bool OnHoverAt(float x, float y) { (void)x; (void)y; return false; }
     virtual void OnPress() {}
     virtual void OnRelease(bool inside) { (void)inside; }
 
@@ -287,6 +387,22 @@ Desc Button(std::string label, std::function<void()> on_click);
 Desc Button(std::string label, std::function<void()> on_click, State<bool>* enabled);
 Desc Spacer();                                       // takes all the leftover space
 
+// ---- glyph buttons ------------------------------------------------------------------------------
+//
+// A Button draws a STRING. A toolbar of words is the thing the design rejects first, and a glyph
+// is a drawing, so it cannot be a label: these are the glyphs the toolbar of docs/atlas-design.md
+// 6.9 asks for, drawn from canvas primitives at the size they are placed at.
+enum class Glyph : uint8_t {
+    Back, Forward, Up, Sidebar, Preview, View, Filter, Search, Plus, Minus, More, Refresh, Close
+};
+
+// 28x28 by default (the toolbar's button), hover and press and focus like a Button, and the
+// same `enabled` cell -- a disabled button STAYS VISIBLE with its glyph in the tertiary ink,
+// because hiding what is unavailable teaches the wrong model.
+Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled = nullptr);
+
+// MenuButton is declared with the menus, below: it needs MenuItem.
+
 // ---- the small controls -------------------------------------------------------------------------
 
 // A checkbox and a switch are ONE widget with two drawings. The difference is a visual
@@ -316,6 +432,101 @@ Desc HStack(std::vector<Desc> children, float gap_units = 0.5f);
 
 // ---- the list: rows are demanded, never pushed -----------------------------------------------
 
+class Rows;
+
+// Where a cell's text sits in its column. Numbers are right-aligned because the text stack has
+// no tabular figures: a right edge is what lets a column of sizes be read down.
+enum class Align : uint8_t { Left, Right, Center };
+
+// One column, as the source declares it. Widths are layout units.
+//
+// `flex` > 0 takes a share of the leftover width; `min` is a floor that the slack-sharing and
+// the shrinking both respect; `visible_from` is the list width at which the column appears at
+// all, which is how a narrow window shows Name and Size and a wide one adds Kind without
+// anything being clipped at either size.
+struct ColumnSpec {
+    std::string title;
+    float width = 120;             // the natural width, and the width when nothing flexes
+    float min = 0;                 // a floor, not a hint
+    float flex = 0;                // > 0 absorbs the slack, shared in proportion
+    Align align = Align::Left;
+    float visible_from = 0;        // show this column only when the list is at least this wide
+};
+
+// The resolved width of every column for a list this wide, in column order; 0 means the column
+// is NOT shown. This is the rule itself, not a convenience: a reviewer and a test can ask what
+// the layout will be without a window, and the invariant worth asserting is that the shown
+// columns sum to at most `avail` and that no shown column is narrower than its min.
+std::vector<float> SolveColumns(const Rows* rows, float avail);
+
+// ---- icons -------------------------------------------------------------------------------------
+//
+// A kind, a mark and a badge, which is the information a listing actually carries: what sort of
+// thing this is, which particular one of that sort it is, and what is true about this instance
+// (a link, a broken link). The three are separate because they are cached separately: every
+// icon is rasterised once per (kind, mark, badge, variant, size, scale) and blitted thereafter,
+// so a badge is part of the cached image and a dimmed icon is a second cached variant rather
+// than a per-frame blend.
+enum class IconKind : uint8_t {
+    Folder, Document, Code, Image, Audio, Video, Archive, Executable, Generic
+};
+// A mark drawn inside the kind's body. The special folders of docs/atlas-design.md section 4.3.
+enum class IconMark : uint8_t { None, Home, Desktop, Documents, Downloads, Pictures, Music, Videos, Trash };
+enum class IconBadge : uint8_t { None, Link, Broken };
+
+// Where the picture comes from.
+//
+// Procedural is the family drawn from canvas primitives, and it is the default for the reason
+// docs/aurora-ui.md gives: an explorer must not link an image decoder, because decoding an
+// untrusted file is a verb that runs in a domain. Vector and Bitmap exist because an icon theme
+// and an app's own icon are real things a desktop has, and because a thumbnail from preview@v1
+// arrives as pixels.
+//
+// Vector reads a SUBSET of SVG: `path` (M, L, H, V, C, S, Q, T, Z, absolute and relative),
+// `rect`, `circle`, `ellipse`, `polygon`, `polyline`, a `fill` of #rgb / #rrggbb / `none` /
+// `currentColor`, `fill-opacity`, and `viewBox`. No transforms, no strokes, no gradients, no
+// text, no CSS. Anything outside that subset makes the whole file unreadable rather than
+// half-drawn: IconVectorOk() says so, and an icon that cannot be read falls back to its kind's
+// procedural glyph, which is a wrong icon rather than a broken window.
+//
+// Bitmap takes PIXELS, not an encoded file: straight-alpha ARGB (0xAARRGGBB) that the caller
+// owns, or a PPM/PAM file, which needs no decoder. There is deliberately no PNG path here; a
+// PNG is decoded by whatever produced it (preview@v1, an icon service) and handed over as
+// pixels, which keeps the decoder out of this process.
+enum class IconFormat : uint8_t { Procedural, Vector, Bitmap };
+
+struct IconSpec {
+    IconKind kind = IconKind::Generic;
+    IconMark mark = IconMark::None;
+    IconBadge badge = IconBadge::None;
+    bool dimmed = false;                 // a hidden entry: a cached variant, never a blend
+    IconFormat format = IconFormat::Procedural;
+
+    std::string path;                    // Vector: an .svg file; Bitmap: a .ppm / .pam file
+    // An in-memory bitmap. The caller owns the pixels and must keep them alive until the first
+    // draw; after that the rasterisation is cached and the source is not read again. `id` is
+    // what identifies it in the cache -- two different bitmaps with the same id are one icon --
+    // so it has to be stable and unique per image (a pointer value will not do: a freed buffer
+    // and a new one can share an address).
+    const uint32_t* argb = nullptr;
+    int argb_w = 0, argb_h = 0;
+    uint64_t id = 0;
+};
+
+// The default classification, from the name and directory-ness: the table of
+// docs/atlas-design.md section 4.1. It is a free function so an app can call it, adjust the
+// result and hand back something closer to the truth than a name can be.
+IconSpec IconFromName(const std::string& name, bool dir);
+
+// Whether a vector icon can be read at all, without drawing it. For a test, and for an app that
+// would rather know than find out one frame at a time.
+bool IconVectorOk(const std::string& svg_path);
+
+// How many icons have been rasterised since the process started. The cost rule of section 4.5
+// is that a scroll rasterises nothing: this is the number that proves it, rather than a trace
+// line a reviewer has to read by eye.
+size_t IconsRasterised();
+
 enum class CellState { Ready, Pending, Unknown };
 struct CellValue {
     CellState state = CellState::Pending;
@@ -335,8 +546,40 @@ public:
     // the range before each unit of work and a range it has left is no longer wanted.
     virtual void Want(int first, int last) { (void)first; (void)last; }
     virtual int Columns() const = 0;
+    // Still here, and still the only two a simple source has to write. They are the INPUT to
+    // Column()'s default below rather than what the widget draws from: a source that states a
+    // width and a title keeps the layout it had, and a source that wants the rest overrides
+    // Column(). Migrating the other way -- deleting these now -- would mean editing the
+    // chooser's shared DirRows, which is a different stage's file.
     virtual float ColumnWidth(int col) const = 0;
     virtual std::string ColumnTitle(int col) const = 0;
+
+    // What the widget actually lays out from. The important field is `flex`: the Name column
+    // absorbs the slack, which is what makes "the Modified column cut off mid-value" -- the
+    // loudest defect in Atlas today -- impossible by construction. The rule the list applies
+    // (SolveColumns, below) is that a column either fits WHOLE or is dropped; a fixed column
+    // never gives way to the flexible one, and the flexible one never shrinks past `min`.
+    //
+    // The default derives a fixed column from the two legacy virtuals, which is the layout
+    // every existing source already has.
+    virtual ColumnSpec Column(int col) const {
+        ColumnSpec s;
+        s.title = ColumnTitle(col);
+        s.width = ColumnWidth(col);
+        s.min = s.width;             // a stated width and no floor is a fixed column
+        return s;
+    }
+
+    // What a row IS, for the icon at the head of its first cell: a kind, a mark inside it, a
+    // badge over it, and a dimmed variant for a hidden entry. The default classifies by name,
+    // with the trailing '/' that meant "directory" before this existed kept as its input, so no
+    // existing Rows has to grow a field to go on working.
+    //
+    // A source may also hand over a VECTOR or a BITMAP icon instead of the procedural family
+    // (IconSpec::format): an icon theme, an app's own icon, a thumbnail from a verb. Either is
+    // rasterised once per (source, size, scale, variant) and blitted after that, which is the
+    // same bargain the procedural icons already keep -- see IconSpec.
+    virtual IconSpec Icon(int row) const;
 
     // ---- sorting ----
     //
@@ -422,6 +665,19 @@ std::vector<int> ListSelection(const Desc& list);
 void ListIcons(const Desc& list, bool on = true);
 
 void ListSingleSelect(const Desc& list);
+
+// Put the cursor on a row WITHOUT selecting it, which is a state the design asks for twice:
+// after a navigation ("the cursor is the first row and nothing is selected") and after a
+// delete. The cursor is drawn as a focus ring rather than a fill, so it cannot be mistaken for
+// a selection -- which is the whole reason the two are separate here.
+void ListSetCursor(const Desc& list, int row);
+
+// The list's row and header heights, as it resolved them from the environment. An app placing
+// anything over a row needs these (a rename field, a drag ghost, a tooltip), and so does a test
+// that wants to point at the third row rather than at a y it guessed; they are the list's
+// observable geometry, the same way TreeRowCount is the tree's observable state.
+float ListRowHeight(const Desc& list);
+float ListHeaderHeight(const Desc& list);
 
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
 
@@ -512,20 +768,17 @@ Desc TextField(State<std::string>* text,
 // single Reveal used on the wrong axis is silently wrong rather than refused. I made exactly
 // that mistake -- a height Reveal in an HStack reserved its full natural WIDTH while invisible,
 // and the pane it was hiding swallowed the hit test.
-enum class Motion : uint8_t { None, Reveal, RevealX };
-enum class Curve : uint8_t { EaseOut, Linear };
-
-struct Transition {
-    Motion motion = Motion::Reveal;
-    uint32_t ms = 140;                 // matches the shell's chrome
-    Curve curve = Curve::EaseOut;
-};
+// Motion, Curve, Transition and MotionTable are declared above Env, because Env carries the
+// table: see "---- motion ----" there for why durations are values.
 
 // Eased progress, and the one rule that makes a reversal not stutter: it resumes from where it
 // got to rather than from the start.
 class Ease {
 public:
     void target(float t, uint32_t ms);
+    // The same, taking the transition it is running: duration and curve together, so a node
+    // that was handed a Transition never has to take it apart.
+    void target(float t, Transition tr);
     float value() const { return cur_; }
     bool running() const { return running_; }
     // Advance to now. Returns true while still moving.
@@ -535,6 +788,7 @@ public:
 private:
     float cur_ = 0, from_ = 0, want_ = 0;
     uint32_t ms_ = 140;
+    Curve curve_ = Curve::EaseOut;
     bool running_ = false;
     std::chrono::steady_clock::time_point t0_{};
 };
@@ -576,6 +830,17 @@ struct TreeItem {
     std::string id;
     std::string label;
     bool expandable = false;
+
+    // A non-selectable heading. It takes a row, draws in the caption size and the secondary
+    // ink, and the keyboard steps over it: Up and Down skip it, a click on it does nothing,
+    // and it can never be the selection. One widget then draws a sidebar that has both
+    // "Places" and "Filesystem" in it, which is what the design asks for and what a second
+    // widget stacked above the tree could not do (it would scroll separately).
+    bool section = false;
+
+    // A leaf that is a destination, not a branch: no chevron, no children asked for, no
+    // expansion remembered. Places are flat; the Filesystem tree is not.
+    bool flat = false;
 };
 
 // Demand-driven, the same bargain as Rows: the widget asks only for the children of what is
@@ -622,6 +887,9 @@ void RevealInTree(const Desc& tree, const std::string& id);
 int TreeRowCount(const Desc& tree);
 std::string TreeRowId(const Desc& tree, int row);
 int TreeRowDepth(const Desc& tree, int row);
+// Which row the keyboard is on, which is not always the selection: they come apart when the app
+// sets the selection from elsewhere, and a section header must never be either.
+int TreeCursor(const Desc& tree);
 
 // ---- split panes ------------------------------------------------------------------------------
 
@@ -703,6 +971,14 @@ struct MenuItem {
     }
 };
 
+// A glyph button that opens a menu under itself. Composable from Button + Defer + ShowMenu
+// today, which is why it is a node: the ANCHOR is the thing a caller gets wrong, and a menu
+// that opens somewhere other than under the control it belongs to reads as a different control.
+//
+// The items are asked for when the button is pressed, not when the tree is built: a view menu
+// whose ticks were decided at build time would show the state the app started in.
+Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items);
+
 // A popup menu on its own Wayland surface, so it is not clipped by its parent window and the
 // compositor can place it. Ordering and marking follow docs/aurora-ui.md section 7 and the
 // plumber's ranking: the default first and bold, destructive items after a separator, and a
@@ -760,12 +1036,31 @@ public:
     // not safe to touch off the main thread; the loop turns this flag into real damage.
     void InvalidateThreadsafe() { ext_dirty_.store(true, std::memory_order_release); }
 
+    // ---- the drag ghost ----
+    //
+    // What the pointer carries during a drag, drawn by the WINDOW rather than by the source:
+    // the ghost has to be able to leave the widget it came from, and a node can only draw
+    // inside its own frame. Built once at the start of the drag and damaged per move, which is
+    // two small rectangles and not the window (docs/atlas-design.md 6.6).
+    struct DragGhost {
+        std::string label;        // middle-elided to `max_label` when it does not fit
+        IconSpec icon;
+        int count = 1;            // > 1 draws the count badge
+        float max_label = 160;
+        bool has_icon = true;
+    };
+    void SetDragGhost(const DragGhost& g);
+    void ClearDragGhost();
+    bool drag_ghost_shown() const { return ghost_on_; }
+    Rect drag_ghost_rect() const;      // where it is now, for a test and for the damage
+
     // What is being dragged right now, or nullptr. A node that wants to draw differently while
     // a drag is in flight -- a list dimming the rows it cannot accept -- reads this.
     const DragData* dragging() const { return drag_live_ ? &drag_ : nullptr; }
 
 private:
     void damage_for(Node* n);
+    void damage_hinted(Node* n);     // what the node says changed, else its whole frame
     // The drag state machine: see Window::Event's POINTER_MOVE case for why a drag is a press
     // that moved rather than a mode the app enters.
     void drag_motion(float x, float y);
@@ -801,10 +1096,15 @@ private:
     void HandleKey(const au_key& k);
 
     uint32_t mods_ = 0;
+    bool keyboard_driven_ = false;
     std::function<bool(const au_key&)> key_hook_;
     std::atomic<bool> ext_dirty_{false};
     std::mutex size_mu_;
     int want_w_ = 0, want_h_ = 0;
+
+    DragGhost ghost_;
+    bool ghost_on_ = false;
+    void draw_ghost();
 
     DragData drag_;
     Node* drag_src_ = nullptr;      // where it started, so a drop on the source is a no-op
@@ -845,6 +1145,16 @@ public:
     // asks for anything that touches the display -- a menu, a dialog, a new window. The rule is
     // simple and absolute: handlers decide, the loop acts.
     void Defer(std::function<void()> f);
+
+    // Whether the last input was a KEY rather than a pointer press.
+    //
+    // This is what :focus-visible is in a browser and what Full Keyboard Access is on a Mac:
+    // the focus halo follows keyboard use, appears on the first keyboard navigation and goes
+    // away on the next pointer press. Without it the halo is either always on -- a ring around
+    // a row somebody just clicked, which reads as a second kind of selection -- or never on,
+    // which is the state the design is fixing. The window is the only place that sees both
+    // kinds of input, so it is the one that answers.
+    bool keyboard_driven() const { return keyboard_driven_; }
 
     // Which modifier keys are held right now (AU_MOD_*). A press carries where and how many
     // clicks; what was HELD comes from here, which is what lets a list tell a plain click from

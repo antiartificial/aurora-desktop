@@ -50,6 +50,11 @@ int         au_surface_px_w(const au_surface*);
 int         au_surface_px_h(const au_surface*);
 double      au_surface_scale(const au_surface*);
 const uint32_t* au_surface_pixels(const au_surface*);   /* 0xAARRGGBB, px_w * px_h */
+/* The same pixels, writable. For a surface a caller owns and is using as an OFFSCREEN -- the
+ * icon cache rasterises into one and then makes its dimmed variant by taking the alpha down
+ * once, which is a transform of a cached image rather than a per-frame blend. Not for the
+ * window's own surface: everything there goes through the drawing calls. */
+uint32_t* au_surface_pixels_mut(au_surface*);
 
 /* ---- drawing ---- */
 
@@ -61,6 +66,13 @@ void au_fill_round_rect(au_surface*, au_rect, float rx, float ry, au_color);
 void au_stroke_rect(au_surface*, au_rect, au_color, float pen);
 void au_stroke_line(au_surface*, float x0, float y0, float x1, float y1, au_color, float pen);
 void au_fill_ellipse(au_surface*, au_rect, au_color);
+/* A rounded-rect OUTLINE. The selection ring of a focused row is a rounded stroke, and stroking
+ * a square rect inside a rounded fill shows the fill's corners outside the ring. */
+void au_stroke_round_rect(au_surface*, au_rect, float rx, float ry, au_color, float pen);
+/* Several closed loops in one even-odd fill, in layout units: `counts` gives each loop's point
+ * count and `xy` holds x,y pairs end to end. This is what a vector icon rasterises through --
+ * a path with a hole is one fill, not two. */
+void au_fill_polys(au_surface*, const float* xy, const int* counts, int loops, au_color);
 /* A vertical linear gradient between two colours, over the rect, in layout units. */
 void au_fill_rect_gradient(au_surface*, au_rect, au_color top, au_color bottom);
 

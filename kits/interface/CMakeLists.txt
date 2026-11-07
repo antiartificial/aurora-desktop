@@ -175,6 +175,15 @@ add_executable(tk_layout ../aurora-ui/demo/tk_layout.cpp)
 target_link_libraries(tk_layout PRIVATE aurora_ui_tk)
 add_test(NAME tk_layout COMMAND tk_layout)
 
+# The toolkit foundations Atlas is built on: the column rule, the icon model (procedural, vector
+# and bitmap), the transition primitive, and the three selection states that must never render
+# alike. Headless, and every drawing claim is checked at scale 1 AND 1.45 -- a bug that only
+# appears at a fractional scale has bitten this repo twice in one day.
+add_executable(test_ui_toolkit tests/test_ui_toolkit.cpp)
+target_link_libraries(test_ui_toolkit PRIVATE aurora_ui_tk)
+add_test(NAME ui_toolkit COMMAND test_ui_toolkit)
+set_tests_properties(ui_toolkit PROPERTIES TIMEOUT 60)
+
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)

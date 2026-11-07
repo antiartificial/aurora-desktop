@@ -71,6 +71,11 @@ public:
 	void StrokeEllipse(FRect r, Color c, float pen);
 	void StrokeRoundRect(FRect r, float rx, float ry, Color c, float pen);
 	void FillPolygon(const float* xy, int n, Color c);	// layout units, pixel centres at +0.5
+	// Several closed loops in ONE fill, even-odd between them, so a shape with a hole is one call.
+	// Vector icons need it: a counter is a hole, and filling the loops one at a time paints the
+	// hole over the shape instead of out of it. `loop_points` gives the point count of each loop
+	// and `xy` holds them end to end.
+	void FillPolygons(const float* xy, const int* loop_points, int loops, Color c);
 	// glyph: pen is the baseline origin in layout units
 	void DrawGlyph(const text::GlyphBitmap& g, float penX, float penY, Color c);
 	void Blend(int x, int y, Color c, int coverage255);
