@@ -178,3 +178,32 @@ fn test_input_refuses_to_exist_without_headless() {
     assert!(!st.status.success());
     assert!(String::from_utf8_lossy(&st.stderr).contains("only with --headless"));
 }
+
+fn prompt_frame_for_path(path: &str) -> Img {
+    let c = Comp::start(&["--freeze-time"]);
+    let req = serde_json::json!({
+        "v": 1, "op": "approve", "request_id": "cjk", "app": "org.aurora.demo", "domain": "app-org-aurora-demo",
+        "verb": "delete@v1", "effect": "destructive",
+        "grants": [{"path": path, "mode": "rw", "source": "gesture"}],
+        "args": {"confirm": true}, "timeout_ms": 60_000,
+    });
+    let pending = ask(&c, &req.to_string());
+    let img = overlay_up(&c);
+    drop(pending);
+    img
+}
+
+/// A Chinese file name in the trusted approval prompt must draw as real glyphs. Two different
+/// names of the same length must produce different pixels, and neither may equal the prompt
+/// drawn with a code point no font has (the missing-glyph box, which is what an absent CJK face
+/// produces for every character alike).
+#[test]
+fn chinese_file_names_in_the_approval_prompt_are_not_identical_tofu() {
+    let a = prompt_frame_for_path("/home/user/文件夹/图片报告.png");
+    let b = prompt_frame_for_path("/home/user/音乐库/下载桌面.png");
+    let tofu = prompt_frame_for_path("/home/user/\u{378}\u{378}\u{378}/\u{378}\u{378}\u{378}\u{378}.png");
+    let (ab, at, bt) = (a.diff_count(&b), a.diff_count(&tofu), b.diff_count(&tofu));
+    println!("APPROVAL PROMPT pixels: 文件夹/图片报告 vs 音乐库/下载桌面 = {ab}; first vs tofu = {at}; second vs tofu = {bt}");
+    assert!(ab > 300, "two different Chinese names drew alike ({ab} px apart): tofu");
+    assert!(at > 300 && bt > 300, "a Chinese name drew as the missing-glyph box ({at}, {bt} px from tofu)");
+}

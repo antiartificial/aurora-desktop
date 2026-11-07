@@ -491,11 +491,7 @@ mod font_reach_probe {
             t.string_width(&to_ascii("café"), &body, 1.0),
             "café measures as its ASCII collapse"
         );
-        // NOT asserted for CJK, and the reason is a packaging gap rather than a
-        // code one: this machine has no CJK font at all (`fc-match :lang=zh`
-        // answers Roboto), so 文件 draws as two identical boxes and two Chinese
-        // paths can still read alike. Keeping Unicode is what makes installing a
-        // font fix that; while everything became '?' no font could have.
-        println!("  CJK not asserted: depends on an installed CJK face");
+        // CJK is asserted in text.rs (cjk_names_draw_as_distinct_glyphs_not_identical_tofu) and in
+        // tests/trusted.rs, now that a CJK face is installed.
     }
 }

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <string>
+#include <vector>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "server.h"
@@ -91,6 +92,37 @@ int main()
 	float e2[2]; f->GetEscapements("\xc3\xa9x", 2, e2);	// "ex" with accent: 2 chars, 3 bytes
 	CHECK(e2[0] > 0 && e2[1] > 0, "utf-8 escapements");
 	CHECK(f->StringWidth("\xc3\xa9") > 0, "e-acute has no width");
+
+	// ---- CJK: the plain face has no Han glyphs, so every character used to come back as its .notdef box
+	// and two different Chinese file names drew identically. Measured as pixels, through the backend:
+	// each string is shaped and every glyph rasterised, and the result is compared with other strings.
+	{
+		aurora::text::Backend* be = aurora::text::DefaultBackend();
+		auto ink = [&](const char* s, double* adv) {
+			std::vector<aurora::text::Glyph> gl;
+			be->Shape(key, 24, s, (int)strlen(s), &gl);
+			std::string px; *adv = 0;
+			for (auto& g : gl) {
+				aurora::text::GlyphBitmap bm;
+				*adv += g.advance;
+				if (be->Rasterize(key, 24, 1, g.id, 0, &bm)) {
+					px.append((const char*)&bm.width, sizeof bm.width);
+					px.append((const char*)bm.alpha.data(), bm.alpha.size());
+				}
+			}
+			return px;
+		};
+		double a1, a2, a3, a4;
+		std::string zhA = ink("\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9", &a1);	// 文件夹
+		std::string zhB = ink("\xe9\x9f\xb3\xe4\xb9\x90\xe5\xba\x93", &a2);	// 音乐库
+		std::string tofu = ink("\xcd\xb8\xcd\xb8\xcd\xb8", &a3);		// U+0378 x3: in no font
+		std::string kana = ink("\xe3\x83\x89\xe3\x82\xad", &a4);		// ドキ
+		printf("CJK ink bytes: zhA %zu zhB %zu tofu %zu kana %zu; advances %.1f %.1f %.1f %.1f\n", zhA.size(), zhB.size(), tofu.size(), kana.size(), a1, a2, a3, a4);
+		CHECK(zhA != zhB, "two different Chinese names rasterise identically (tofu)");
+		CHECK(zhA != tofu && zhB != tofu, "a Chinese name rasterises as the missing-glyph box");
+		CHECK(kana != tofu && kana != zhA, "kana rasterises as the missing-glyph box");
+		CHECK(a1 > 3 * 12 && near(a1, 3 * 24, 3.0), "three Han characters should advance about 3 em, got %.2f", a1);
+	}
 
 	printf("scale reported by the server: %.3f\n", aurora::output_scale());
 	// Machine-readable line for the scale-invariance check across processes.

@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <strings.h>
 #include <mutex>
+#include <map>
 
 namespace aurora {
 namespace text {
@@ -136,6 +137,15 @@ public:
 			gl.x_offset = gp[i].x_offset * u;
 			gl.y_offset = gp[i].y_offset * u;
 			gl.cluster = gi[i].cluster;
+			// .notdef: this face has no glyph for the character. Draw it from the first installed
+			// face that does, rather than as the box, which is what made every CJK file name in
+			// Atlas read as the same row of squares. The fallback glyph is tagged with its face.
+			if (gi[i].codepoint == 0 && (int)gi[i].cluster < len) {
+				int fb = Fallback(DecodeAt(utf8, len, gi[i].cluster), e->haikuFace, e);
+				if (fb >= 0 && FallbackGlyph(fb, DecodeAt(utf8, len, gi[i].cluster), size, &gl)) {
+					gl.cluster = gi[i].cluster;
+				}
+			}
 			out->push_back(gl);
 		}
 		hb_buffer_destroy(buf);
@@ -146,6 +156,11 @@ public:
 	{
 		std::lock_guard<std::recursive_mutex> g(fLock);
 		FaceEntry* e = Open(k);
+		if (glyph >> 16) {	// a fallback glyph: the face is in the high half, the glyph index in the low
+			size_t fi = (glyph >> 16) - 1;
+			e = fi < fFaces.size() ? OpenIdx((int)fi) : NULL;
+			glyph &= 0xffff;
+		}
 		if (!e || size <= 0 || scale <= 0) return false;
 		FT_Face f = e->ft;
 		// 26.6 pixel size; unhinted so the shape is the same outline at every scale.
@@ -169,9 +184,63 @@ private:
 		if (k.family >= fFamilies.size() || k.style >= fFamilies[k.family].faces.size()) return NULL;
 		return &fFaces[fFamilies[k.family].faces[k.style]];
 	}
-	FaceEntry* Open(FontKey k)
+	FaceEntry* Open(FontKey k) { return OpenEntry(Entry(k)); }
+	FaceEntry* OpenIdx(int i) { return i >= 0 && i < (int)fFaces.size() ? OpenEntry(&fFaces[i]) : NULL; }
+
+	static uint32_t DecodeAt(const char* s, int len, unsigned at)
 	{
-		FaceEntry* e = Entry(k);
+		const unsigned char* p = (const unsigned char*)s + at;
+		int left = len - (int)at;
+		if (left <= 0) return 0;
+		if (p[0] < 0x80) return p[0];
+		int n = p[0] >= 0xf0 ? 3 : p[0] >= 0xe0 ? 2 : p[0] >= 0xc0 ? 1 : 0;
+		if (n == 0 || n >= left) return 0;
+		uint32_t cp = p[0] & (0x3f >> n);
+		for (int i = 1; i <= n; i++) cp = (cp << 6) | (p[i] & 0x3f);
+		return cp;
+	}
+
+	// The face to draw `cp` from when the primary has no glyph for it, or -1. Preferred families
+	// first, in an order that gives Chinese its Simplified forms (the Han block is shared by all
+	// four CJK faces and each draws the same code point differently), then anything installed
+	// that covers it. Cached per code point, including the "nobody has it" answer.
+	int Fallback(uint32_t cp, uint16_t haikuFace, FaceEntry* primary)
+	{
+		if (!cp) return -1;
+		auto hit = fFallback.find(cp);
+		if (hit != fFallback.end()) return hit->second;
+		static const char* prefer[] = { "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR",
+			"Noto Sans CJK TC", "Noto Sans Symbols", "Noto Sans Symbols 2", "Noto Sans Math", 0 };
+		int found = -1;
+		auto covers = [&](int i) {
+			FaceEntry* c = OpenIdx(i);
+			return c && c != primary && c->ft && FT_Get_Char_Index(c->ft, cp) != 0;
+		};
+		for (int p = 0; prefer[p] && found < 0; p++)
+			for (size_t f = 0; f < fFamilies.size() && found < 0; f++)
+				if (fFamilies[f].name == prefer[p])
+					for (int i : fFamilies[f].faces) if (covers(i)) { found = i; break; }
+		for (int pass = 0; pass < 2 && found < 0; pass++)
+			for (size_t i = 0; i < fFaces.size() && found < 0; i++)
+				if ((pass == 1 || fFaces[i].haikuFace == haikuFace) && covers((int)i)) found = (int)i;
+		fFallback[cp] = found;
+		return found;
+	}
+	bool FallbackGlyph(int face, uint32_t cp, float size, Glyph* gl)
+	{
+		FaceEntry* c = OpenIdx(face);
+		if (!c) return false;
+		FT_UInt gid = FT_Get_Char_Index(c->ft, cp);
+		if (!gid || gid > 0xffff || face + 1 > 0xffff) return false;
+		hb_position_t adv = hb_font_get_glyph_h_advance(c->hb, gid);
+		gl->id = ((uint32_t)(face + 1) << 16) | gid;
+		gl->advance = adv * size / (float)c->upem;
+		gl->x_offset = gl->y_offset = 0;
+		return true;
+	}
+
+	FaceEntry* OpenEntry(FaceEntry* e)
+	{
 		if (!e) return NULL;
 		if (!e->ft) {
 			if (FT_New_Face(fLib, e->path.c_str(), 0, &e->ft)) { e->ft = NULL; return NULL; }
@@ -267,6 +336,7 @@ private:
 	std::vector<Family> fFamilies;
 	FontKey fPlain{0, 0}, fBold{0, 0}, fFixed{0, 0};
 	std::recursive_mutex fLock;
+	std::map<uint32_t, int> fFallback;
 };
 
 }	// namespace

@@ -320,4 +320,30 @@ mod tests {
         println!("FALLBACK: {n} solid pixels for 'a', a CJK and a Cyrillic glyph");
         assert!(n > 100);
     }
+    /// Count of pixels whose coverage differs between two renders of the same canvas size.
+    fn diff(a: &Canvas, b: &Canvas) -> usize {
+        assert_eq!((a.w, a.h), (b.w, b.h));
+        alpha(a).iter().zip(alpha(b)).filter(|(x, y)| *x != y).count()
+    }
+
+    /// Chinese, Japanese and Korean names must draw as distinct glyphs, not as the one
+    /// "missing glyph" box. Measured the way Latin and Cyrillic were: two different strings of
+    /// the same length must differ in pixels, and each must differ from a string of code points
+    /// that NO font has (which is what tofu looks like here).
+    #[test]
+    fn cjk_names_draw_as_distinct_glyphs_not_identical_tofu() {
+        let mut t = TextSystem::new("", "");
+        println!("font: {}", t.description);
+        // U+0378 is unassigned: every font answers it with .notdef, so this is the tofu reference.
+        for (a, b) in [("文件夹图片", "音乐下载桌"), ("文件", "图片"), ("ドキュメント", "ミュージック"), ("문서음악", "사진다운")] {
+            let n = a.chars().count().min(b.chars().count());
+            let (a, b): (String, String) = (a.chars().take(n).collect(), b.chars().take(n).collect());
+            let (ca, cb) = (render(&mut t, &a, 24.0, 1.0), render(&mut t, &b, 24.0, 1.0));
+            let ta = render(&mut t, &"\u{378}".repeat(n), 24.0, 1.0);
+            println!("CJK {a} vs {b}: differ by {} px; {a} vs tofu {} px; ink {} / {}", diff(&ca, &cb), diff(&ca, &ta), alpha(&ca).iter().filter(|&&v| v > 128).count(), alpha(&cb).iter().filter(|&&v| v > 128).count());
+            assert!(diff(&ca, &cb) > 50, "{a} and {b} render the same: tofu");
+            assert!(diff(&ca, &ta) > 50, "{a} renders as the missing-glyph box");
+            assert!(diff(&cb, &ta) > 50, "{b} renders as the missing-glyph box");
+        }
+    }
 }
