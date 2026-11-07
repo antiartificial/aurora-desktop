@@ -476,7 +476,7 @@ impl Shell {
         let t = &self.snap;
         let tkey = format!("{:?}|{:?}|{:?}|{:?}|{:?}|{scale}|{}|{}x{}", t.dock, t.background, t.font, t.input, t.output, self.host_scale, size.w, size.h);
         if st.tkey != tkey {
-            let ctx = Ctx { theme: &self.snap, host_scale: self.host_scale, scale, out_phys: (size.w, size.h), families: &self.families, nested: self.nested };
+            let ctx = Ctx { theme: &self.snap, host_scale: self.host_scale, scale, out_phys: (size.w, size.h), refresh_mhz: self.refresh_mhz, outputs: self.outputs, families: &self.families, nested: self.nested };
             st.pages = settings::pages(&ctx);
             st.min_h = (0..st.pages.len()).map(|p| settings::build(&st.pages, p, "", font, scale, 0.0, &mut self.text).size.1).fold(0.0, f32::max);
             st.tkey = tkey.clone();

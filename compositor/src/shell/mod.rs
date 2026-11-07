@@ -160,6 +160,10 @@ pub struct Shell {
     /// reach libinput, which only the DRM backend has, so this is how the settings panel knows
     /// to say that a pointer control will not take effect here.
     pub nested: bool,
+    /// The output's refresh in mHz and how many outputs there are, kept so the settings panel
+    /// can SHOW them instead of describing where they come from.
+    pub refresh_mhz: i32,
+    pub outputs: usize,
     /// The theme as last synced, kept only while the settings panel is open.
     snap: Theme,
     pub menu: Option<Menu>,
@@ -208,6 +212,8 @@ impl Shell {
             hover: None,
             host_scale: 1.0,
             nested: true,
+            refresh_mhz: 0,
+            outputs: 1,
             snap: Theme::default(),
             menu: None,
             menu_seq: 0,

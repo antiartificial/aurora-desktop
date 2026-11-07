@@ -29,6 +29,10 @@ pub struct Ctx<'a> {
     pub host_scale: f64,
     pub scale: f64,
     pub out_phys: (i32, i32),
+    /// The output's refresh in mHz, as the mode reports it. 0 when there is no mode.
+    pub refresh_mhz: i32,
+    /// How many outputs there are. One, until the DRM backend drives more than one connector.
+    pub outputs: usize,
     pub families: &'a [String],
     /// True when the compositor is a client of another one. Input settings reach libinput, which
     /// only exists on the DRM backend, so nested is the case where they are inert.
@@ -139,9 +143,25 @@ pub fn pages(c: &Ctx) -> Vec<Page> {
         title: "Display",
         rows: vec![
             scale_row,
-            fixed("Resolution", format!("{} \u{d7} {}", c.out_phys.0, c.out_phys.1), "The host window sets it while nested; real on DRM/KMS."),
-            fixed("Refresh rate", "set by the host".into(), "The host compositor paces our frames; real on DRM/KMS."),
-            fixed("Monitors", "1 (the host window)".into(), "Multi-monitor needs the DRM/KMS backend."),
+            fixed(
+                "Resolution",
+                format!("{} \u{d7} {}", c.out_phys.0, c.out_phys.1),
+                if c.nested { "The host window sets it; resize the window to change it." } else { "From the connector's current mode." },
+            ),
+            // The refresh is READ rather than described. It was "set by the host", which was
+            // true and useless: the compositor has always known the number, because the output
+            // carries a mode, and a settings page that declines to show a figure it holds is
+            // just being coy.
+            fixed(
+                "Refresh rate",
+                if c.refresh_mhz > 0 { format!("{:.2} Hz", c.refresh_mhz as f64 / 1000.0) } else { "unknown".into() },
+                if c.nested { "The host compositor paces our frames." } else { "From the connector's current mode." },
+            ),
+            fixed(
+                "Monitors",
+                if c.nested { "1 (the host window)".into() } else { format!("{}", c.outputs.max(1)) },
+                if c.nested { "Multi-monitor needs the DRM/KMS backend." } else { "Driving more than one connector is not built." },
+            ),
         ],
     };
     // Desktop
@@ -443,7 +463,7 @@ mod tests {
     use super::*;
 
     fn ctx<'a>(t: &'a Theme, fams: &'a [String]) -> Ctx<'a> {
-        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), families: fams, nested: true }
+        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), refresh_mhz: 59_950, outputs: 1, families: fams, nested: true }
     }
 
     #[test]
@@ -451,11 +471,35 @@ mod tests {
         let (t, f) = (Theme::default(), vec![]);
         let p = pages(&ctx(&t, &f));
         let d = &p[0];
+        // Still not editable, and still explained. What changed is that two of them now REPORT
+        // a figure the compositor holds instead of describing where it comes from.
         for name in ["Resolution", "Refresh rate", "Monitors"] {
             let r = d.rows.iter().find(|r| r.label == name).unwrap();
-            assert!(matches!(r.ctl, Control::Fixed { .. }) && r.note.as_deref().unwrap().contains("DRM/KMS"), "{name}");
+            assert!(matches!(r.ctl, Control::Fixed { .. }), "{name} should not be editable");
+            assert!(!r.note.as_deref().unwrap_or("").is_empty(), "{name} needs a reason");
             assert!(r.left.is_none() && r.right.is_none());
         }
+        // Multi-monitor is the one that genuinely needs a backend we do not have.
+        let m = d.rows.iter().find(|r| r.label == "Monitors").unwrap();
+        assert!(m.note.as_deref().unwrap().contains("DRM/KMS"));
+    }
+
+    #[test]
+    fn the_refresh_rate_is_shown_when_it_is_known_and_said_to_be_unknown_when_it_is_not() {
+        let (t, f) = (Theme::default(), vec![]);
+        let mut c = ctx(&t, &f);
+        c.refresh_mhz = 59_950;
+        let p = pages(&c);
+        let r = p[0].rows.iter().find(|r| r.label == "Refresh rate").unwrap();
+        let Control::Fixed { value } = &r.ctl else { panic!() };
+        assert_eq!(value, "59.95 Hz", "mHz, shown as Hz to two places");
+
+        // No mode means no number -- not 0 Hz, which would be a claim about the display.
+        c.refresh_mhz = 0;
+        let p = pages(&c);
+        let r = p[0].rows.iter().find(|r| r.label == "Refresh rate").unwrap();
+        let Control::Fixed { value } = &r.ctl else { panic!() };
+        assert_eq!(value, "unknown");
     }
 
     #[test]

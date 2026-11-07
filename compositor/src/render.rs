@@ -169,6 +169,9 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     state.fx.reap_closing(&live);
     state.space.refresh();
     state.trusted_tick();
+    // What the output actually is, so the settings panel can report rather than describe.
+    state.shell.refresh_mhz = output.current_mode().map_or(0, |m| m.refresh);
+    state.shell.outputs = state.space.outputs().count().max(1);
     state.shell.tick();
     state.deskbar_tick();
     state.persist_tick();
