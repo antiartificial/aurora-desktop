@@ -244,6 +244,8 @@ fn the_dot_is_there_while_a_domain_holds_the_display_and_gone_when_it_is_revoked
         let changed = held.diff_count(&before);
         assert!(changed > 100 && changed <= (i.pill[2] * i.pill[3]) as usize, "{changed} pixels differ; the pill box is {:?}", i.pill);
         assert!(i.text.contains("Display") && i.text.contains("app-demo-aaaaaaaaaaaaaaaa"), "{:?}", i.text);
+        // it is a rounded pill: its corner pixel is the desktop behind it, not a black box
+        assert_eq!(held.at(i.pill[0] as usize, i.pill[1] as usize), before.at(i.pill[0] as usize, i.pill[1] as usize), "the pill's corner is not transparent");
 
         bus.revoke("cap:aaaaaaaa");
         wait_snapshot(&c, "held=0");
@@ -359,6 +361,7 @@ fn hovering_shows_what_is_held_by_whom_and_the_pointer_over_it_belongs_to_the_co
         assert!(in_rect(&img, panel, l.text_rgb) > 30, "no text in the panel");
         assert!(in_rect(&img, panel, l.dim_rgb) > 3, "no dim text in the panel");
         assert_dot(&img, &l);
+        assert_eq!(img.at(panel[0] as usize, panel[1] as usize), GREEN, "the panel's corner is not transparent");
         // the pointer is the compositor's while it is over the indicator: the client saw it leave and hears nothing more
         wait_for("the client's pointer_leave", || read(&log).contains("pointer_leave"));
         c.inject(&format!("pointer {:.2} {:.2}", cx - 3.0, cy + 2.0));
@@ -475,6 +478,17 @@ fn a_client_cannot_cause_a_false_indicator() {
     c.inject("pointer 1260 20");
     std::thread::sleep(Duration::from_millis(300));
     assert!(layout(&c).is_none());
+    // A client may PAINT anything, including a dot-coloured screen. That is a picture, not the indicator: nothing is
+    // laid out, hovering it does not open the panel, and the pointer over it still belongs to the client.
+    let mut painter = Comp::start_with(|_| {}, &["--bus-socket", bus.path.to_str().unwrap()]);
+    let log = painter.client_args(&["--fullscreen", "--hidpi", "--rgb", "255,100,24"]);
+    painter.inject("pointer 1200 20");
+    painter.inject("pointer 1210 22");
+    painter.inject("pointer 1215 24");
+    wait_for("the painter to hear the pointer", || read(&log).contains("pointer_enter") && read(&log).contains("pointer_motion"));
+    assert!(layout(&painter).is_none(), "a client painting the dot colour caused an indicator");
+    assert!(painter.log().lines().all(|l| !l.contains("panel pinned")));
+    drop(painter);
     // the control: the bus path works. A real controller grant of the display lights it.
     bus.grant("cap:real0002", "device:wayland", IDA);
     let i = shown(&c);

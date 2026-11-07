@@ -50,7 +50,7 @@ pub struct Indicator {
 
 impl Indicator {
     pub fn on_snapshot(&mut self, s: bus::Snapshot) {
-        tracing::info!("indicator: bus snapshot held={} up={} {}", s.held.len(), s.up, s.held.iter().map(|h| format!("{}@{}", h.resource, h.name)).collect::<Vec<_>>().join(","));
+        tracing::info!("indicator: bus snapshot held={} up={} {}", s.held.len(), s.up, s.held.iter().map(|h| format!("{}@{}#{}", h.resource, h.name, h.id)).collect::<Vec<_>>().join(","));
         self.held = s.held;
         self.up = s.up;
     }

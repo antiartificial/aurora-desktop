@@ -208,6 +208,10 @@ The decision comes only from the keyboard, never from the socket: nothing on the
 
   It checks, on decoded pixels: a control capture contains the client window; the compositor's own frame shows 14k+ overlay-border pixels while a capture taken at the same time shows none and is byte-identical to a capture taken before the overlay; keys typed at an overlay never reach the focused client (its log shows `leave`, nothing, then `enter`), and a key typed after it does; `a`, `d`, Escape, timeout and withdrawal; refused peers (uid and cgroup); no overlay-related global; `--test-input` refused without `--headless`. `src/trusted/socket.rs` has unit tests for the allowlist and text cleaning.
 
+## Capability indicator
+
+While a domain holds a capability on the theme's `[indicator] classes` list (default `device:wayland`), the compositor draws a pill at the top-right: a dot and `Display: <domain>`; hover or click for a panel (what, which attested domain, held for how long, cap id). It is in the trusted layer: drawn last, after captures are served (so in none), above any fullscreen client, no protocol object, and the pointer over it is the compositor's. It learns of grants from the bus (`bus.cap.minted` and `bus.cap.revoked`, the daemon's own voice, plus the controller's `provenance.grant.held`, believed only from the handle's own minter), so it needs `--bus-socket`. It covers domains and nothing else: windowed apps launched as host processes (decision 0012) hold no grants and do not show. Decision 0016 says what is and is not covered. Tests: `tests/indicator.rs` (a fake busd, pixels of `--test-input dump PATH`, scale 1 and 1.45); end to end against a real grant: `demos/capability-indicator/run.sh`.
+
 ## Known limits of the backends
 
 - **winit needs two EGL contexts.** Three wrong

@@ -246,7 +246,7 @@ pub fn draw_indicator(
         let dst = Rectangle::new(Point::<i32, Physical>::from((r.x, r.y)), (c.w as i32, c.h as i32).into());
         let src = Rectangle::<f64, BufferCoords>::from_size((c.w as f64, c.h as f64).into());
         let local = Rectangle::<i32, Physical>::from_size(dst.size);
-        frame.render_texture_from_to(tex, src, dst, &[local], &[local], Transform::Normal, a, None, &[])?;
+        frame.render_texture_from_to(tex, src, dst, &[local], &[], Transform::Normal, a, None, &[])?; // no opaque region: the corners are transparent
         Ok(())
     };
     blit(&tp, pc, pill_r, pa)?;

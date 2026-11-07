@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     match &args.bus_socket {
         Some(p) => eprintln!("aurora-compositor: domain claims are checked against busd at {}", p.display()),
-        None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown)"),
+        None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown), and the capability indicator has nothing to learn grants from, so it will NEVER light"),
     }
     let kp = trusted::sign::key_path();
     match trusted::sign::load_key(&kp, true) {
