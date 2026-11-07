@@ -143,8 +143,14 @@ read -r WW WH < <(sed -n 2p "$W/app/window-0.ppm")
 # a spot of the Buttons page with nothing on it: right of the alert row, in the page's panel
 l=$(grep '^CTL alertlabel ' "$W/app.out" | cut -d' ' -f3); IFS=, read -r AL AT AR AB <<<"$l"
 PX=$((AR + 120)); PY=$(((AT + AB) / 2))
-app_px=$($PIX px "$W/e2e.png" $PX $PY); desk_px=$($PIX px "$W/e2e.png" 900 500); want=$(grep '^theme.colors.panel ' "$W/oracle.txt" | cut -d' ' -f2-)
-check "the app's frame is on the compositor verbatim (so the capture's pixel is the app's own)" eq "$($PIX find "$W/e2e.png" "$W/app/window-0.ppm")" "0 0"
+# Locate the window rather than assume the origin: windows are decorated and
+# cascade-placed now, so a frame is rarely at 0,0. The property this step needs
+# is that the app's frame appears on the compositor VERBATIM -- found at all,
+# byte for byte -- not that it appears at any particular place.
+WPOS=$($PIX find "$W/e2e.png" "$W/app/window-0.ppm")
+check "the app's frame is on the compositor verbatim, found at ($WPOS), so the capture's pixel is the app's own" bash -c "[ '$WPOS' != none ]"
+read -r WX WY <<<"$WPOS"; [ "$WPOS" = none ] && { WX=0; WY=0; }
+app_px=$($PIX px "$W/e2e.png" $((WX + PX)) $((WY + PY))); desk_px=$($PIX px "$W/e2e.png" 900 500); want=$(grep '^theme.colors.panel ' "$W/oracle.txt" | cut -d' ' -f2-)
 check "the Haiku app's panel pixel ($PX,$PY) is $app_px; the oracle's panel token is $want" eq "$app_px" "$want"
 check "the compositor's desktop pixel is $desk_px: the same three bytes as the Haiku app's panel" eq "$app_px" "$desk_px"
 
