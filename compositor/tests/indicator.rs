@@ -123,7 +123,12 @@ impl FakeBus {
 
 /// A compositor with the fake bus and the scale. `theme_toml` becomes `[indicator]` and friends in a private theme.
 fn comp(scale: &str, bus: &FakeBus, theme: Option<&Theme>) -> Comp {
-    let mut a = vec!["--bus-socket", bus.path.to_str().unwrap(), "--scale", scale];
+    // --freeze-time holds the background shader's `time` at 0. background.frag dithers with
+    // `hash(gl_FragCoord.xy + fract(time))`, so without it every repaint lands a different
+    // +/-1/255 pattern over the whole output and any frame-to-frame comparison here is
+    // measuring the dither rather than the indicator. Every other suite that compares frames
+    // already passes it; this one got away without it only while idle repaints were rare.
+    let mut a = vec!["--bus-socket", bus.path.to_str().unwrap(), "--scale", scale, "--freeze-time"];
     if let Some(t) = theme {
         a.extend_from_slice(&["--theme", t.path()]);
     }
@@ -193,7 +198,33 @@ fn frame(c: &Comp, name: &str) -> Img {
     let _ = std::fs::remove_file(&p);
     c.inject(&format!("dump {}", p.display()));
     wait_for("the compositor to write its frame", || p.exists());
+    // AURORA_TEST_KEEP copies every captured frame somewhere that outlives the test's
+    // temp dir. A failure here is a claim about pixels, and the only way to settle one
+    // is to look at them.
+    if let Ok(keep) = std::env::var("AURORA_TEST_KEEP") {
+        let _ = std::fs::create_dir_all(&keep);
+        let _ = std::fs::copy(&p, std::path::Path::new(&keep).join(name));
+    }
     Img::load_file(&p)
+}
+
+/// A frame that has stopped changing: capture until two in a row are identical.
+///
+/// A baseline taken at startup is not a baseline. Windows and dock items animate in
+/// (shell::motion), so an early capture catches them mid-ease and every later frame
+/// differs from it for reasons that have nothing to do with what the test is asserting.
+/// Waiting on the pixels rather than on a sleep cannot flake when the machine is loaded.
+fn settled(c: &Comp, name: &str) -> Img {
+    let mut prev = frame(c, &format!("{name}.png"));
+    for _ in 0..60 {
+        std::thread::sleep(Duration::from_millis(50));
+        let next = frame(c, &format!("{name}.png"));
+        if next.diff_count(&prev) == 0 {
+            return next;
+        }
+        prev = next;
+    }
+    panic!("{name}: the frame never stopped changing");
 }
 
 fn in_rect(img: &Img, r: [i32; 4], rgb: [u8; 3]) -> usize {
@@ -446,7 +477,7 @@ fn a_client_cannot_cause_a_false_indicator() {
     let mut c = comp("1", &bus, None);
     // a Wayland client that says everything it can say about itself
     c.client_args(&["--title", "device:wayland held by domain:evil:1234", "--app-id", "device:wayland"]);
-    let base = frame(&c, "base.png");
+    let base = settled(&c, "base");
     // (a) a domain connection mints a handle for the display: busd truthfully stamps the DOMAIN as minter
     bus.mint("cap:forged01", "device:wayland", IDB);
     bus.attribute("cap:forged01", "device:wayland", IDB, IDB);
