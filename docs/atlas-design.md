@@ -1,7 +1,9 @@
 # Atlas: design specification
 
-Status: design, 2026-11-07. This is the contract the next build of Atlas is implemented from and
-reviewed against. Every number in it is a number to check, not a suggestion; where the toolkit
+Status: design, 2026-11-07, revised the same day after the user's review (focus rings are in;
+icons may come from vector and bitmap files; motion is a first-class foundation; the work is
+staged for periodic review). This is the contract the next build of Atlas is implemented from
+and reviewed against. Every number in it is a number to check, not a suggestion; where the toolkit
 cannot yet express something the document says so (section 11) rather than assuming it.
 
 What it is written against: the frame of Atlas as it runs today (a text-labelled toolbar, a
@@ -12,9 +14,11 @@ every row), `kits/aurora-ui/demo/atlas.cpp`, `kits/aurora-ui/filebrowse.h`, `kit
 `docs/file-navigator-plan.md`. Where this document and `docs/aurora-ui.md` disagree, this one is
 the later word for Atlas and says why at the point of disagreement.
 
-How to read it: sections 1 to 10 are in the order an implementer works through them. Each ends
+How to read it: sections 1 to 9 are in the order an implementer works through them. Each ends
 with **Checks**, the things a reviewer compares against a screenshot or a scripted run. Section
-11 lists what the toolkit must gain. Section 12 is the review checklist in one place.
+10 is the staged plan, each stage ending at something the user can open and judge. Section 11
+lists what the toolkit must gain. Section 12 is the review checklist in one place. "Phase 1, 2,
+3" in the body are ambition tiers; section 10 maps them onto the stages.
 
 Units: logical pixels at scale 1.0 unless stated. `u` is the toolkit's spacing unit, 8. Font
 sizes are the resolved size at the base of 13 (section 3.1). Colours are given as sRGB hex and
@@ -193,6 +197,7 @@ Nothing in Atlas is laid out at a value off this scale except the three fixed he
 | 4 | rename field, checkbox, badges on icons, the drag ghost's count badge is a circle |
 | 5 | details-row selection and hover fill (inset 4 horizontally, 1 vertically) |
 | 6 | buttons, fields, sidebar selection (inset 6 horizontally), breadcrumb segment hover, menu row hover |
+| 7, 8, 10 | the focus halo around a row, a sidebar item or button, a tile (the element's radius + 2) |
 | 8 | tiles' selection fill, menus, the type-ahead pill, preview thumbnail frame |
 | 12 | the window's own corners: the compositor's, not ours |
 
@@ -234,9 +239,11 @@ change, no shift of a row. It eases over 200 ms (section 7).
   pane, drawn under hover and selection.
 - Fields: 1 px `hairline` border at rest, 2 px `accent` when focused, 1 px `accent` when
   holding a non-empty filter, 1 px `destructive` when holding a refused rename.
-- Focus ring on buttons: 2 px `accent`, radius 6, drawn inside the button's frame. Panes
-  (sidebar, content, preview) never draw a ring around themselves; focus is shown by the
-  selection colour (section 6.3).
+- Focus ring: the halo of section 6.3, 2 px `focus` with a 1 px gap of the surface colour
+  between it and the element it surrounds, radius = the element's radius + 2. It is drawn
+  around the focused *element* (the cursor row, tile, sidebar item, button or field), never as
+  a rectangle around a whole pane: the 1 px frame the current build draws around the focused
+  pane is the single largest reason that frame reads as plain, and it is gone.
 - Drop target: 2 px `accent` inset 1 px inside the row, tile, sidebar item or pane, plus a fill
   of `accent` at 12% alpha.
 
@@ -269,8 +276,9 @@ non-text and for the tertiary ink, which is only ever used for disabled or place
 | `text` | `#ECEFF4` | `[0.951, -0.001, -0.007]` | `#23262E` | `[0.269, 0.000, -0.016]` | 14.1 / 14.8 on `content` | names, labels, values |
 | `text-2` | `#A3AABF` | `[0.739, 0.001, -0.031]` | `#5B6170` | `[0.493, -0.001, -0.025]` | 7.0 / 6.0 on `content`; 6.2 / 5.3 on `chrome` | column headers, section headers, dates, sizes, status bar, breadcrumb ancestors, "unknown" |
 | `text-3` | `#6E758A` | `[0.564, 0.000, -0.034]` | `#8A90A0` | `[0.654, 0.000, -0.025]` | 3.5 / 3.1 on `content` | disabled buttons, placeholders, the em dash in a folder's size |
-| `accent` | `#7AA2F7` | `[0.719, -0.013, -0.131]` | `#3B6FE0` | `[0.569, -0.021, -0.180]` | 6.4 / 4.5 on `content` | focused selection fill, focus rings, drop targets, the type-ahead pill, the active filter border, the sort chevron |
+| `accent` | `#7AA2F7` | `[0.719, -0.013, -0.131]` | `#3B6FE0` | `[0.569, -0.021, -0.180]` | 6.4 / 4.5 on `content` | focused selection fill, drop targets, the type-ahead pill, the active filter border, the sort chevron |
 | `accent-ink` | `#181A22` | `[0.219, 0.001, -0.016]` | `#FFFFFF` | `[1.000, 0.000, 0.000]` | 6.9 / 4.6 on `accent` | text on a focused selection, text in the type-ahead pill |
+| `focus` | `#7AA2F7` | `[0.719, -0.013, -0.131]` | `#3B6FE0` | `[0.569, -0.021, -0.180]` | non-text: 6.4 / 4.5 on `content`, 5.7 / 4.0 on `chrome`, 6.7 / 4.2 on `sidebar`, 4.0 / 3.5 on `selection-unfocused` | the focus halo (section 6.3); the same value as `accent` today, a separate token so it can diverge |
 | `selection-unfocused` | `#3A4158` | `[0.379, 0.001, -0.041]` | `#DCE0EA` | `[0.907, 0.000, -0.014]` | `text` on it: 8.8 / 12+ | selection fill when the pane does not have focus |
 | `destructive` | `#F08A8A` | `[0.743, 0.117, 0.044]` | `#C43B3B` | `[0.554, 0.158, 0.073]` | 6.7 / 5.1 on `content` | destructive menu items, refused-rename border and note, error text in the status bar, broken-link badge |
 | `warning` | `#E0AF68` | `[0.784, 0.027, 0.102]` | `#9A6500` | `[0.550, 0.034, 0.112]` | 8.1 / 4.8 | the "n unknown" sort note, cross-filesystem refusals |
@@ -288,18 +296,23 @@ C3.2 Rows are 13 px regular; no row text is bold. C3.3 Sample `content` and `con
 adjacent rows; they differ, and `hover` is lighter than both. C3.4 The focused selection fill is
 `accent` and its text is `accent-ink`; click the sidebar and the content's selection becomes
 `selection-unfocused` with `text` on it. C3.5 No pane draws a 1 px rectangle around its whole
-frame when focused. C3.6 On the Phase 2 glass sidebar no text is in `text-2`; headers are
+frame when focused; after an arrow key the cursor row carries the 2 px halo with its 1 px gap
+(section 6.3), and after a pointer press on a row the halo is absent. C3.6 On the Phase 2 glass
+sidebar no text is in `text-2`; headers are
 `caption` in `text`.
 
 ---
 
 ## 4. Iconography
 
-The loudest defect in the current frame is one icon on every row. The fix is not an icon theme
-(there is none and the explorer must not link a decoder); it is a procedural family with enough
-kinds and marks that the eye can sort a listing without reading it. HVIF, when it lands,
-replaces the drawing routine and nothing else; thumbnails from `preview@v1` (Phase 3) replace
-the icon for images and documents in the grid and the preview, never in the details row.
+The loudest defect in the current frame is one icon on every row. The fix has two halves. The
+**procedural family** below is the floor: nine kinds with marks and badges, drawn from canvas
+primitives, always available, and enough that the eye can sort a listing without reading it.
+Above it, section 4.6 lets an icon come from a **file**, vector (SVG, and HVIF when its decoder
+lands) or bitmap (PNG), from an icon theme, with the procedural icon as the fallback at every
+step, and with the rule that Atlas never decodes an icon file in its own process. Thumbnails
+from `preview@v1` (Phase 3) sit above both for the grid and the preview, never for the 16 px
+details row.
 
 ### 4.1 Kinds
 
@@ -411,13 +424,110 @@ the cached image (variant = link / broken / none) and opacity is a variant, not 
 cache is bounded by kinds x variants x sizes (about 9 x 12 x 4 at one scale) and is allowed to
 grow with the window's scale; it is never evicted per frame.
 
+### 4.6 Icon sources: procedural, vector, bitmap, per-file
+
+Every icon Atlas draws is a rasterised ARGB image at a device size, looked up in one cache by
+`(source id, logical size, scale)`. Where the pixels come from is a **source**, and there are
+four, in this precedence:
+
+1. **Per-file**: a thumbnail from `preview@v1` (Phase 3), for images, PDFs and video, in the
+   grid and the preview only. Keyed by `(path, mtime, size, target)`.
+2. **Theme, by type**: the icon theme's entry for the exact MIME type or extension
+   (`image/png`, `rs`).
+3. **Theme, by kind**: the theme's entry for one of the nine kinds (`folder`, `document`,
+   `code`, ... and the special folders `folder-home`, `folder-pictures`, ...).
+4. **Procedural**: section 4.3. Always present; never fails; the floor.
+
+The first source that *has* an icon wins, and a source that has one but has not rasterised it
+yet is skipped for this frame and the next one down is drawn instead, so a row never waits on a
+file: a theme icon appears on a later frame in place of the procedural one, which is an icon
+change on a row (colour and shape, never size) and is allowed. Badges (link, broken) and the
+hidden-file opacity are composited by Atlas over whatever source won; the on-accent variant is
+applied to procedural icons only, a file icon is drawn unchanged on the selection fill.
+
+**The theme.** A directory at `/usr/share/aurora/icons/<name>/` or
+`$XDG_DATA_HOME/aurora/icons/<name>/`, chosen by `[theme.icons] theme = "<name>"` and overridden
+by `AURORA_UI_ICONS`. It holds an `index.toml` and files:
+
+```toml
+[kinds]                       # kind id -> file; any kind not listed falls to procedural
+folder = "folder.svg"
+folder-pictures = "folder-pictures.svg"
+document = "document.svg"
+[mime]                        # exact MIME type -> file; wins over the kind
+"image/png" = "image-png.svg"
+[ext]                         # extension -> file; wins over the kind, loses to mime
+rs = "code-rust.png"
+```
+
+A file is `name.svg` (vector) or `name-<px>.png` (bitmap at that logical size: `-16`, `-24`,
+`-48`, `-80`, `-256`; a theme supplies the sizes it has). Icons are read from the theme
+directories and from **nowhere else**: not from the directory being browsed, not from a
+`.directory` file, a `folder.jpg`, an `Icon\r`, a desktop entry or an extended attribute. An
+icon file can arrive on the machine inside a folder the user merely opened, and the only
+defence that holds is that a folder's contents are never a source of its own presentation.
+
+**Vector format.** SVG, in a static profile: `svg`, `g`, `path`, `rect`, `circle`, `ellipse`,
+`line`, `polyline`, `polygon`, `linearGradient`, `radialGradient`, `stop`, `defs`, `clipPath`,
+`use` of an id in the same file; attributes for fill, stroke, opacity, transform, `viewBox`.
+Refused, and the whole file with them: `script`, `style` and any CSS, `text` (it needs fonts and
+a font is a second parser), `image`, `filter`, `foreignObject`, animation elements, any `href`
+or `xlink:href` that is not a same-document `#id`, any external entity or DOCTYPE, any
+namespace but SVG's. Limits: 256 KiB per file, 4,096 elements, 64 KiB of path data per element,
+nesting depth 32, 16 gradient stops. HVIF, Haiku's vector icon format, is accepted through the
+same seam when its decoder exists (`docs/file-navigator-plan.md` approved it; nothing is built):
+a theme lists `name.hvif` and the rasteriser handles it; the cache and the widgets do not
+change. SVG is the authoring and interchange format; HVIF is the compact one.
+
+**Bitmap format.** PNG only (8-bit, RGB or RGBA, no interlace), at most 2 MiB and 1024 px a
+side. A theme need not supply every size. Picking one for a needed device size `n`: the
+smallest supplied size whose device size is >= `n` is downscaled with Lanczos3 (the compositor's
+own background filter); if none is that large, the largest supplied one is used if it is at
+least 0.75 `n` (bilinear up, and a 16 px icon at 1.45 scale is 23 px, which a `-24` icon covers
+exactly), and otherwise the bitmap is *not* used and the next source down draws. A bitmap that
+is too small is a blur, and a blur is worse than the procedural icon.
+
+**Rasterisation, scale, and the no-decoder rule.** Atlas never decodes an SVG or a PNG in its
+own process: `docs/aurora-ui.md` section 2's rule for previews applies to icons for the same
+reason (a parser with a CVE history over bytes the user did not write). Icon files are
+rasterised by a verb, `icon.rasterise@v1`, `effect = "read"`, run in a domain that holds the one
+icon file read-only, taking `{file, device_px}` and returning raw ARGB (`w, h` then `w * h * 4`
+bytes, premultiplied, at most 4 MiB, dimensions checked against the request before a byte is
+trusted). The verb renders the SVG profile above (any library it likes, because it is
+sandboxed), decodes PNG, and applies the resampling rule. Atlas asks for **device pixels**:
+`round(logical * scale)`, so 16 px at 1.45 is 23 px and 48 px is 70 px, and the result is
+blitted 1:1 by `au_draw_image`; a rasterised icon is never scaled by the widget (visual system
+section 6, the same rule as glyphs). Results are cached in memory by `(source id, size, scale)`
+and on disk under `$XDG_CACHE_HOME/aurora/icons/<theme>/<sha256 of file>-<device px>.argb`, so
+the verb runs once per icon per device size per machine; the disk cache is dropped when the
+theme's `index.toml` mtime changes or the theme name changes. Requests run on the stat worker's
+thread, in visible-range order, never on the window thread.
+
+**What a hostile icon file cannot do.** Execute anything (no script, no external reference, and
+the domain has no network and no other file). Read another file (the domain holds that one
+file). Exhaust memory (the dimension and output caps, enforced on the raw size before the
+buffer is read). Stall the window (the request is off-thread, has a 200 ms budget per icon,
+and the procedural icon is already on screen; a timeout logs the file and marks the source
+absent for the session). Crash Atlas (a crash is the verb's domain, restarted by the
+supervisor; the source is marked absent). Be mistaken for a different file (the cache key is
+the file's hash, not its name). Come from the folder being shown (the location rule above). An
+icon the verb refuses is logged once with the file path and the reason, never shown as a
+blank, never retried this session.
+
 **Checks.** C4.1 In a home directory with Documents, Pictures, Music and a plain folder, four
 different folder icons appear. C4.2 `README.md`, `main.rs`, `photo.png`, `archive.zip`,
 `libfoo.so`, `song.flac`, `clip.mp4` and `notes` (no extension) show eight visibly different
 icons at 16 px, distinguishable with the names covered. C4.3 A broken symlink shows the red badge
 and a `text-2` name. C4.4 Switching to the icons view, the same eight are distinguishable at
 48 px with their marks visible. C4.5 With `AURORA_UI_TRACE` or the `ATLAS_REPORT` line, a scroll
-of 100 rows shows no icon rasterisation after the first frame.
+of 100 rows shows no icon rasterisation after the first frame. C4.6 With a test theme that
+supplies `folder.svg` and `code-rust-24.png`, folders and `.rs` files draw the theme's icons at
+16 px and at 48 px, the PNG one only where a `-24` covers the device size (at scale 1.45 the
+16 px row, not the 48 px tile, which falls to the procedural icon). C4.7 A `folder.jpg`,
+`.directory` or `Icon\r` placed in a browsed folder changes nothing. C4.8 An SVG with a
+`<script>` element, one with an external `href`, and a 3,000 x 3,000 PNG are each refused,
+logged once, and the procedural icon stays; Atlas's process has no SVG or PNG library mapped
+(`/proc/<pid>/maps`).
 
 ---
 
@@ -567,22 +677,65 @@ not move; disabled buttons draw the glyph in `text-3` and ignore hover.
 ### 6.3 Selection and focus
 
 The selection is a set and the cursor is a row; they are the same row almost always and come
-apart under `Ctrl`. The toolkit holds both. What is drawn:
+apart under `Ctrl`. The toolkit holds both. Three things are drawn and they are independent:
+the **selection fill** (which rows are chosen), the **pane's focus colour** (whether the
+keyboard is talking to this pane: the fill is `accent` when it is and `selection-unfocused`
+when it is not), and the **focus halo** (which element the keyboard is on).
+
+**The halo.** A 2 px stroke in `focus`, separated from the element it surrounds by a 1 px gap
+in the surface colour under it (`content`, `content-alt`, `sidebar` or `chrome`), with a radius
+two larger than the element's own: 7 around a details row (fill radius 5), 10 around a tile (8),
+8 around a sidebar item (6), 8 around a toolbar button (6). Geometry for a details row: the
+selection fill is the row inset (4, 1); the gap is the ring of 1 px outside that; the halo's
+inner edge is at inset (2, -1) and its outer edge at inset (0, -3), so the halo overlaps the
+nearest 3 px of the rows above and below. That overlap is deliberate: it keeps the row at 24 px
+and the fill at 22 px (a 17.7 px line of text needs that), and it is why the halo is drawn
+after every row, in the list's own `Draw`, with a `DamageHint` of the cursor row plus 3 px each
+side. For a tile, the halo sits inside the tile's gutter (fill inset 3, halo outer edge at
+inset 0). For a sidebar item (fill inset 6/1) the halo's outer edge is at inset (3, -2). For a
+toolbar button the halo's outer edge is 2 px outside the button, inside the toolbar's padding.
+A field has no halo: its 2 px `focus` border is its focus state, and the two must not stack.
+
+Contrast of the halo against every surface it can sit on, both schemes, WCAG 2 non-text floor
+3:1: `content` 6.4 / 4.5, `content-alt` 6.2 / 4.4, `sidebar` 6.7 / 4.2, `chrome` 5.7 / 4.0,
+`selection-unfocused` 4.0 / 3.5. The 1 px gap is what keeps the halo legible around an `accent`
+fill: without it the ring and the fill are one shape.
+
+**When the halo shows.** It follows keyboard use, the way every current platform does it
+(`:focus-visible`, Windows 11, Finder's Full Keyboard Access): it appears on the first keyboard
+navigation (`Tab`, arrows, `Home`, `End`, `Page` keys, type-ahead) and stays on the cursor
+element as it moves, and it disappears on the next pointer press anywhere in the window. Two
+exceptions, both because the halo is the only thing that marks a row that is not filled: the
+cursor-only state (a row that is the cursor but not selected, after a `Ctrl`-click deselect or a
+`Ctrl`+arrow move) always shows the halo, pointer or not; and a pane that gains focus by `Tab`
+shows the halo on its cursor row even if that row is not selected. On window activation the
+halo is restored to whatever it was. The halo is never shown on hover.
+
+**The states, which must all be distinct in one screenshot:**
 
 | state | details row | tile | sidebar item |
 |---|---|---|---|
-| selected, pane focused | `accent` fill radius 5 inset 4/1, text and values in `accent-ink`, icon on-accent variant | `accent` fill radius 8 inset 3, label `accent-ink` | `accent` fill radius 6 inset 6/1, label `accent-ink` |
-| selected, pane unfocused | `selection-unfocused` fill, text in `text`, icon normal | same fill, label `text` | same |
-| cursor only (after Ctrl-deselect) | 1 px `accent` stroke radius 5 inset 4/1, no fill | 1 px `accent` stroke radius 8 | n/a |
-| hovered and selected | the selection wins; no hover fill | same | same |
+| selected, pane focused, pointer-driven | `accent` fill radius 5 inset 4/1; text and values `accent-ink`; icon on-accent variant | `accent` fill radius 8 inset 3; label `accent-ink` | `accent` fill radius 6 inset 6/1; label `accent-ink` |
+| selected, pane focused, keyboard-driven | the same, plus the halo (gap in the row's own surface colour) | the same plus the halo | the same plus the halo |
+| selected, pane unfocused | `selection-unfocused` fill, text `text`, icon normal; never a halo | same | same |
+| cursor only (not selected), pane focused | halo only, no fill | halo only | n/a |
+| cursor only, pane unfocused | nothing (the cursor is remembered, not drawn) | nothing | n/a |
+| hovered and selected | the selection wins; no hover fill; halo unchanged | same | same |
+
+So a screenshot with the content focused and three rows selected after a `Shift+Down` shows
+three `accent` rows, the last with a halo; a click in the sidebar turns them
+`selection-unfocused` with no halo and puts the halo on nothing (the sidebar's own click was a
+pointer press) while its clicked item is `accent`; `Tab` back to the content puts the halo on
+the cursor row again.
 
 Focus moves with `Tab` in reading order (sidebar toggle, back, forward, up, location, filter,
 view, preview, sidebar, content, preview pane) and with the arrows between panes when the
 focused widget declines the key (the toolkit's spatial focus). The window opens with focus on
 the content. After navigation focus stays on the content and the cursor is the first row with
-nothing selected (opening a folder does not select anything in it). After a rename commits, the
-renamed row is selected and the cursor is on it. After a delete, the cursor moves to the row that
-took the deleted row's place, with nothing selected.
+nothing selected (opening a folder does not select anything in it); the halo shows on it only
+if the navigation was by keyboard. After a rename commits, the renamed row is selected and the
+cursor is on it. After a delete, the cursor moves to the row that took the deleted row's place,
+with nothing selected.
 
 The status bar's left text: "33 items" with nothing selected; "1 of 33 selected · 4.2 KB" for
 one; "3 of 33 selected · 9.3 KB" for several, where the size counts only rows whose stat has
@@ -773,7 +926,8 @@ Icon buttons, 28x28, glyphs 16 px drawn in `text` (`text-3` when disabled) from 
 - Preview toggle: a rectangle 14x11 with its right third filled. Pressed state (preview open):
   `raised` fill persists.
 
-Hover `raised`, press darker, focus ring 2 px `accent`. Tooltips (the label and the shortcut,
+Hover `raised`, press darker, the halo of 6.3 on keyboard focus. Tooltips (the label and the
+shortcut,
 `caption` on a `raised` plate radius 6, after 600 ms hover, below the button) are Phase 2 and
 need a surface the toolkit does not have (section 11).
 
@@ -840,7 +994,10 @@ the arrow key).
 **Checks.** C6.1 Press (not release) on a row selects it: a scripted press-hold-screenshot shows
 the row selected before release. C6.2 Moving the pointer down 20 rows reports damage
 `mean_fraction < 0.1`. C6.3 With the content focused, the selection is `accent`; after a click
-in the sidebar, `selection-unfocused`. C6.4 Typing `do` in a home folder moves the cursor to
+in the sidebar, `selection-unfocused` and no halo anywhere in the content; `Shift+Down` then
+`Tab` back shows the halo on the cursor row with its 1 px gap, and one screenshot holds all
+three of: a focused selected row with halo, an unfocused selected row, a cursor-only row. C6.4
+Typing `do` in a home folder moves the cursor to
 `Documents` and shows the pill; 1 s later the pill is gone. C6.5 Dragging a file onto a folder
 row shows the ghost with icon and name and the row's drop outline, and the status bar reads
 "Move into <name>". C6.6 `F2` on `notes.txt` opens a field with `notes` selected and `.txt`
@@ -854,48 +1011,150 @@ shows Places flat and Filesystem as a tree, with the current folder marked in on
 
 ## 7. Motion
 
-Everything that moves, with its duration and curve. The toolkit's `Ease` is a cubic ease-out and
-`Transition` offers `EaseOut` and `Linear`; nothing here needs more. Every entry degrades to a
-snap when `motion_allowed()` is false, and the snapped end state must be the laid-out one (the
-layout-staleness rule below).
+Motion is a first-class property of Atlas and of the toolkit under it, not polish applied at the
+end. What ships first is the **mechanism**, specified in 7.1 and built in stage 0: every
+duration and curve is a named value in one table, every animated quantity goes through one
+primitive, and the layout-staleness rule is enforced by that primitive rather than remembered by
+each node. What is **spent** on day one (7.3) is deliberately small, because the budget (7.2)
+is real and the user wants to explore transitions once things settle; with the mechanism in
+place that exploration is a change to a table, not surgery on call sites.
+
+### 7.1 The primitive
+
+Three pieces, all in `ui.h`, all in stage 0:
+
+**Motion tokens.** A table in `Env`, read from `[theme.ui.motion]` when the theme reader exists
+(Phase 2) and compiled in until then, with one row per *kind of motion* rather than per call
+site. A call site names a token; it never writes a number.
+
+| token | duration ms | curve | what it is for |
+|---|---|---|---|
+| `reveal` | 160 | `enter` | a pane or bar appearing; `RevealX`, `Reveal` |
+| `conceal` | 120 | `exit` | the same pane leaving; exits are shorter and ease in (visual system 5) |
+| `fade` | 100 | `linear` | opacity only: the type-ahead pill, a dimmed previous listing |
+| `promote` | 200 | `enter` | a colour or alpha change the system opts into: glass, loading |
+| `emphasis` | 200 | `enter-emphasised` | a large arrival: the first frame of a query window, a quick-look (Phase 3) |
+| `hover` | 0 | `linear` | row, tile and button hover fill; **0 by default** (7.2) |
+| `select` | 0 | `linear` | the selection fill and halo moving; **0 by default** |
+| `scroll` | 0 | `enter` | the wheel step once pixel scrolling exists; **0 by default** |
+| `sweep` | 900, looping | `linear` | the loading hairline |
+
+Curves, as the visual system names them (5.1), with the bezier control points so the toolkit's
+evaluator is the same as the compositor's: `enter` (0, 0, 0, 1), `enter-emphasised`
+(0.05, 0.7, 0.1, 1), `exit` (0.4, 0, 1, 1), `move` (0.2, 0, 0, 1), `linear`. The existing
+`Ease` is the `enter` cubic; it gains the other four, and a `Spring(duration, bounce)`
+evaluator by the visual system's formula (5.2) for anything that must be retargeted mid-flight,
+which nothing in Atlas is yet and the switcher already is. A token names a curve or a spring.
+
+**`Animated<T>`.** One value cell that moves between targets: `target(T)`, `value()`,
+`running()`, `tick()`, resuming from wherever it got to on a reversal (the rule `Ease` already
+keeps). `T` is a float (a width, a height, an opacity, an offset) or a colour. It carries the
+token it was built with, so changing the table changes it. Four nodes use it and nothing else
+animates:
+
+- `Reveal` / `RevealX`: height / width between 0 and natural. Already exist; move onto the
+  primitive.
+- `Fade(State<bool>*, child, token)`: opacity between 0 and 1, drawn by rendering the child to
+  the surface and blending at the eased alpha (one blend of the child's frame per tick).
+- `Tint(State<bool>*, child, from, to, token)`: a fill colour between two values, for the glass
+  promotion and for hover when its token is non-zero.
+- `Offset(State<bool>*, child, dx, dy, token)`: a slide between an offset and zero, for a bar
+  or pane that *appears* by sliding; forbidden for anything already on screen, which is the
+  rule of `docs/aurora-ui.md` section 1 and is kept.
+
+**`AnimatedSize`, and the layout-staleness rule made structural.** Five shipped bugs were one
+mistake: a node whose size depends on state asked for a repaint when it needed a layout. The
+primitive owns the fix. `AnimatedSize` wraps `Animated<float>` and records `laid_`, the raw
+value the last `Measure` returned; the node's `Animating()` is defined by the wrapper as
+`running() || laid_ != target_raw()`, where the target is the *unclamped* value (a clamped one
+never settles, which was the fourth bug). `Measure` writes `laid_`; nothing else does. A node
+that animates its size uses `AnimatedSize` and gets the rule for free; a reviewer greps for
+`Animating()` overrides and expects to find none outside the wrapper. `Fade`, `Tint` and
+`Offset` do not change layout: they answer `Animating()` false, ask for a tick with `TickMs()`
+and damage their own frame, so they never force a layout pass. The headless test
+(`demo/tk_layout.cpp`) gets one generic case: build a `Reveal` and a `RevealX`, flip them
+under motion allowed, motion degraded and `Motion::None`, lay out until `Animating()` is false,
+and assert the final frames; a new animating node is added to that case, not given its own.
+
+### 7.2 The budget, in numbers
+
+The window thread has 8 ms per frame (decision 0023). An animation is a sequence of frames each
+of which must fit, and the question for every token is what one tick costs and how many ticks
+run at once.
+
+- A `Reveal` of the preview at 280 px wide in a 960 x 640 window re-lays the split and repaints
+  content + preview: about 60% of the window, roughly 1.5 to 2 ms of draw at 25 rows, for 10
+  frames. One at a time, user-initiated. **Spent.**
+- The type-ahead pill's fade: one 60 x 24 blend, 6 frames. **Spent.**
+- A hover fade at 100 ms: two rows of 24 x 600 px, 6 frames, about 0.1 ms each. Cheap in
+  isolation, and the toolkit's refusal of per-item animation is not about one row. The cost is
+  the *pattern*: a pointer sweeping down a list at 40 rows per second starts 40 fades a second,
+  each a tick source, and the window stops sleeping while the pointer moves. Measured today, a
+  hover is 0.03 of the window; with a fade it is 0.03 of the window on every frame for as long
+  as the pointer moves. The token is **0 by default** and the primitive supports it, so the
+  user can set it to 80 ms and judge it; the spec's position is that it will not survive.
+- A scroll ease at 160 ms over a 48 px wheel step: 10 full-pane repaints per notch, 1.5 to
+  2 ms each, and a wheel delivers 10 to 20 notches a second on a fling, so the eases overlap
+  and the pane repaints every frame for the duration of the gesture at the full cost of a
+  frame. That is 20 ms of draw per notch against 2 ms for an instant scroll. It is also the
+  one animation that moves content under the pointer. **0 by default**, retargetable when
+  enabled (the spring is for this), and a candidate for the exploration, with the number above
+  as the thing to beat.
+- Row position on sort, rename, insert and remove: **never**, not a token. Forty rows on forty
+  curves is forty damage rects a frame past `Damage::kMax` (16), which collapses to a full
+  repaint per frame, and it moves what the person is reaching for.
+
+The gate: `motion_allowed()` is false when the p95 of the last 30 frames' draw time exceeds
+6 ms; a new transition then resolves to its end state and a running one snaps, and the window
+counts it (`motion_degraded`), so a build that jank-snaps shows up in the report rather than in
+the user's hands. The cost rule for any token the exploration turns on: one tick must stay
+under 2 ms of draw and damage under 25% of the window on average over the animation, measured
+with `ATLAS_REPORT`, or the token goes back to 0.
+
+### 7.3 What is spent on day one
 
 | what | trigger | duration | curve | what changes | cost, and why it is earned |
 |---|---|---|---|---|---|
-| Preview pane show / hide | toggle, `Space` | 160 ms | ease-out | the pane's width 0 to 280 (`RevealX`); the content pane re-lays out each frame | about 10 frames of content + preview repaint; the only pane toggle, user-initiated, and the alternative (a pop) is the one thing the user called plain |
-| Sidebar show / hide | toggle, `Ctrl+B`, band change does NOT animate | 160 ms | ease-out | the sidebar's width 0 to its ratio (`RevealX`) | as above |
-| Type-ahead pill hide | 900 ms after the last key | 100 ms | linear | opacity 1 to 0 | one 60x24 rect |
-| Loading hairline | a directory read that has not completed 80 ms after it started | loops at 900 ms | linear | a 2 px `accent` bar, 25% of the toolbar's width, sweeping left to right under the toolbar | one 2 px strip; it says "working" without a spinner over the content, and it never appears for a local folder |
-| Glass promotion (Phase 2) | the first frame after the window's p95 draw time is under 4 ms for 10 frames | 200 ms | ease-out | the sidebar's alpha 1.0 to 0.90 | colour only; decision 0023's arrival |
+| Preview pane show / hide | toggle, `Space` | `reveal` 160 / `conceal` 120 | `enter` / `exit` | the pane's width 0 to 280 (`RevealX`); the content pane re-lays out each frame | about 10 frames of content + preview repaint; the only pane toggle, user-initiated, and the alternative (a pop) is the one thing the user called plain |
+| Sidebar show / hide | toggle, `Ctrl+B`, band change does NOT animate | `reveal` / `conceal` | `enter` / `exit` | the sidebar's width 0 to its ratio (`RevealX`) | as above |
+| Type-ahead pill hide | 900 ms after the last key | `fade` 100 | `linear` | opacity 1 to 0 (`Fade`) | one 60x24 rect |
+| Loading hairline | a directory read that has not completed 80 ms after it started | `sweep`, loops at 900 ms | `linear` | a 2 px `accent` bar, 25% of the toolbar's width, sweeping left to right under the toolbar | one 2 px strip; it says "working" without a spinner over the content, and it never appears for a local folder |
+| Glass promotion (Phase 2) | the first frame after the window's p95 draw time is under 4 ms for 10 frames | `promote` 200 | `enter` | the sidebar's alpha 1.0 to 0.90 (`Tint`) | colour only; decision 0023's arrival |
+| Previous listing dimming (Phase 2) | a `readdir` on the worker past 80 ms | `fade` 100 | `linear` | the pane's opacity 1.0 to 0.6 (`Fade`) | one blend of the pane per tick; says "this is stale" without a spinner |
 | Drag ghost | pointer motion | 0 | none | position follows the pointer exactly | lag on a ghost reads as weight the file does not have |
 | Menu open / close | the compositor's popup rule | 100 ms | compositor's | the compositor's | not ours |
 | Window open / close | the compositor's | 200 / 150 | compositor's | the compositor's | not ours |
 
-**Never animated**: row position (sort, rename, insert, remove), scroll position, column width,
-selection, hover, focus, the drop outline, the breadcrumb/path swap, band changes on resize,
-the status bar text, the rename field's appearance, the zebra, icon changes when a stat lands,
-any per-row or per-tile property. These are the rules of `docs/aurora-ui.md` section 1 applied:
-only appearing, disappearing and a container's size may move.
+**Never animated, not a token**: row position (sort, rename, insert, remove), column width,
+the drop outline, the breadcrumb/path swap, band changes on resize, the status bar text, the
+rename field's appearance, the zebra, icon changes when a stat or a theme icon lands. These are
+`docs/aurora-ui.md` section 1 applied: only appearing, disappearing and a container's size may
+move, and nothing moves under the pointer.
 
-**Size animation and the layout-staleness rule.** Both `RevealX` entries animate a node's
-*size*. The toolkit's rule is that such a node keeps answering `Animating() == true` until the
-value it last laid out equals its target, raw and not clamped, or the frame shows stale
-geometry. The implementer must verify this for the two reveals under three conditions: motion
-allowed, motion degraded (`motion_allowed()` false), and `Transition.motion == None`. The
-headless layout test (`demo/tk_layout.cpp`) gets a case per condition that reveals, lays out
-until `Animating()` is false, and asserts the final widths. The glass promotion changes no size
-and is exempt.
+**Tokens at 0 by default, available for the exploration**: `hover`, `select` (the fill and
+halo moving from one row to the next), `scroll` (once pixel scrolling exists). Each has its cost
+in 7.2 and the rule that decides whether it stays.
+
+**Size animation.** Both `RevealX` entries animate a node's *size* and go through
+`AnimatedSize` (7.1), which is what keeps the laid-out geometry honest under motion allowed,
+motion degraded and `Motion::None`. The glass promotion and the dimming change no size.
 
 **Reduced motion**: when the theme's `[motion] reduced` is true, the reveals snap and the pill's
 fade stays (opacity is what the guidance permits); `[motion] enabled = false` snaps everything
 including the fade and stops the loading hairline's sweep (it becomes a static bar).
 
 **Checks.** C7.1 Toggling the preview records about 10 frames at 60 Hz with the pane growing
-monotonically and the final width 280; `ATLAS_REPORT` shows no `over_8ms` frames during it.
+monotonically and the final width 280; `ATLAS_REPORT` shows no `over_8ms` frames during it;
+closing it takes fewer frames than opening it (`conceal` < `reveal`).
 C7.2 In a run without `ATLAS_FORCE`, hovering and selecting produce single-frame changes.
 C7.3 Under `motion_degraded`, toggling the preview shows the pane at 280 on the next frame with
 the content pane correctly narrowed (no stale geometry). C7.4 Opening a 5,000-entry local
 folder shows no loading hairline; a folder on a deliberately slow mount (or a `ATLAS_SLOW_READ`
-test knob) shows it after 80 ms.
+test knob) shows it after 80 ms. C7.5 No node outside `AnimatedSize` overrides `Animating()`
+(grep). C7.6 The headless test flips `Reveal` and `RevealX` under all three motion conditions
+and asserts the final frames. C7.7 Setting `hover` to 80 ms in the token table (or
+`AURORA_UI_MOTION=hover=80` until the theme reader exists) produces a hover fade with no code
+change, and `ATLAS_REPORT` over a 2 s pointer sweep reports its cost.
 
 ---
 
@@ -1083,77 +1342,33 @@ the menu usable with a "timed out" row.
 
 ---
 
-## 10. Scope, in three phases
+## 10. Stages, for periodic review
 
-Costs are relative and honest: S is a day or two for one implementer, M a week, L more, and
-"needs" names work outside Atlas that the phase depends on.
+The work is cut so that each stage ends at a point where the user can open Atlas, see one
+visible difference, and judge it. More and smaller stages, not three big ones. "Phase 1, 2, 3"
+elsewhere in this document are ambition tiers and map onto these as: Phase 1 = stages 0 to 6,
+Phase 2 = stages 7 to 9, Phase 3 = stage 10. Costs are relative and honest: S is a day or two
+for one implementer, M a week, L more; "needs" names work outside Atlas.
 
-### Phase 1: feels world class soonest (all S or M; no external dependency)
+| stage | visible outcome, in one sentence | checks | cost |
+|---|---|---|---|
+| **0. Foundations** (no visible result) | Nothing changes on screen; `tk_layout` passes new cases for `ColumnSpec`, `IconSpec`, `TreeItem` sections, `IconButton`, `MenuButton`, the halo drawing routine, the motion token table, `Animated<T>` / `AnimatedSize`, `Fade`, `Tint`, `Offset`, the curve and spring evaluators, and the window's drag ghost. | C7.5, C7.6 | M to L; the toolkit team is on it in parallel |
+| **1. The frame** | Open Atlas: the toolbar is icons with the location in it, there is no second "Atlas" heading, the columns fit with nothing cut, sizes are right-aligned with `—` for folders, dates read "Today 12:56", rows are striped, and selection and focus look as section 6.3 (including the halo after an arrow key). Text is 13 px. | C1.1, C1.3, C2.1, C2.3, C2.4, C3.1 to C3.5, C5.1 to C5.3, C6.2, C6.3 | M |
+| **2. Every row has a face** | The procedural family: nine kinds with marks, special folders, link and broken badges, hidden at 55%, the Kind column at >= 900, the same icons at 48 px in the grid. | C1.2, C4.1 to C4.5, C5.6 | M |
+| **3. The sidebar is a map** | Places flat with their icons, Filesystem as a tree, `/tmp` gone as a root, `Ctrl+B` and the toggle reveal it, and the three width bands collapse the right things in the right order. | C2.2, C6.9 | S to M |
+| **4. The keyboard and the pointer** | Press selects; every key in 6.4 works; type-ahead shows the pill; the filter shows its accent border and clears with `×`; `F2` selects the stem and a collision is answered in the row; natural sort; one reorder on Size; the menus read as 6.8; `Ctrl+L` swaps in place. | C5.4, C5.5, C6.1, C6.4, C6.6, C6.7, C6.8 | M |
+| **5. Drag, drop and the edges** | Dragging shows the ghost and the drop outline with the status text; an empty folder, an `EACCES` folder, a 220-character name, CJK and Arabic names, a U+202E name, a broken link and an external delete all look as section 8. | C6.5, C8.1 to C8.6 | M |
+| **6. Motion spent, and the first exploration** | The preview and sidebar reveal on the `reveal` / `conceal` tokens, the pill fades, the hairline sweeps on a slow folder, degraded motion snaps correctly, and the user can turn `hover` on from the table and judge it in a session with the designer. | C7.1 to C7.4, C7.7 | S |
+| **7. Icon files** | A theme with SVG and PNG icons replaces the procedural icons where it has them, at 16 and 48 and at scale 1.45, with a hostile folder changing nothing and a hostile icon refused. **Needs** `icon.rasterise@v1` and its provider app (the verb's cost is most of this). | C4.6 to C4.8 | L (M in Atlas, M outside) |
+| **8. Looks like the system** | The light scheme from `[theme.ui]`, `AURORA_UI_SCHEME`; the window title is the folder name; tooltips on the toolbar; cursor shapes at the divider. **Needs** `au_wl_win_set_title` and a cursor-shape call in `present_wl`. | C3.1 to C3.5 repeated in light; C1.1 with the folder name | M (S each for the two presenter calls) |
+| **9. Daily driver** | In any order, each its own review: (a) `preview@v1` images in the pane, **needs** the verb and the lease path, L; (b) per-folder view memory and Back/Forward restoring scroll and selection, M; (c) pixel scrolling and the `scroll` token, two-line and large tiles, M; (d) the glass sidebar and the promotion, **needs** ARGB in `present_wl` and a blur region, M each side; (e) Trash, Devices, Places editing, M; (f) `readdir`, preview reads and the plumber off the window thread with the dimmed listing and the pending menu row, M; (g) spring-loaded folders, edge auto-scroll, slow-click rename, item counts, S each. | C9.2, C9.4, C3.6, C7.3 under load | see each |
+| **10. What can wait** | Columns view (L), thumbnails (M), the provenance column (M + indexd), query windows (L), `move@v1` / `copy@v1` with progress and Undo (L, the controller's), tabs and windows (M), bidi (M, the text stack), drag out of the window (L, the compositor), HVIF through the icon seam (S once the decoder exists). | C9.3 and the Columns checks to be written with it | see each |
 
-1. Toolbar as section 2.1 with icon buttons, the view menu button, the filter field, the
-   breadcrumb/path `Either`; the duplicate heading removed. **M** (new `IconButton` and
-   `MenuButton` nodes, section 11).
-2. Details column model: flex Name, right-aligned Size, Modified with the width-stepped format,
-   Kind at >= 900, width rule by band, `—` for folders, header hover and the column menu. **M**
-   (the `ColumnSpec` change to `Rows`, section 11).
-3. The icon family of section 4 at 16 and 48, badges, special folders, hidden opacity. **M**.
-4. Rows: zebra, hover with `DamageHint`, press-to-select, selection and cursor drawing of
-   section 6.3, focused/unfocused colours, no pane rings. **S/M**.
-5. Sidebar sections: flat Places with the special-folder icons, Filesystem tree, `/tmp` removed
-   as a root, 26 px rows, `Ctrl+B`. **M** (`TreeItem` sections, section 11).
-6. Sort: natural name sort, the full-stat-then-one-resort rule, the 20,000 snapshot fallback.
-   **S** (in `filebrowse.h`, shared with the chooser, which benefits).
-7. Status bar as section 2.1, with the overlap rule. **S**.
-8. Empty and error states of section 8.1, 8.3, 8.5 (the control-character rendering), 8.6.
-   **S/M**.
-9. Keyboard map of section 6.4 as far as the toolkit allows (all but `Ctrl+=`, `Ctrl+3`,
-   `Ctrl+Shift+F`). **S**.
-10. Rename polish: stem selection, collision note in-row, `/` refusal. **S**.
-11. Drag ghost and the drop status text. **M** (the window draws the ghost, section 11).
-12. Type-ahead pill fade and no-match state; filter accent border and clear button. **S**.
-13. The band rule for small/medium/large. **S**.
-14. Colour roles compiled in as `Env` defaults, dark scheme. **S**.
-
-Phase 1 ends with the C1 to C8 checks passing on a 960x640 screenshot and a 520x400 one, and
-with the headless layout test covering the two reveals under the three motion conditions.
-
-### Phase 2: the daily-driver layer
-
-1. Theme reader for `[theme.ui]` and the light scheme; `AURORA_UI_SCHEME`. **M**.
-2. Glass sidebar. **Needs**: ARGB8888 buffers in `present_wl` and a blur region the compositor
-   honours (`ext-background-effect-v1` or `aurora_blur_v1`); the compositor's window glass
-   already exists. **M** in Atlas, **M** in the compositor and presenter.
-3. Window title = folder name. **Needs** `au_wl_win_set_title`. **S**.
-4. Tooltips (a popup surface like the menu's). **M**.
-5. `preview@v1` for images and PDFs in the pane. **Needs** the verb, a provider app and the
-   lease path (decision 0019); **L** overall, most of it outside Atlas.
-6. Per-folder view memory (view, sort, column widths, scroll) persisted. **M**.
-7. Pixel scrolling with a 48 px wheel step; two-line grid labels; large icons. **M**.
-8. Spring-loaded folders, edge auto-scroll, slow-click rename. **S/M**.
-9. `readdir` on the worker with the dimmed previous listing; preview reads on the worker; the
-   plumber call off the event thread. **M**.
-10. Trash as a Place with Restore; Devices from mountinfo with free space; Places editing. **M**.
-11. Back/Forward restoring scroll and selection; selection kept across rename by inode. **S**.
-12. Cursor shapes at the split divider and column boundaries. **Needs** a cursor-shape call in
-    `present_wl` (the compositor already has the protocol). **S** each side.
-13. The folder item count in the Size column, demand-driven. **S**.
-
-### Phase 3: what can wait
-
-1. Columns view (section 5.3). **L**: `DirRows` serving several directories, the N-way `Either`.
-2. Thumbnails in the grid via `preview@v1`, cached on disk. **M**, needs Phase 2 item 5.
-3. Provenance column via `[[extends.atlas.column]]` and indexd's `describe@v1`. **M** in
-   Atlas, **M** in indexd.
-4. Query windows (`Ctrl+Shift+F`, the Queries sidebar section). **L**.
-5. `move@v1` and `copy@v1` as domain verbs with progress and cancel, replacing the EXDEV
-   refusals; long operations in the status bar with `Esc`; Undo for move, rename and trash.
-   **L**, most of it the controller's.
-6. Tabs and multiple windows; middle-click; "Open in new window". **M**.
-7. Bidirectional text. **Needs** a bidi pass in the kits' text stack. **M**.
-8. Drag out of the window (decision 0020's guest-to-host). **Needs** the compositor. **L**.
-9. HVIF icons replacing the procedural family. **Needs** the icon system. **M** in Atlas.
-
----
+The review cadence this implies: stage 1 is the first thing the user sees and the shortest path
+to a visible change after stage 0; stages 2 to 5 are each a sitting; stage 6 is a working
+session rather than a review, because it is where the motion tokens get tuned by eye. A stage
+is done when its checks pass on the reference screenshots and the run, and a check that cannot
+be run yet is recorded as "not yet".
 
 ## 11. What the toolkit and the platform must gain
 
@@ -1163,11 +1378,15 @@ the build.
 
 | need | where | phase | notes |
 |---|---|---|---|
-| `IconButton(glyph, on_click, enabled)` with the procedural glyphs of 6.9 | `ui.h` | 1 | a `Button` draws a string; a glyph is a drawing. Hover, press, focus ring as `Button` |
+| `IconButton(glyph, on_click, enabled)` with the procedural glyphs of 6.9 | `ui.h` | 1 | a `Button` draws a string; a glyph is a drawing. Hover and press as `Button`; the halo of 6.3 |
 | `MenuButton(glyph, items)` that `Defer`s a `ShowMenu` anchored below itself | `ui.h` | 1 | composable from `Button` + `Defer` + `ShowMenu` today; a node so the anchor is right |
 | `Rows::Column(int) -> ColumnSpec{title, width, min, flex, align, visible_from}` replacing `ColumnWidth` and `ColumnTitle` | `ui.h`, `filebrowse.h` | 1 | the chooser's list gets right-aligned sizes for free |
 | `Rows::Icon(int row) -> IconSpec{kind, mark, badge, dimmed}` with a default that classifies by name, replacing the trailing-`/` convention | `ui.h` | 1 | the slash hack stays as the default's input so other `Rows` do not change |
-| Row hover with `DamageHint` of two rows; zebra; press-to-select; selection/cursor drawing per 6.3; no frame ring on focus | `ListNode`, `IconsNode`, `TreeNode` | 1 | the ring removal must keep a focused pane recognisable (the selection colour does it) |
+| Row hover with `DamageHint` of two rows; zebra; press-to-select; selection drawing per 6.3 | `ListNode`, `IconsNode`, `TreeNode` | 1 | |
+| The focus halo: one drawing routine (`draw_halo(rect, radius, surface colour)`) used by list, grid, tree and buttons, drawn after rows with a `DamageHint` of the cursor element plus 3 px; `Window` tracks whether focus was last moved by keyboard or pointer and exposes it | `ui.cpp`, `Window` | 1 | replaces the 1 px frame ring in every node; the keyboard/pointer bit is what `:focus-visible` is |
+| Motion tokens in `Env` (7.1), the five curves and `Spring` in `Ease`, `Animated<T>`, `AnimatedSize` owning `Animating()`, `Fade`, `Tint`, `Offset` nodes; `Reveal` / `RevealX` moved onto them; `AURORA_UI_MOTION=token=ms` override until the theme reader exists | `ui.h`, `ui.cpp` | 1 | stage 0; the foundation the exploration runs on |
+| `IconSource` seam: a source id per (theme entry or procedural kind), one cache keyed `(source, size, scale)` for every source, a disk cache for file-derived icons, an off-thread request queue in visible-range order | `ui.cpp`, `filebrowse.h` | 1 (seam), 2 (files) | the procedural family goes through the same seam from day one so stage 7 adds sources, not plumbing |
+| `icon.rasterise@v1`: a verb and a provider app that render the SVG profile and decode PNG in a domain holding the one file, returning raw ARGB at device pixels | controller, apps | 2 | the same shape as `preview@v1` and the reason Atlas links no SVG or PNG library |
 | `TreeItem.section` (a non-selectable header row) and `TreeItem.flat` (no chevron, no children) | `ui.h`, `PlacesTree` | 1 | Places flat, Filesystem a tree, one widget |
 | The window draws a drag ghost: `Window::SetDragGhost(Desc)` positioned at the pointer and damaged per move | `Window` | 1 | the ghost is a tree of `Label` + icon, built once at drag start |
 | `Either` with N children (`Pick(State<int>*, {a, b, c})`) | `ui.h` | 3 | two views need the two-way one that exists |
@@ -1209,11 +1428,15 @@ scripted run with `ATLAS_REPORT=1`.
 | C3.4 | focused selection `accent` + `accent-ink`; unfocused `selection-unfocused` + `text` | 1280x800, then after a sidebar click |
 | C3.5 | no pane draws a frame ring on focus | any |
 | C3.6 | (Phase 2) no `text-2` on the glass sidebar; headers are `caption` in `text` | 1280x800 |
+| C3.5 (halo) | after `Shift+Down` the cursor row has the 2 px halo with a 1 px gap; after a pointer press it has none | scripted keys then click |
 | C4.1 | four distinct folder icons in a home directory | 960x640 |
 | C4.2 | eight file kinds distinguishable at 16 px with names covered | fixture directory |
 | C4.3 | broken symlink: red badge, dimmed name | fixture |
 | C4.4 | the same eight distinguishable at 48 px | icons view |
 | C4.5 | no icon rasterisation after the first frame of a scroll | `ATLAS_REPORT` / trace |
+| C4.6 | theme SVG and PNG icons replace procedural ones by the size rule, at 1.0 and 1.45 | test theme, two scales |
+| C4.7 | icon-like files in a browsed folder change nothing | fixture folder |
+| C4.8 | script, external href and oversize icons refused and logged; no SVG/PNG library in Atlas's maps | fixture theme, `/proc` |
 | C5.1 | Modified text ends >= 8 px inside the pane; nothing cut | 960x640 |
 | C5.2 | sizes right-aligned; folders `—` | 960x640 |
 | C5.3 | a recent file reads "Today HH:MM" | fixture |
@@ -1222,7 +1445,7 @@ scripted run with `ATLAS_REPORT=1`.
 | C5.6 | long names in icons view keep their extension | icons view |
 | C6.1 | press selects before release | scripted press-hold |
 | C6.2 | hover damage `mean_fraction < 0.1` | `ATLAS_REPORT` |
-| C6.3 | selection colour follows pane focus | screenshots |
+| C6.3 | selection colour follows pane focus; one screenshot holds focused-selected with halo, unfocused-selected, cursor-only | screenshots |
 | C6.4 | type-ahead `do` selects Documents; pill gone after 1 s | scripted keys |
 | C6.5 | drag ghost with icon and name; drop outline; status "Move into" | scripted drag |
 | C6.6 | rename selects the stem; collision keeps the field open with the in-row note | scripted |
@@ -1233,6 +1456,9 @@ scripted run with `ATLAS_REPORT=1`.
 | C7.2 | hover and selection are single-frame changes | frame capture |
 | C7.3 | degraded motion: correct geometry on the next frame | `motion_degraded` run |
 | C7.4 | no hairline for a local folder; hairline after 80 ms on a slow one | test knob |
+| C7.5 | no `Animating()` override outside `AnimatedSize` | grep |
+| C7.6 | headless reveal test under three motion conditions | `tk_layout` |
+| C7.7 | `hover` token turned on produces a fade with no code change, cost reported | token override, `ATLAS_REPORT` |
 | C8.1 | empty folder state as specified; toolbar live | fixture |
 | C8.2 | `EACCES` state with the reason; Back works | fixture |
 | C8.3 | 220-char name middle-elided, extension intact, both views | fixture |
