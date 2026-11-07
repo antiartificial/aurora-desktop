@@ -364,10 +364,14 @@ int main() {
                     Button("Up", [&] { go(parent_of(path.get()), true); }),
                 }),
                 0.75f),
-        padding(weight(named(Breadcrumb(&path, [&](const std::string& to) { go(to, true); },
-                                        [&] { filter_open.set(true); w.FocusNamed("filter"); }),
-                             "crumbs"),
-                       1),
+        // NO weight: this is inside a VStack, so a weight would make the breadcrumb take a share
+        // of the leftover HEIGHT. It did, at 189px, and swallowed the area the list should have
+        // had -- a right-click meant for a row hit the breadcrumb instead. Weight is per-axis and
+        // the axis is the stack's, which is the kind of thing a layout API should make harder to
+        // get wrong than this one currently does.
+        padding(named(Breadcrumb(&path, [&](const std::string& to) { go(to, true); },
+                                 [&] { filter_open.set(true); w.FocusNamed("filter"); }),
+                      "crumbs"),
                 0.25f),
         // Reveal: height animates 0 <-> natural on a cubic ease-out, 160 ms. The child keeps its
         // own layout and is clipped, so revealing never reflows the field's contents.

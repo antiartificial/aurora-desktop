@@ -1,5 +1,8 @@
 use smithay::{
-    desktop::{PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords},
+    desktop::{
+        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Space,
+        Window, find_popup_root_surface, get_popup_toplevel_coords,
+    },
     input::{
         Seat,
         pointer::{Focus, GrabStartData as PointerGrabStartData},
@@ -146,8 +149,49 @@ impl XdgShellHandler for Aurora {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO popup grabs
+    /// `xdg_popup.grab`: give a client's popup the keyboard and route the pointer to it.
+    ///
+    /// This was a stub, and the symptom was specific: a client menu DREW but could not be driven
+    /// by keyboard, because without a grab the compositor never moves keyboard focus to the
+    /// popup's surface. `aurora::ui`'s context menu found it -- arrow keys went to the window
+    /// underneath while the menu sat there looking focused.
+    ///
+    /// A grab is only honoured for a client that already holds the relevant input: the serial
+    /// has to match an event we actually sent it. Otherwise any client could seize the keyboard
+    /// by asking, which is the hole `xdg_popup.grab`'s serial argument exists to close. On a
+    /// mismatch the whole popup chain is dismissed rather than left half-grabbed, because a menu
+    /// that is up but not receiving input is the worst of the three states.
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<Aurora>::from_resource(&seat) else { return };
+        let kind = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&kind) else { return };
+        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else { return };
+
+        if let Some(keyboard) = seat.get_keyboard() {
+            // Already grabbed by someone else, and not by this chain: refuse.
+            if keyboard.is_grabbed()
+                && !(keyboard.has_grab(serial)
+                    || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            keyboard.set_focus(self, grab.current_grab(), serial);
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = seat.get_pointer() {
+            if pointer.is_grabbed()
+                && !(pointer.has_grab(serial)
+                    || pointer.has_grab(grab.previous_serial().unwrap_or(grab.serial())))
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+                return;
+            }
+            // Focus::Keep: the pointer stays where it is. Re-focusing on grab would deliver a
+            // leave/enter pair the client did not ask for and would reset its hover.
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+        }
+        tracing::info!("xdg_popup: grab granted to a client popup");
     }
 }
 

@@ -1321,10 +1321,17 @@ void Window::Event(void* user, int kind, int a, int b) {
             }
             break;
         case AU_EV_POINTER_BUTTON: {
+            if (getenv("AURORA_UI_TRACE"))
+                fprintf(stderr, "ui: button a=%d pressed=%d at %.0f,%.0f\n", a, b, w->px_, w->py_);
             if (a == 2 || a == 3) {        // secondary button: BTN_RIGHT arrives as 2 or 3
                 if (!b) break;             // act on press, as a context menu does
-                for (Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr; n;
-                     n = n->parent)
+                Node* hit = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
+                if (getenv("AURORA_UI_TRACE"))
+                    fprintf(stderr, "ui: context hit=%s frame=%.0f,%.0f %.0fx%.0f\n",
+                            hit ? (hit->name.empty() ? "(unnamed)" : hit->name.c_str()) : "NONE",
+                            hit ? hit->frame.x : 0, hit ? hit->frame.y : 0,
+                            hit ? hit->frame.w : 0, hit ? hit->frame.h : 0);
+                for (Node* n = hit; n; n = n->parent)
                     if (n->OnContext(w->px_, w->py_)) { w->Invalidate(); break; }
                 break;
             }
