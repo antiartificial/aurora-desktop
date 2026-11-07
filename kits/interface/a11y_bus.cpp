@@ -317,7 +317,10 @@ void Handle(Service* s, const BusEnvelope& req)
 		return;
 	}
 	Audit(s, req, verb.c_str(), nwin, tbytes);
-	s->client.Reply(req, out);
+	// Ephemeral: delivered, never written to the append-only log. A reply holds every string a window drew, and the log
+	// is kept, replayed and read by others; the text of a password manager must not be copied into it.
+	BusEnvelope e; e.kind = "response"; e.verb = req.verb; e.corr = req.id; e.qos = req.qos; e.payload = out; e.ephemeral = true;
+	s->client.Send(e);
 }
 
 void Worker(Service* s)

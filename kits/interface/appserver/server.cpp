@@ -103,7 +103,7 @@ struct SView {
 	DrawState st;
 	std::vector<DrawState> stack;
 	// ---- accessibility tree (decision 0017): what this view drew, kept so a reader can be told. Nothing is published.
-	struct Run { std::string text; BPoint at; float width; float size; BRect loc; };	// loc: bounding box, window coordinates minus WindowOffset(view)
+	struct Run { std::string text; BPoint at; float width; float size; BRect win; };	// win: bounding box in window coordinates when it was drawn: where the pixels are, and what a repaint of that place erases
 	std::vector<Run> runs; size_t runBytes = 0;
 	struct { int strings = 0, ellipses = 0, roundrects = 0, gradients = 0, rects = 0, lines = 0, bitmaps = 0, shapes = 0; } ev;
 };
@@ -256,10 +256,9 @@ void NoteDraw(SView* v, int32 code)
 void DropRuns(SView* v, const BRect& win)
 {
 	if (v->runs.empty()) return;
-	BPoint o = WindowOffset(v);
 	size_t keep = 0;
 	for (size_t i = 0; i < v->runs.size(); i++) {
-		if (v->runs[i].loc.OffsetByCopy(o).Intersects(win)) { v->runBytes -= v->runs[i].text.size(); continue; }
+		if (v->runs[i].win.Intersects(win)) { v->runBytes -= v->runs[i].text.size(); continue; }
 		if (keep != i) v->runs[keep] = std::move(v->runs[i]);
 		keep++;
 	}
@@ -274,8 +273,7 @@ void RecordRun(SView* v, const char* s, BPoint at, BPoint startWin, BPoint endWi
 	text::Metrics m;
 	float asc = 0, desc = 0;
 	if (TB()->GetMetrics(v->st.font, v->st.fontSize, &m)) { asc = m.ascent * v->st.scale; desc = m.descent * v->st.scale; }
-	BPoint o = WindowOffset(v);
-	BRect loc(startWin.x - o.x, startWin.y - asc - o.y, std::max(endWin.x, startWin.x + 1) - o.x, startWin.y + desc - o.y);
+	BRect loc(startWin.x, startWin.y - asc, std::max(endWin.x, startWin.x + 1), startWin.y + desc);
 	// The same text drawn again at the same place (a repaint that did not go through an update) replaces the old run.
 	for (size_t i = 0; i < v->runs.size(); i++)
 		if (v->runs[i].at == at && v->runs[i].size == v->st.fontSize) { v->runBytes -= v->runs[i].text.size(); v->runs.erase(v->runs.begin() + i); break; }
@@ -1881,10 +1879,9 @@ static void Snap(const SView* v, UiWindow* uw)
 	n.drew["strings"] = v->ev.strings; n.drew["ellipses"] = v->ev.ellipses; n.drew["roundrects"] = v->ev.roundrects;
 	n.drew["gradients"] = v->ev.gradients; n.drew["rects"] = v->ev.rects; n.drew["lines"] = v->ev.lines;
 	n.drew["bitmaps"] = v->ev.bitmaps; n.drew["shapes"] = v->ev.shapes;
-	BPoint o = WindowOffset(v);
 	for (const SView::Run& r : v->runs) {
 		UiText t; t.text = r.text; t.x = r.at.x; t.y = r.at.y; t.width = r.width; t.size = r.size;
-		t.wl = r.loc.left + o.x; t.wt = r.loc.top + o.y; t.wr = r.loc.right + o.x; t.wb = r.loc.bottom + o.y;
+		t.wl = r.win.left; t.wt = r.win.top; t.wr = r.win.right; t.wb = r.win.bottom;
 		n.text.push_back(std::move(t));
 	}
 	for (const SView* c : v->children) n.children.push_back(c->token);

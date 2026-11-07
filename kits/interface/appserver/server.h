@@ -51,9 +51,9 @@ struct UiText {
 struct UiNode {
 	int32_t token = -1, parent = -1;	// parent -1: the window's root view
 	std::string name;
-	std::string role;		// "window-root" | "group" | "text" | "control" | "unknown"; see decision 0017
+	std::string role;		// "window-root" | "scrollbar" | "control" | "group" | "text" | "unknown"; see decision 0017
 	std::string basis;		// the evidence the role rests on, so a reader can judge it
-	std::string confidence;	// "protocol" | "structural" | "inferred" | "none"
+	std::string confidence;	// "protocol" | "structural" | "convention" | "inferred" | "none"
 	double l = 0, t = 0, r = 0, b = 0;		// frame in the parent's coordinates
 	double al = 0, at = 0, ar = 0, ab = 0;		// frame in window coordinates
 	double vl = 0, vt = 0, vr = 0, vb = 0;		// the part of it actually visible (clipped by ancestors)
