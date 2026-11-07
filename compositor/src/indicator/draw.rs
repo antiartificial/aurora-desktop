@@ -19,7 +19,7 @@ use crate::{
     fx::theme::{self, oklab_to_u8},
     shell::{layout::Rect, motion::Appear},
     text::{FontSpec, TextSystem},
-    trusted::{draw::{Canvas, clean, fit}, verify::Verdict},
+    trusted::{draw::{Canvas, Elide, clean, fit}, verify::Verdict},
 };
 
 /// Text colour of a domain busd does not vouch for. Contrast over the panel is asserted on pixels.
@@ -137,7 +137,7 @@ fn panel(t: &mut TextSystem, rows: &[Row], extra: usize, up: bool, w: f32, scale
         t.draw(&mut c, PAD + 8.0 + 6.0, y, &row.head, &bold, k.text, scale);
         y += line;
         let x = t.draw(&mut c, PAD, y, "Domain  ", &body, k.dim, scale);
-        let name = fit(t, &row.who, &body, scale, inner - (x - PAD), false);
+        let name = fit(t, &row.who, &body, scale, inner - (x - PAD), Elide::Head);
         t.draw(&mut c, x, y, &name, &body, k.text, scale);
         y += line;
         let x = if row.attested {
@@ -201,7 +201,7 @@ pub fn draw_indicator(
     let shown = rows(&vis.iter().collect::<Vec<_>>(), now);
     let extra = vis.len().saturating_sub(MAX_ROWS);
     let (first, more) = (&vis[0], vis.len() - 1);
-    let name = fit(t, &first.name, &FontSpec::new(13.0).bold(), scale, d(240.0) as f32 / scale as f32, false);
+    let name = fit(t, &first.name, &FontSpec::new(13.0).bold(), scale, d(240.0) as f32 / scale as f32, Elide::Head);
     let label = format!("{}: {}{}", labels(&first.resource).0, name, if more > 0 { format!(" +{more}") } else { String::new() });
     let out_w = size.w as f64 / scale;
     let pw = PANEL_W.min((out_w as f32 - 2.0 * cfg.margin).max(120.0));

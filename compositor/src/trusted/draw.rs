@@ -81,20 +81,41 @@ pub fn clean(s: &str) -> String {
     s.chars().map(|c| if (' '..='~').contains(&c) { c } else { '?' }).collect()
 }
 
+/// Which end of an over-long string survives the cut.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Elide {
+    /// Keep the start. The default for prose, where the first words carry it.
+    Head,
+    /// Keep the end.
+    Tail,
+    /// Keep both ends and cut the middle. The only honest choice for a PATH: a
+    /// tail cut collapses two different files into one line whenever they share
+    /// a long enough suffix, and the user is left confirming a grant they cannot
+    /// tell apart. `path_grants_that_differ_only_in_their_directory_stay_distinct`
+    /// is the demonstration.
+    Middle,
+}
+
 /// Cut `s` to at most `max_w` logical pixels, marking the cut with "...".
-/// Heads keep the start, tails keep the end (for paths, where the end is what
-/// matters). Binary search on the kept length: shaping is the cost, and a
-/// field can be 2048 characters.
-pub(crate) fn fit(t: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max_w: f32, keep_tail: bool) -> String {
+/// Binary search on the kept length: shaping is the cost, and a field can be
+/// 2048 characters.
+pub(crate) fn fit(t: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max_w: f32, elide: Elide) -> String {
     if t.string_width(s, spec, scale) <= max_w {
         return s.to_string();
     }
     let chars: Vec<char> = s.chars().collect();
+    let head = |n: usize| chars[..n].iter().collect::<String>();
+    let tail = |n: usize| chars[chars.len() - n..].iter().collect::<String>();
     let cut = |keep: usize| -> String {
-        if keep_tail {
-            format!("...{}", chars[chars.len() - keep..].iter().collect::<String>())
-        } else {
-            format!("{}...", chars[..keep].iter().collect::<String>())
+        match elide {
+            Elide::Tail => format!("...{}", tail(keep)),
+            Elide::Head => format!("{}...", head(keep)),
+            // The front half gets the odd character: the root of a path is what
+            // distinguishes it, so when there is one char to spare it goes there.
+            Elide::Middle => {
+                let h = keep.div_ceil(2);
+                format!("{}...{}", head(h), tail(keep - h))
+            }
         }
     };
     let (mut lo, mut hi) = (0usize, chars.len());
@@ -117,7 +138,7 @@ fn wrap(t: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max_w: f32, ma
             if lines.len() + 1 == max_lines {
                 // the rest goes on the last line, which `fit` then cuts
                 let rest: String = chars[start..].iter().collect();
-                lines.push(fit(t, &format!("{rest}xxxxxxxx"), spec, scale, max_w, false));
+                lines.push(fit(t, &format!("{rest}xxxxxxxx"), spec, scale, max_w, Elide::Head));
                 return lines;
             }
             lines.push(chars[start..i].iter().collect());
@@ -143,42 +164,42 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize, t: &mut T
     let (text_w, value_x, value_w) = ((w - 40) as f32, 20.0 + 64.0, (w - 104) as f32);
     let (body, status, head, button) = (FontSpec::new(14.0), FontSpec::new(14.0).bold(), FontSpec::new(26.0).bold(), FontSpec::new(24.0).bold());
     let r = &p.req;
-    // label, value, colour, keep_tail, bold
-    let mut rows: Vec<(String, String, [u8; 4], bool, bool)> = Vec::new();
-    rows.push(("App".into(), r.app.clone(), TEXT, false, false));
+    // label, value, colour, elide, bold
+    let mut rows: Vec<(String, String, [u8; 4], Elide, bool)> = Vec::new();
+    rows.push(("App".into(), r.app.clone(), TEXT, Elide::Head, false));
     let v = &r.verification;
     let verified = v.verdict == Verdict::Verified;
     if v.bus_attested {
-        rows.push(("Domain".into(), r.domain.clone(), TEXT, false, false));
-        rows.push(("".into(), "BUS-ATTESTED: this request came from inside it.".into(), ATTESTED, false, true));
-        rows.push(("".into(), "busd stamped the sender; verb and grants text are the controller's.".into(), DIM, false, false));
+        rows.push(("Domain".into(), r.domain.clone(), TEXT, Elide::Head, false));
+        rows.push(("".into(), "BUS-ATTESTED: this request came from inside it.".into(), ATTESTED, Elide::Head, true));
+        rows.push(("".into(), "busd stamped the sender; verb and grants text are the controller's.".into(), DIM, Elide::Head, false));
         if let Some(m) = &v.mismatch {
-            rows.push(("Claimed".into(), format!("{m} by the controller (REJECTED)"), WARN, false, false));
+            rows.push(("Claimed".into(), format!("{m} by the controller (REJECTED)"), WARN, Elide::Head, false));
         }
     } else if verified {
-        rows.push(("Domain".into(), r.domain.clone(), TEXT, false, false));
-        rows.push(("".into(), format!("VERIFIED: {}", v.detail), VERIFIED, false, true));
-        rows.push(("".into(), "CONTROLLER'S CLAIM: nothing from inside it confirms this request.".into(), CLAIM, false, true));
+        rows.push(("Domain".into(), r.domain.clone(), TEXT, Elide::Head, false));
+        rows.push(("".into(), format!("VERIFIED: {}", v.detail), VERIFIED, Elide::Head, true));
+        rows.push(("".into(), "CONTROLLER'S CLAIM: nothing from inside it confirms this request.".into(), CLAIM, Elide::Head, true));
     } else {
-        rows.push(("Domain".into(), format!("CLAIMED \"{}\" (NOT VERIFIED)", r.domain), WARN, false, false));
-        rows.push(("".into(), format!("busd: {}", v.detail), WARN, false, false));
+        rows.push(("Domain".into(), format!("CLAIMED \"{}\" (NOT VERIFIED)", r.domain), WARN, Elide::Head, false));
+        rows.push(("".into(), format!("busd: {}", v.detail), WARN, Elide::Head, false));
     }
     if !r.domain_identity.is_empty() {
-        rows.push(("Ident".into(), r.domain_identity.clone(), DIM, true, false));
+        rows.push(("Ident".into(), r.domain_identity.clone(), DIM, Elide::Tail, false));
     }
-    rows.push(("Verb".into(), r.verb.clone(), TEXT, false, false));
-    rows.push(("Effect".into(), r.effect.to_uppercase(), WARN, false, false));
+    rows.push(("Verb".into(), r.verb.clone(), TEXT, Elide::Head, false));
+    rows.push(("Effect".into(), r.effect.to_uppercase(), WARN, Elide::Head, false));
     if r.grants.is_empty() {
-        rows.push(("Grants".into(), "(none)".into(), DIM, false, false));
+        rows.push(("Grants".into(), "(none)".into(), DIM, Elide::Head, false));
     }
     for (i, g) in r.grants.iter().take(4).enumerate() {
-        rows.push((if i == 0 { "Grants" } else { "" }.into(), g.clone(), TEXT, true, false));
+        rows.push((if i == 0 { "Grants" } else { "" }.into(), g.clone(), TEXT, Elide::Middle, false));
     }
     if r.grants.len() > 4 {
-        rows.push((String::new(), format!("(+{} more grants not shown)", r.grants.len() - 4), WARN, false, false));
+        rows.push((String::new(), format!("(+{} more grants not shown)", r.grants.len() - 4), WARN, Elide::Head, false));
     }
     for (i, l) in wrap(t, &r.args, &body, scale, value_w, 3).into_iter().enumerate() {
-        rows.push((if i == 0 { "Args" } else { "" }.into(), l, TEXT, false, false));
+        rows.push((if i == 0 { "Args" } else { "" }.into(), l, TEXT, Elide::Head, false));
     }
     let banner = if verified && v.mismatch.is_none() { 0 } else { BANNER_H + 8 };
     let h = banner + 32 + 8 + 16 + 14 + rows.len() * ROW_H + 14 + 32 + 10 + 16 + 30;
@@ -191,7 +212,7 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize, t: &mut T
     let mut y = 16;
     t.draw(&mut c, 20.0, y as f32, "APPROVAL REQUIRED", &head, BORDER, scale);
     y += 32 + 6;
-    let note = fit(t, "Drawn by the compositor itself, not by an app.", &body, scale, text_w, false);
+    let note = fit(t, "Drawn by the compositor itself, not by an app.", &body, scale, text_w, Elide::Head);
     t.draw(&mut c, 20.0, y as f32, &note, &body, DIM, scale);
     y += ROW_H + 14 - 2;
     if !verified || v.mismatch.is_some() {
@@ -201,14 +222,14 @@ pub fn panel(p: &Pending, queued: usize, secs_left: u64, out_w: usize, t: &mut T
             _ => (BANNER, "UNVERIFIED DOMAIN: busd does not vouch for it. The name is a claim.".to_string()),
         };
         c.rect(d(14), d(y - 2), d(w - 28), d(BANNER_H), band);
-        let msg = fit(t, &msg, &status, scale, text_w, false);
+        let msg = fit(t, &msg, &status, scale, text_w, Elide::Head);
         t.draw(&mut c, 20.0, (y + 1) as f32, &msg, &status, [20, 20, 20, 255], scale);
         y += BANNER_H + 8;
     }
-    for (label, value, colour, tail, bold) in rows {
+    for (label, value, colour, elide, bold) in rows {
         t.draw(&mut c, 20.0, y as f32, &label, &body, DIM, scale);
         let spec = if bold { &status } else { &body };
-        let value = fit(t, &value, spec, scale, value_w, tail);
+        let value = fit(t, &value, spec, scale, value_w, elide);
         t.draw(&mut c, value_x, y as f32, &value, spec, colour, scale);
         y += ROW_H;
     }
@@ -259,4 +280,78 @@ pub fn draw_overlay(
     let sync = frame.finish()?;
     renderer.wait(&sync)?;
     Ok(true)
+}
+
+
+#[cfg(test)]
+mod elide_tests {
+    use super::*;
+    use crate::text::TextSystem;
+
+    /// The widest a grant's value ever gets: `panel` clamps `w` to 800 and gives the
+    /// value column `w - 104`.
+    const VALUE_W: f32 = (800 - 104) as f32;
+
+    fn grant(mode: &str, path: &str) -> String {
+        format!("{mode} {path} (powerbox)")
+    }
+
+    #[test]
+    fn path_grants_that_differ_only_in_their_directory_stay_distinct() {
+        let mut t = TextSystem::new("", "");
+        let body = FontSpec::new(14.0);
+        // The same tree reached two ways: once in the user's home, once on a mounted
+        // volume. Everything that distinguishes them is in the first few characters, and
+        // the shared suffix is long enough to fill the column on its own.
+        let tail = "Documents/archive/2024/clients/acme/contracts/signed/final/originals/scan-0001-confidential.pdf";
+        let home = grant("ro", &format!("/home/arti/{tail}"));
+        let usb = grant("ro", &format!("/run/media/arti/UNTRUSTED-USB/{tail}"));
+        assert!(t.string_width(&home, &body, 1.0) > VALUE_W, "the fixture must be long enough to be cut");
+
+        let (h, u) = (
+            fit(&mut t, &home, &body, 1.0, VALUE_W, Elide::Middle),
+            fit(&mut t, &usb, &body, 1.0, VALUE_W, Elide::Middle),
+        );
+        println!("home: {h}\n usb: {u}");
+        assert_ne!(h, u, "two different files render as the same grant line");
+        // Both ends survive, which is what makes them distinguishable AND identifiable.
+        assert!(h.starts_with("ro /home/arti/"), "{h}");
+        assert!(u.starts_with("ro /run/media/arti/"), "{u}");
+        for s in [&h, &u] {
+            assert!(s.ends_with("confidential.pdf (powerbox)"), "{s}");
+            assert!(t.string_width(s, &body, 1.0) <= VALUE_W, "{s} overflows the column");
+        }
+
+        // The control: this is exactly what the tail cut used to do, and why it was wrong.
+        assert_eq!(
+            fit(&mut t, &home, &body, 1.0, VALUE_W, Elide::Tail),
+            fit(&mut t, &usb, &body, 1.0, VALUE_W, Elide::Tail),
+            "the tail cut is supposed to collapse these; if it no longer does, this test proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_short_path_is_left_exactly_as_it_is() {
+        let mut t = TextSystem::new("", "");
+        let s = grant("rw", "/home/arti/notes.txt");
+        assert_eq!(fit(&mut t, &s, &FontSpec::new(14.0), 1.0, VALUE_W, Elide::Middle), s);
+    }
+
+    #[test]
+    fn each_mode_keeps_the_end_it_says_it_keeps() {
+        let mut t = TextSystem::new("", "");
+        let body = FontSpec::new(14.0);
+        let s = "A".repeat(400);
+        let (h, tl, m) = (
+            fit(&mut t, &s, &body, 1.0, 200.0, Elide::Head),
+            fit(&mut t, &s, &body, 1.0, 200.0, Elide::Tail),
+            fit(&mut t, &s, &body, 1.0, 200.0, Elide::Middle),
+        );
+        assert!(h.starts_with('A') && h.ends_with("..."), "{h}");
+        assert!(tl.starts_with("...") && tl.ends_with('A'), "{tl}");
+        assert!(m.starts_with('A') && m.ends_with('A') && m.contains("..."), "{m}");
+        for x in [&h, &tl, &m] {
+            assert!(t.string_width(x, &body, 1.0) <= 200.0, "{x} overflows");
+        }
+    }
 }

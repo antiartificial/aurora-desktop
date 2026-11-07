@@ -15,7 +15,7 @@ use crate::{
     fx::theme::{self, oklab_to_u8},
     shell::layout::Rect,
     text::{FontSpec, TextSystem},
-    trusted::draw::{Canvas, fit},
+    trusted::draw::{Canvas, Elide, fit},
 };
 
 const PAD: f32 = 6.0;
@@ -290,7 +290,7 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                 t.draw(&mut c, pad_x + (TILE - iw) / 2.0, y + 10.0 + (TILE - (tm.ascent + tm.descent)) / 2.0, &initial, &tspec, [255, 255, 255, 255], st.scale);
                 let x = pad_x + TILE + 10.0;
                 let maxw = w - x - 28.0;
-                label = fit(t, &g.label, &bold, st.scale, maxw, false);
+                label = fit(t, &g.label, &bold, st.scale, maxw, Elide::Head);
                 let focused = g.wins.iter().any(|w| w.focused);
                 t.draw(&mut c, x, y + 6.0, &label, &if focused { bold.clone() } else { body.clone() }, text, st.scale);
                 let mut ly = y + 6.0 + mb.ascent + mb.descent + 3.0;
@@ -302,7 +302,7 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                         let sep = if n > 0 { " \u{b7} " } else { "" };
                         let piece = format!("{sep}{s}");
                         let left = maxw - (lx - x);
-                        let shown = fit(t, &piece, &small, st.scale, left, false);
+                        let shown = fit(t, &piece, &small, st.scale, left, Elide::Head);
                         lx = t.draw(&mut c, lx, ly, &shown, &small, tone(*tn), st.scale);
                         joined.push_str(&shown);
                         if shown != piece {
@@ -329,14 +329,14 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                 if *focused {
                     c.round_rect(d(INDENT - 10.0), top + d(5.0 * a), d(3.0), (rect.h - d(10.0 * a)).max(1), d(1.5) as f32, accent);
                 }
-                label = fit(t, title, &if *focused { bold.clone() } else { body.clone() }, st.scale, w - x - 12.0, false);
+                label = fit(t, title, &if *focused { bold.clone() } else { body.clone() }, st.scale, w - x - 12.0, Elide::Head);
                 if label.is_empty() {
                     label = "(untitled)".into();
                 }
                 t.draw(&mut c, x, mid(y, h, &mb), &label, &if *focused { bold.clone() } else { body.clone() }, scaled(text, a), st.scale);
             }
             Body::Dom(name) => {
-                label = fit(t, &format!("in domain {name}"), &tiny, st.scale, w - INDENT - 12.0, false);
+                label = fit(t, &format!("in domain {name}"), &tiny, st.scale, w - INDENT - 12.0, Elide::Head);
                 t.draw(&mut c, INDENT, mid(y, h, &mt), &label, &tiny, scaled(dim, a), st.scale);
             }
             Body::Net { host, verdict, count } => {
@@ -344,12 +344,12 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                 let colour = if *verdict == Verdict::Refused { warn } else { dim };
                 let rw = t.string_width(&right, &tiny, st.scale);
                 t.draw(&mut c, w - 12.0 - rw, mid(y, h, &mt), &right, &tiny, scaled(colour, a), st.scale);
-                label = fit(t, host, &tiny, st.scale, w - INDENT - 12.0 - rw - 8.0, false);
+                label = fit(t, host, &tiny, st.scale, w - INDENT - 12.0 - rw - 8.0, Elide::Head);
                 t.draw(&mut c, INDENT, mid(y, h, &mt), &label, &tiny, scaled(if *verdict == Verdict::Refused { warn } else { text }, a), st.scale);
                 meta_text = right;
             }
             Body::Note { text: n, tone: tn } => {
-                label = fit(t, n, &tiny, st.scale, w - INDENT - 12.0, false);
+                label = fit(t, n, &tiny, st.scale, w - INDENT - 12.0, Elide::Head);
                 t.draw(&mut c, INDENT, mid(y, h, &mt), &label, &tiny, scaled(tone(*tn), a), st.scale);
             }
             Body::More(n) => {
