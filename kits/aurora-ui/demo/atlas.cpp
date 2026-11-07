@@ -77,7 +77,10 @@ public:
         if (!d) return 0;
         std::vector<std::unique_ptr<Entry>> fresh;
         while (struct dirent* de = readdir(d)) {
-            if (!strcmp(de->d_name, ".")) continue;
+            // Hide "." and "..". The Up button and the breadcrumb are the way out of a
+            // directory; a ".." row that produces a path containing ".." is the worse of the two
+            // affordances and it is what the first run actually did (path=/usr/bin/..).
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
             auto en = std::make_unique<Entry>();
             en->name = de->d_name;
             // d_type is free when the filesystem gives it; it is NOT a stat.
@@ -225,12 +228,15 @@ int main() {
     }
 
     int selected = -1;
+    State<std::string> path(dir);
+    std::vector<std::string> history;
     State<std::string> status(std::to_string(rows.Count()) + " items");
     State<std::string> filter("");
     State<bool> filter_open(false);
     status.bind(&w);
     filter.bind(&w);
     filter_open.bind(&w);
+    path.bind(&w);
 
     // The filter narrows as you type. It is not a search box and it does not open a mode: it is
     // one of the three distinct things docs/aurora-ui.md separates -- type-ahead moves the
@@ -254,13 +260,73 @@ int main() {
         w.FocusNamed("files");
     };
 
+    // Navigation. A directory's name comes back from readdir with a trailing slash (the list
+    // appends it), so entering one is: strip the slash, join, re-open. The row source bumps its
+    // generation on Open, which is what cancels the previous directory's outstanding lstats --
+    // no token to forget to check.
+    // Resolve "." and ".." and collapse repeated slashes, so a path typed or assembled by hand
+    // is the same string as one navigated to. Without this /usr/bin/.. and /usr are different
+    // places as far as the breadcrumb and the history are concerned.
+    auto normalise = [](std::string p) {
+        if (p.empty()) return std::string("/");
+        std::vector<std::string> out;
+        size_t i = 0;
+        while (i < p.size()) {
+            while (i < p.size() && p[i] == '/') i++;
+            const size_t j = p.find('/', i);
+            const std::string part =
+                p.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            if (part == "..") { if (!out.empty()) out.pop_back(); }
+            else if (!part.empty() && part != ".") out.push_back(part);
+            if (j == std::string::npos) break;
+            i = j;
+        }
+        std::string r;
+        for (const std::string& seg : out) r += "/" + seg;
+        return r.empty() ? std::string("/") : r;
+    };
+
+    auto go = [&](const std::string& raw, bool record) {
+        const std::string to = normalise(raw);
+        if (to.empty()) return;
+        if (record && to != path.get()) history.push_back(path.get());
+        const double ms = rows.Open(to);
+        (void)ms;
+        path.set(to);
+        selected = -1;
+        rows.SetFilter(filter.get());
+        status.set(std::to_string(rows.Count()) + " items");
+        w.Invalidate();
+    };
+    auto parent_of = [](const std::string& p) {
+        if (p == "/" || p.empty()) return std::string("/");
+        const size_t i = p.find_last_of('/');
+        if (i == std::string::npos) return std::string("/");
+        return i == 0 ? std::string("/") : p.substr(0, i);
+    };
+
     // The context menu. Its shape is the plumber's (decision 0009): the default first and bold,
     // effects marked, destructive behind a separator, and a disabled item left visible with its
     // reason. The verbs are stubs here -- wiring registry.plumb@v1 is the next piece -- but the
     // ORDER and the MARKING are the part the user is owed, and they are real.
+    auto list = named(ListView(&rows, &selected), "files");
     State<std::string> last_action("");
     last_action.bind(&w);
-    auto list = named(ListView(&rows, &selected), "files");
+
+    // Enter or a double-click enters a directory. A file is handed to the plumber, which is the
+    // next piece; for now it is recorded so the demo can show the intent.
+    OnListActivate(list, [&](int row) {
+        const std::string name = rows.Cell(row, 0).text;
+        if (name.empty()) return;
+        if (name.back() == '/') {
+            const std::string leaf = name.substr(0, name.size() - 1);
+            const std::string base = path.get() == "/" ? "" : path.get();
+            go(base + "/" + leaf, true);
+        } else {
+            last_action.set("open " + name);
+        }
+    });
+
     OnListContext(list, [&](int row, float x, float y) {
         const std::string name = rows.Cell(row, 0).text;
         const bool is_dir = !name.empty() && name.back() == '/';
@@ -289,9 +355,20 @@ int main() {
                     styled(Bold("Atlas"), TextStyle{1.35f, true}),
                     styled(Label(&status), TextStyle{0.9f, false, true}),
                     Spacer(),
-                    Button("Home", [] {}),
+                    Button("Back", [&] {
+                        if (history.empty()) return;
+                        const std::string to = history.back();
+                        history.pop_back();
+                        go(to, false);
+                    }),
+                    Button("Up", [&] { go(parent_of(path.get()), true); }),
                 }),
                 0.75f),
+        padding(weight(named(Breadcrumb(&path, [&](const std::string& to) { go(to, true); },
+                                        [&] { filter_open.set(true); w.FocusNamed("filter"); }),
+                             "crumbs"),
+                       1),
+                0.25f),
         // Reveal: height animates 0 <-> natural on a cubic ease-out, 160 ms. The child keeps its
         // own layout and is clipped, so revealing never reflows the field's contents.
         named(Reveal(&filter_open,
@@ -341,6 +418,7 @@ int main() {
                rows.Count(), rows.Total(), filter_open.get() ? "yes" : "no");
         printf("ATLAS motion_degraded=%zu\n", w.motion_degraded());
         printf("ATLAS last_action=\"%s\"\n", last_action.get().c_str());
+        printf("ATLAS path=%s history=%zu\n", path.get().c_str(), history.size());
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);

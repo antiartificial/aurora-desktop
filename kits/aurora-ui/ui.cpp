@@ -290,9 +290,19 @@ public:
     void OnRelease(bool inside) override {
         if (!inside || !sel_) return;
         const int i = top_ + (int)((click_y_ - frame.y - head_h_ - 1) / row_h_);
-        if (i >= 0 && i < r_->Count()) *sel_ = i;
+        if (i < 0 || i >= r_->Count()) return;
+        const int before = *sel_;
+        *sel_ = i;
+        if (before != i) { rows_dirty_.push_back(before); rows_dirty_.push_back(i); dirty_ = true; }
+        if (clicks_ >= 2 && on_act_) on_act_(i);      // double-click activates
+    }
+    void OnPressAt(float x, float y, int clicks) override {
+        (void)x;
+        click_y_ = y;
+        clicks_ = clicks;
     }
     void SetClickY(float y) { click_y_ = y; }
+    void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
 
     int visible() const { return std::max(1, (int)((frame.h - head_h_) / row_h_)); }
 
@@ -321,6 +331,11 @@ public:
         const int n = r_->Count();
         if (n == 0) return false;
         const int cur = *sel_ < 0 ? -1 : *sel_;
+        // Enter activates the selection, the same thing a double-click means.
+        if ((k.raw_char == 0x0a || k.raw_char == 0x0d) && cur >= 0) {
+            if (on_act_) on_act_(cur);
+            return true;
+        }
         int next = cur;
         switch (k.raw_char) {
             case 0x1e: next = cur <= 0 ? 0 : cur - 1; break;                        // up
@@ -415,9 +430,115 @@ private:
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;
     std::function<void(int, float, float)> on_ctx_;
-    int ctx_row_ = -1;
+    std::function<void(int)> on_act_;
+    int ctx_row_ = -1, clicks_ = 1;
     std::string ahead_;
     std::chrono::steady_clock::time_point last_type_{};
+};
+
+// ---- Breadcrumb -------------------------------------------------------------------------------
+
+class CrumbNode : public Node {
+public:
+    CrumbNode(State<std::string>* p, std::function<void(const std::string&)> pick,
+              std::function<void()> edit)
+        : p_(p), pick_(std::move(pick)), edit_(std::move(edit)) {
+        if (p_) p_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        env_ = e;
+        return Size{c.max_w >= 0 ? c.max_w : 400, text_h(e) + e.unit * 1.5f};
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        env_ = e;
+        segs_.clear();
+        split();
+        au_clip_set(s, frame.box());
+        float x = frame.x + e.unit * 0.5f;
+        const float base = frame.y + frame.h * 0.72f;
+        for (size_t i = 0; i < segs_.size(); i++) {
+            const Seg& g = segs_[i];
+            const float w = au_text_width(e.font, e.size, g.label.c_str(), -1);
+            const bool last = i + 1 == segs_.size();
+            if ((int)i == hover_)
+                au_fill_round_rect(s, au_rect{x - 3, frame.y + 3, x + w + 2, frame.y + frame.h - 4},
+                                   5, 5, e.surface_hi);
+            // The last segment is where you are: bold, and not a link to itself.
+            au_text_draw(s, last ? e.bold : e.font, e.size, g.label.c_str(), -1, x, base,
+                         last ? e.fg : e.dim);
+            segs_[i].x0 = x;
+            segs_[i].x1 = x + w;
+            x += w + e.unit * 0.5f;
+            if (!last) {
+                au_text_draw(s, e.font, e.size, "\xe2\x80\xba", -1, x, base, e.dim);  // >
+                x += au_text_width(e.font, e.size, "\xe2\x80\xba", -1) + e.unit * 0.5f;
+            }
+        }
+        end_x_ = x;
+        au_clip_reset(s);
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+
+    void OnPressAt(float x, float y, int clicks) override {
+        (void)y;
+        (void)clicks;
+        const int i = seg_at(x);
+        if (i < 0) {
+            // Past the last segment: that empty strip is the affordance for editing the path.
+            if (edit_) edit_();
+            return;
+        }
+        if (i + 1 == (int)segs_.size()) return;      // already here
+        if (pick_) pick_(segs_[i].path);
+    }
+
+    void OnEnter() override {}
+    void OnLeave() override { hover_ = -1; }
+
+    bool DamageHint(std::vector<Rect>* out) override {
+        (void)out;
+        return false;                                 // the whole strip; it is one line tall
+    }
+
+private:
+    struct Seg {
+        std::string label, path;
+        float x0 = 0, x1 = 0;
+    };
+
+    void split() {
+        const std::string& p = p_->get();
+        segs_.push_back(Seg{"/", "/"});
+        size_t i = 0;
+        std::string acc = "";
+        while (i < p.size()) {
+            while (i < p.size() && p[i] == '/') i++;
+            const size_t j = p.find('/', i);
+            const std::string part = p.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            if (!part.empty()) {
+                acc += "/" + part;
+                segs_.push_back(Seg{part, acc});
+            }
+            if (j == std::string::npos) break;
+            i = j;
+        }
+    }
+    int seg_at(float x) const {
+        for (size_t i = 0; i < segs_.size(); i++)
+            if (x >= segs_[i].x0 - 3 && x <= segs_[i].x1 + 2) return (int)i;
+        return -1;
+    }
+
+    State<std::string>* p_;
+    std::function<void(const std::string&)> pick_;
+    std::function<void()> edit_;
+    std::vector<Seg> segs_;
+    Env env_;
+    float end_x_ = 0;
+    int hover_ = -1;
 };
 
 // ---- TextField --------------------------------------------------------------------------------
@@ -803,8 +924,16 @@ Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
 }
+void OnListActivate(const Desc& list, std::function<void(int)> f) {
+    if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetActivateHandler(std::move(f));
+}
 Desc Reveal(State<bool>* shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
+}
+
+Desc Breadcrumb(State<std::string>* p, std::function<void(const std::string&)> pick,
+                std::function<void()> edit) {
+    return std::make_shared<CrumbNode>(p, std::move(pick), std::move(edit));
 }
 
 Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch,

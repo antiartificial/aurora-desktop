@@ -263,6 +263,23 @@ Desc ListView(Rows* rows, int* selected);
 // A right-click on a row calls this with (row, x, y) in window coordinates, so the app can open
 // a menu there. Set it on the Desc a ListView returned.
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f);
+// Activation: Enter, or a double-click on a row. One callback for both, because they mean the
+// same thing and a user who learns one expects the other.
+void OnListActivate(const Desc& list, std::function<void(int)> f);
+
+// ---- breadcrumb -------------------------------------------------------------------------------
+
+// Path segments, clickable, each navigating to that prefix.
+//
+// It is a WIDGET that draws segments, not a stack of Buttons, and that is the architecture
+// showing its shape rather than a shortcut: the tree is built once and there is no reconciler,
+// so a container whose child count changes with the path could not be expressed as children.
+// Structural change is a widget's job -- the same reason the list owns its own rows.
+//
+// Clicking past the last segment calls on_edit, which is where a path field belongs (Cmd+L).
+Desc Breadcrumb(State<std::string>* path,
+                std::function<void(const std::string&)> on_pick,
+                std::function<void()> on_edit = nullptr);
 
 // ---- text input -------------------------------------------------------------------------------
 
