@@ -1,4 +1,4 @@
-// The file explorer's first light, on aurora::ui. Stage 1 of docs/aurora-ui.md's build order:
+// Atlas -- Aurora's file explorer. First light, on aurora::ui. Stage 1 of docs/aurora-ui.md's build order:
 // the window, the chrome and the NAMES appear in the first frame; everything else arrives.
 //
 // The measurement this is built around: readdir over 3,000-5,000 entries costs 0.9-1.8 ms, while
@@ -7,9 +7,9 @@
 // data that is not needed to draw the first screen. So: readdir on the UI thread, lstat on a
 // worker, and only for the rows the list is actually looking at.
 //
-// FILES_DIR=path     where to start (default $HOME)
-// FILES_FRAMES=n     stop after n frames, for scripted runs
-// FILES_REPORT=1     print the first-frame timing and what the list drew
+// ATLAS_DIR=path     where to start (default $HOME)
+// ATLAS_FRAMES=n     stop after n frames, for scripted runs
+// ATLAS_REPORT=1     print the first-frame timing and what the list drew
 
 #include "../ui.h"
 
@@ -185,15 +185,15 @@ private:
 }  // namespace
 
 int main() {
-    const char* d = getenv("FILES_DIR");
+    const char* d = getenv("ATLAS_DIR");
     std::string dir = d && *d ? d : (getenv("HOME") ? getenv("HOME") : "/");
 
     DirRows rows;
     const double readdir_ms = rows.Open(dir);
 
-    Window w("Files", 640, 420);
+    Window w("Atlas", 640, 420);
     if (!w.ok()) {
-        fprintf(stderr, "files: no Wayland compositor reachable\n");
+        fprintf(stderr, "atlas: no Wayland compositor reachable\n");
         return 2;
     }
 
@@ -214,16 +214,16 @@ int main() {
 
     rows.StartWorker();
 
-    const char* fr = getenv("FILES_FRAMES");
+    const char* fr = getenv("ATLAS_FRAMES");
     w.Run(fr ? atoi(fr) : 0);
     rows.Stop();
 
-    if (getenv("FILES_REPORT")) {
+    if (getenv("ATLAS_REPORT")) {
         const Window::Timing t = w.timing();
-        printf("FILES dir=%s entries=%d readdir_ms=%.2f\n", dir.c_str(), rows.Count(), readdir_ms);
-        printf("FILES frames=%zu draw_ms p50=%.3f p95=%.3f max=%.3f over_8ms=%zu\n",
+        printf("ATLAS dir=%s entries=%d readdir_ms=%.2f\n", dir.c_str(), rows.Count(), readdir_ms);
+        printf("ATLAS frames=%zu draw_ms p50=%.3f p95=%.3f max=%.3f over_8ms=%zu\n",
                t.frames, t.p50, t.p95, t.max, t.over_8ms);
-        printf("FILES stated=%d of %d (lstat is demand-driven: only what the list looked at)\n",
+        printf("ATLAS stated=%d of %d (lstat is demand-driven: only what the list looked at)\n",
                rows.stated(), rows.Count());
         fflush(stdout);
     }
