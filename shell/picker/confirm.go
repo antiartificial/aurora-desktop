@@ -92,28 +92,50 @@ func (u Unattested) Confirm(context.Context, Ask) Confirmation {
 type AttestPolicy int
 
 const (
+	// AttestOff is the DEFAULT, and the reason is not cost. Two independent
+	// adversarial reviews of this mechanism agreed on three things:
+	//
+	//  1. Against the attacker that matters (unconfined, same uid) it buys
+	//     nothing. That attacker reads powerbox.key and mints directly;
+	//     decision 0007 says so in terms.
+	//  2. A pick carries no domain identity, so verify.rs returns Unverified
+	//     and the panel draws CLAIMED "" (NOT VERIFIED) with the warning band
+	//     on EVERY file open. That band is the signal the real approval prompt
+	//     depends on, so teaching the user to dismiss it daily is a net loss.
+	//  3. The reply's MAC covers the request id and the decision, not the
+	//     grant that was drawn, so a verified allow cannot be read as "the user
+	//     saw this path".
+	//
+	// What it does buy, and the only claim that should ever be made for it: the
+	// aurora-ui chooser holds no key and cannot mint, so a bug in the newest
+	// and most exposed code in the flow still has to get a human to press a key
+	// on a surface it cannot draw. That is an integrity check on an honest
+	// chooser, not a trust boundary against a hostile one.
+	//
+	// Turning this into a property needs the thing 0007 and 0011 both leave
+	// open: a key the picker cannot read, and a compositor that resolves the
+	// path and signs the claims itself. Until then this stays off.
+	AttestOff AttestPolicy = iota
 	// AttestAuto: attest when a trusted socket is configured (--approval-socket,
 	// $AURORA_TRUSTED_SOCK) or sits at the default path. A configured or
 	// discovered socket that does not work is a failure. With no socket at all
 	// there is no compositor to ask, so the grant is minted unattested, loudly.
-	AttestAuto AttestPolicy = iota
+	AttestAuto
 	// AttestRequired: as auto, and no socket at all is a failure too.
 	AttestRequired
-	// AttestOff: never ask. The explicit opt-out.
-	AttestOff
 )
 
 // ParseAttestPolicy reads the --attest flag.
 func ParseAttestPolicy(s string) (AttestPolicy, error) {
 	switch s {
-	case "auto", "":
+	case "off", "":
+		return AttestOff, nil
+	case "auto":
 		return AttestAuto, nil
 	case "required":
 		return AttestRequired, nil
-	case "off":
-		return AttestOff, nil
 	}
-	return 0, fmt.Errorf("--attest %q: want auto, required or off", s)
+	return 0, fmt.Errorf("--attest %q: want off, auto or required", s)
 }
 
 // DefaultApprovalTimeout is how long the compositor is given to get an answer.

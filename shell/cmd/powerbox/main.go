@@ -34,7 +34,7 @@ func main() {
 	keyPath := fs.String("key", ticket.KeyPath(), "shared key file (env AURORA_POWERBOX_KEY), created 0600 if missing")
 	forceTTY := fs.Bool("tty", false, "choose in the terminal even when a chooser and a display are available")
 	sock := fs.String("approval-socket", "", "compositor trusted socket to confirm on (default: env AURORA_TRUSTED_SOCK, else $XDG_RUNTIME_DIR/aurora-trusted.sock)")
-	attest := fs.String("attest", "auto", "auto: confirm on the compositor when its socket is configured or present, and fail if it does not answer; required: also fail when there is no socket; off: never confirm (mints a ticket that proves no trusted-path gesture)")
+	attest := fs.String("attest", "off", "EXPERIMENTAL, default off: confirm the chosen path on the compositor's trusted path before minting. off: never confirm; auto: confirm when a trusted socket is configured or present, and fail if it does not answer; required: also fail when there is no socket. Read contracts/decisions/0011 before turning it on: it proves that something holding the approval key answered one request id, NOT that the path you saw is the path that binds, and because a pick carries no domain identity the prompt wears an UNVERIFIED DOMAIN banner on every file open.")
 	approvalTimeout := fs.Duration("approval-timeout", picker.DefaultApprovalTimeout, "how long to wait for the compositor's answer")
 	testPath := fs.String("path", "", "TEST AFFORDANCE: mint for this path with NO user gesture. Defeats the purpose of the powerbox; never use outside tests.")
 	fs.Parse(os.Args[1:])
