@@ -8,7 +8,7 @@
 Two things a domain cannot have today are the same problem.
 
 - **The GPU.** `[capabilities] devices = ["gpu"]` appears in `apps/lumen/manifest.toml` and nothing enforced it. Decision 0013 named this as the open question that blocks GPU compute kits.
-- **The compositor.** Decision 0012 records that windowed apps run unsandboxed, outside the domain machinery that is this project's whole security argument, because a domain cannot reach the compositor.
+- **The compositor.** Decision 0012 records that windowed apps ran unsandboxed, outside the domain machinery that is this project's whole security argument, because a domain could not reach the compositor. (Decision 0017 builds on this record: the launch path and the compositor half. Written after this record, so the statements below that say "not done" were true of 0014 when it landed and are annotated where 0017 changed them.)
 
 Both are "a thing a domain should get only by grant". A domain's `/dev` is a minimal tmpfs (`bwrap --dev`) and its `/run` holds only its own bus directory, so both are absent by construction. What was missing was a way to put one there on purpose, as a grant the controller mints, records and revokes like a path grant.
 
@@ -64,8 +64,8 @@ The parent of the compositor's socket is `$XDG_RUNTIME_DIR`, and `$XDG_RUNTIME_D
 
 - **The GPU from other GPU users.** See above. Not isolated, not claimed.
 - **The domain from the compositor's parser.** The compositor treats a granted client as any client. A bug in Smithay, in a protocol handler or in Aurora's handlers is reachable from the domain.
-- **One domain's windows from another's.** Nothing in the compositor yet knows which client is which domain, apart from the clipboard rule. Two domains with the grant are two clients to the compositor; they can see only what the protocol lets any client see, but that is not a per-domain policy, only the absence of one.
-- **Window identity.** The title, app id and decorations a granted client presents are whatever it says. The compositor does not attribute a surface to a domain, so the title bar cannot yet be trusted to say which app it is.
+- **One domain's windows from another's.** *(0017: the compositor now knows which client is which domain, but applies no per-domain policy beyond the clipboard rule.)* Two domains with the grant are two clients to the compositor; they can see only what the protocol lets any client see, but that is not a per-domain policy, only the absence of one.
+- **Window identity.** The title and app id a granted client presents are whatever it says. *(0017: the compositor now attributes a window to its domain from `SO_PEERCRED` and the cgroup at connect and draws a badge for it in the title bar; the title itself is still the client's word.)*
 - **`wl_shm` and dmabuf.** Shared memory the client allocates is mapped by the compositor; a client that truncates it can fault the compositor in some implementations. Not tested here.
 - **The GPU node's permissions.** See next section: on this machine the node is bound and not openable.
 
@@ -88,20 +88,20 @@ Until one is chosen, `device:gpu` is enforced as to presence and absent as to us
 - That any compute workload runs. Mesa and the Vulkan loaders usually read `/sys/dev/char` and `/sys/class/drm` to find a device, and a domain has no `/sys`. That is from how those libraries are generally built, not from a run: whether Vulkan or EGL enumerate the device inside a domain was not tried, and could not be while `open()` fails.
 - NVIDIA's proprietary driver uses `/dev/nvidiactl` and `/dev/nvidia*`, not a render node. Those are not composed. `device:gpu` here means DRM render nodes.
 - Multiple render nodes: all are bound. Choosing one (a discrete versus integrated GPU) is not expressed.
-- A real third-party windowed app in a domain: only the compositor's `testclient` was run. The shipped Haiku apps are not launched as domains and still run unsandboxed (0012 still describes them correctly).
+- A real third-party windowed app in a domain: only the compositor's `testclient` was run. *(0017: the shipped Haiku apps are now launched as domains by the dock, and `demos/windowed-domain/run.sh` runs them.)*
 - `--no-gesture-grants`, `--require-powerbox` and the approval gate treat device grants as `ambient`. A verb that lists a device is not gated by approval for that reason alone.
 
 ## Open questions
 
-- **The compositor half (deferred).** The compositor must recognise a connecting client as a particular domain and apply per-domain policy. The shape exists: the clipboard refusal decides at connect from `SO_PEERCRED` and the cgroup (`compositor/src/clipboard/mod.rs`, `trusted::socket::Allowlist`). What it needs: record the client's domain at connect (cgroup component under `aurora-domains`, the subordinate uid), carry it on the surface so decorations and the approval overlay can show it, and decide per-domain which globals a client gets (it can already be refused `ext_data_control`; it should also be refused `zwlr_screencopy`, input-method and virtual-input globals, and anything else a sandboxed client should not bind). Until then every granted client is as trusted as any other client except for the clipboard.
+- **The compositor half (recognition done in 0017; policy still open).** The compositor must recognise a connecting client as a particular domain and apply per-domain policy. The shape exists: the clipboard refusal decides at connect from `SO_PEERCRED` and the cgroup (`compositor/src/clipboard/mod.rs`, `trusted::socket::Allowlist`). What it needs: record the client's domain at connect (cgroup component under `aurora-domains`, the subordinate uid), carry it on the surface so decorations and the approval overlay can show it, and decide per-domain which globals a client gets (it can already be refused `ext_data_control`; it should also be refused `zwlr_screencopy`, input-method and virtual-input globals, and anything else a sandboxed client should not bind). Until then every granted client is as trusted as any other client except for the clipboard.
 - **Making the GPU node usable by a domain's uid.** See the weakest point above.
-- **Whether `windowed = true` should imply `device:wayland`.** 0012 left it open. Implying it makes a presentation flag security-relevant, so it is still explicit: the app must list the capability. The dock and `launcher` still launch windowed apps as host processes; moving a launch into a domain is controller and shell work, not done here.
+- **Whether `windowed = true` should imply `device:wayland`.** 0012 left it open. *(0017: yes, at launch. The dock's launch goes through the controller, which grants the display to every windowed app and what its manifest declares on top. A verb that wants a display still has to list the capability, as this record says.)* The `launcher` (the `aurora open` path) is a different path and is unchanged.
 - **Whether a GPU grant should ever be ambient.** Today a declared device the verb asks for is ambient, like a declared path. Given the width of the grant, it may deserve a prompt on first use or a consent diff entry of its own (`diffDevices` already treats a newly requested device as consent-requiring on a manifest update).
 - **A `device:` class for the camera, the microphone and input devices.** Not composed; the adapter refuses them by name.
 
 ## Consequences
 
 - `devices = ["gpu"]` in a manifest now means something, and a class the adapter does not know fails the invoke instead of being a silent claim.
-- Aurora can describe a sandboxed GUI app: `device:wayland` plus its path grants. Nothing launches one that way yet.
-- The security argument of 0012 stands: windowed apps launch unsandboxed today. This record makes the sandboxed form possible and says exactly how weak the display half still is until the compositor can tell domains apart.
+- Aurora can describe a sandboxed GUI app: `device:wayland` plus its path grants. *(0017 launches one that way from the dock.)*
+- When this record was written the security argument of 0012 stood: windowed apps launched unsandboxed. This record made the sandboxed form possible; 0017 made it the default.
 - `aurora-up` writes `$XDG_RUNTIME_DIR/aurora/display`. A stack not started with it has no socket for a `device:wayland` grant and `domain run` says so.

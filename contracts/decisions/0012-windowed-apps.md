@@ -1,6 +1,6 @@
-# 0012. Windowed apps: launched, not invoked, and not yet sandboxed
+# 0012. Windowed apps: launched, not invoked (and, until 0017, not sandboxed)
 
-- **Status:** proposed
+- **Status:** proposed. **Amended by 0017**: the "launch unsandboxed" section below is no longer true by default. A windowed app launches in a domain unless the controller was started with `--unsandboxed-windows`. The rest of this record (a window is not a verb; the manifest fields; `exec_problem`) stands.
 - **Date:** 2026-11-06
 
 ## Context
@@ -28,9 +28,11 @@ Forcing a window into `run --verb` would mean a verb whose "result" is an exit c
 
 `registry.apps@v1` now returns `windowed`, `exec` (the resolved path) and `exec_problem` for each app. `exec_problem` is non-empty when the file is missing or not executable. The Haiku targets are skipped when `HAIKU_SRC` is absent, so a manifest can exist for a binary that was never built. The registry reports that as `not built: <path> does not exist`, `aurora apps` prints `windowed: UNAVAILABLE, ...`, and `aurora-up` prints a count. A client must not offer such an app as launchable.
 
-### Windowed apps launch unsandboxed
+### Windowed apps launch unsandboxed (historical; superseded by 0017)
 
-**A windowed app launches as a plain host process, outside the domain machinery that is Aurora's entire security argument.** It has the user's full filesystem access, the user's network, the user's environment and the user's process rights. It is not in a bubblewrap domain, it has no cgroup, no mount namespace, no capability grant and no approval gate. The manifest's `[capabilities]` cannot restrict it, which is why the windowed Haiku manifests leave `[capabilities]` empty: a declared path nobody enforces would read as a promise. `iface_browser` can read everything the user can read, and runs `aurora query` and `aurora open` as child processes.
+*Amended: this section describes what was true when the record was written. **Today a dock click launches the app in a domain with `device:wayland` and what its manifest declares (0017); it is a host process only under the explicit `controllerd --unsandboxed-windows`.** What remains true of any host process, including one started that way, is exactly what follows.*
+
+**A windowed app launched as a plain host process, outside the domain machinery that is Aurora's entire security argument.** It has the user's full filesystem access, the user's network, the user's environment and the user's process rights. It is not in a bubblewrap domain, it has no cgroup, no mount namespace, no capability grant and no approval gate. The manifest's `[capabilities]` cannot restrict it, which is why the windowed Haiku manifests leave `[capabilities]` empty: a declared path nobody enforces would read as a promise. `iface_browser` can read everything the user can read, and runs `aurora query` and `aurora open` as child processes.
 
 This is the same posture as the desktop menu's "New Terminal" item, which spawns a terminal with `WAYLAND_DISPLAY` pointing at Aurora and nothing else. Making GUI apps first-class in the dock widens the set of things launched that way. It does not make them safe, and a dock icon for a windowed app must not be read as saying so.
 
@@ -38,7 +40,7 @@ The Haiku apps carry this risk now because they are demonstrations built from so
 
 ### The fix: make the Wayland socket a grantable capability
 
-*Amended: decision 0014 did the adapter, manifest and controller half of items 1 and 2 below (`device:wayland`, one socket bound alone, tested not to expose `approval.key` or `powerbox.key`; a client in a domain mapped a window on Aurora). Items 3 to 6 are not done and windowed apps still launch unsandboxed. The list below is the original statement of what was needed.*
+*Amended: decision 0014 did the adapter, manifest and controller half of items 1 and 2 below (`device:wayland`, one socket bound alone, tested not to expose `approval.key` or `powerbox.key`; a client in a domain mapped a window on Aurora). Decision 0017 did items 3 and 5 (the compositor attributes a window to its domain from `SO_PEERCRED` and the cgroup; the controller launches, tracks and tears down a domain per window, `registry.launch@v1`) and measured item 4 for the Haiku apps (fonts and libraries come from the host `/usr`; the kits' shared memory lands in the domain's own `/tmp`, so apps in different domains do not share it). Item 6 is as it was: a granted client gets what the protocol gives it, and global-grab policy is open. The list below is the original statement of what was needed.*
 
 A GUI app can run as a domain once the compositor connection is something a domain can be granted instead of something a process inherits. That requires:
 
@@ -49,7 +51,7 @@ A GUI app can run as a domain once the compositor connection is something a doma
 5. **A lifecycle in the controller.** A launched domain has no deadline, and teardown on window close or compositor crash is a new case next to the crash-survival work.
 6. **An answer for input.** A granted client receives keyboard and pointer events for its own surface only. The compositor already routes by focus; the open question is whether a domain may ask for a global grab.
 
-Until that exists, the honest statement is: verbs are sandboxed, windows are not.
+Until that existed, the honest statement was: verbs are sandboxed, windows are not. With 0017 it is: verbs and windows are sandboxed, a window gets everything the Wayland protocol allows a client (0014), and an app started outside the controller still is not.
 
 ### Two schema additions made alongside
 
@@ -64,15 +66,15 @@ The reason there are two axes and not one richer taxonomy: **authority** and **i
 ## Open questions
 
 - **What the dock does with a windowed app that also has verbs.** The schema allows both. Whether a click launches the window, opens the verb picker, or offers both is a client decision not made here.
-- **How a windowed app is stopped.** The launcher gets a pid. Whether Aurora tracks it, restarts it, or reaps it on compositor exit is undecided.
+- **How a windowed app is stopped.** (Answered by 0017: the controller tracks each launch, `registry.stop@v1` ends it, and the domain and grants go when the process does. Restart is undecided.)
 - **How an app says it needs the display.** (Partly answered by 0014: it is a `device:wayland` capability a verb lists, not implied by `windowed = true`. Whether `windowed` should imply it remains open, and implying it makes `windowed` a security-relevant flag, the opposite of the presentation fields above.)
 - **Per-app runtime pins.** The Haiku manifests declare no `[[runtime]]`: their dependencies are system libraries, not a pinned interpreter. Whether a native C++ app should pin something is open.
-- **Which apps deserve a domain first.** `iface_browser` does the most (it reads the filesystem and shells out) and is the strongest case for the capability work.
+- **Which apps deserve a domain first.** (All of them, by 0017. `iface_browser` is the one it hurts: in a domain it sees an empty home, and that is the sandbox, not a bug.)
 - **Windowed verbs.** `haiku_ledger` serves bus verbs from a long-running `BApplication` with no window. Its manifest therefore declares verbs and no `exec`, and `registry.invoke@v1` cannot run them because there is no `run` script. Whether a "service app" deserves its own manifest marker is undecided.
 
 ## Consequences
 
 - The dock can list the Haiku apps, and the registry says truthfully which ones can be launched. A missing binary is a visible condition and not a dead icon.
-- The manifest says more about an app than the sandbox enforces, for windowed apps only. That asymmetry is deliberate and written down here. Reviewers should not treat a windowed app's empty `[capabilities]` as least privilege. It is no enforcement at all.
-- The consent diff treats a change to `windowed` or `exec` as needing fresh consent, since it changes what the system runs outside any domain.
-- Any future policy that treats "windowed app" as a safer or lower-privilege class would be wrong. Nothing in the schema should be read as saying so.
+- *(Historical, superseded by 0017.)* The manifest said more about an app than the sandbox enforced, for windowed apps only. Now a windowed app's `[capabilities]` is enforced at launch and an empty section is least privilege: the display and nothing else.
+- The consent diff treats a change to `windowed` or `exec` as needing fresh consent, since it changes what the system runs (and, by 0017, what it grants a display to).
+- Any policy that treats "windowed app" as a safer or lower-privilege class would be wrong. `device:wayland` is everything the Wayland protocol allows a client (0014); a domain narrows the rest of the machine, not the display.

@@ -192,3 +192,17 @@ func TestStopTearsTheDomainDown(t *testing.T) {
 		t.Fatalf("not destroyed after Stop:\n%s", calls(fk))
 	}
 }
+
+// Close (what controllerd runs on SIGTERM) ends every window and finishes its teardown first.
+func TestCloseEndsRunningWindowsAndTearsThemDown(t *testing.T) {
+	iv, fk, _ := winInvoker(t, true)
+	res, e := iv.Launch(t.Context(), LaunchRequest{App: "org.example.win"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	iv.Close()
+	c := calls(fk)
+	if !strings.Contains(c, "destroy "+res.Domain) || !strings.Contains(c, "revoke-device "+res.Domain+" wayland") {
+		t.Fatalf("a window survived Close:\n%s", c)
+	}
+}

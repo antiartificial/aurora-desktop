@@ -126,7 +126,7 @@ fn xwayland_is_restarted_on_the_same_display_if_it_dies() {
     wait_for("first window", || c.log().contains("has its surface"));
     // Kill the Xwayland that is a child of THIS compositor (the host's own Xwayland is not).
     let kids = Command::new("ps").args(["-o", "pid=,comm=", "--ppid", &c.pid().to_string()]).output().unwrap();
-    let pids: Vec<String> = String::from_utf8_lossy(&kids.stdout).lines().filter_map(|l| l.split_once(char::is_whitespace).filter(|(_, comm)| comm.trim() == "Xwayland").map(|(p, _)| p.trim().to_string())).collect();
+    let pids: Vec<String> = String::from_utf8_lossy(&kids.stdout).lines().filter_map(|l| l.trim_start().split_once(char::is_whitespace).filter(|(_, comm)| comm.trim() == "Xwayland").map(|(p, _)| p.trim().to_string())).collect();
     assert_eq!(pids.len(), 1, "exactly one Xwayland child of the compositor: {pids:?}");
     assert!(Command::new("kill").args(["-KILL", &pids[0]]).status().unwrap().success());
     drop(x);

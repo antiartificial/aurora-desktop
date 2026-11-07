@@ -179,7 +179,7 @@ echo
 echo "NOT PROVEN BY THIS DEMO (read decision 0014):"
 echo "  - that a render-node grant is narrow: it is not. It gives wide, mostly unisolated GPU access."
 echo "  - that a Wayland-connected domain is confined to a window: it can do whatever a Wayland client can."
-echo "  - that the compositor distinguishes domains: it only does so for the clipboard today."
+echo "  - per-domain compositor POLICY: the compositor now attributes a window to its domain (decision 0017, demos/windowed-domain) but applies a rule only to the clipboard."
 echo
 echo "passed $PASS checks in $STEPS steps, unproven ${#UNPROVEN[@]}"
 for u in "${UNPROVEN[@]}"; do echo "  UNPROVEN: $u"; done
