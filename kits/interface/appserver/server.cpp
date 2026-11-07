@@ -121,6 +121,19 @@ int32 gNextBitmap = 1;
 struct SApp;
 
 struct SWindow {
+	// A resize the event queue asked for, applied by WindowThread once the queue is drained.
+	//
+	// The compositor's resize grab sends an xdg configure on EVERY pointer motion, so a drag
+	// delivers a burst of them between two frames. Applying each one ran a full
+	// ApplyWindowResize -- reallocate the window's pixel buffer (8.2 MB at 1280x800 scale
+	// 1.45), walk the view tree applying follow modes, post B_WINDOW_RESIZED, dirty everything
+	// -- several times over for sizes nobody would ever see. That is the chunk in a chunky
+	// drag. Only the last one in a burst is real, so only the last one is applied.
+	//
+	// This is the rule aurora::ui already follows and the third place it has been learned:
+	// handlers decide, the loop acts.
+	int wantW = 0, wantH = 0;
+	bool wantResize = false;
 	SApp* app = NULL;
 	int index = 0;
 	port_id port = -1;
@@ -1065,7 +1078,8 @@ void HandleInternal(SWindow* w, const Internal& e)
 			break;
 		}
 		case AU_EV_RESIZE:
-			ApplyWindowResize(w, e.a, e.b);
+			// Recorded, not applied: see SWindow::wantResize.
+			if (e.a > 0 && e.b > 0) { w->wantW = e.a; w->wantH = e.b; w->wantResize = true; }
 			break;
 		case AU_EV_KEY:
 			HandleKey(w, e.key);
@@ -1682,6 +1696,12 @@ void WindowThread(SWindow* w)
 		if (code == kInternalEvent) {
 			Internal e; link.Read(&e, sizeof(e));
 			HandleInternal(w, e);
+			// Apply a deferred resize only once nothing more is queued, so a burst of
+			// configures costs one reallocation instead of one each.
+			if (w->wantResize && port_count(w->port) <= 0) {
+				w->wantResize = false;
+				ApplyWindowResize(w, w->wantW, w->wantH);
+			}
 			continue;
 		}
 		WindowDispatch(w, code, link);
