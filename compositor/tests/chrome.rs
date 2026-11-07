@@ -308,7 +308,7 @@ fn click_text(c: &Comp, l: &Layout, text: &str) {
 }
 
 #[test]
-fn settings_panel_text_lands_where_text_rs_says_and_unavailable_rows_say_why() {
+fn settings_panel_text_lands_where_text_rs_says_and_read_only_rows_say_why() {
     for s in SCALES {
         let t = Theme::new();
         t.append(BASE);
@@ -331,11 +331,14 @@ fn settings_panel_text_lands_where_text_rs_says_and_unavailable_rows_say_why() {
             println!("  {name}: expected x {x}..{} ink x {}..{}", x + w, b.0, b.2);
             assert!((b.0 - x).abs() <= 3 && (b.2 - (x + w)).abs() <= 4, "{name}: ink {b:?} vs x {x} w {w} at scale {s}");
         }
-        // Unavailable rows exist, say so, and give the reason.
+        // Read-only rows exist, say so, and give the reason. They are marked "read-only" and
+        // never "unavailable": each one is REPORTING a figure the compositor holds, so claiming
+        // it is unavailable says the opposite of what the row shows.
         let all: String = l.text.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ");
-        assert!(all.contains("unavailable") && all.contains("DRM/KMS") && all.contains("Multi-monitor"), "{all}");
-        assert_eq!(all.matches("unavailable").count(), 3, "resolution, refresh rate, monitors");
-        // Unavailable rows have no controls: no hotspot overlaps their value text.
+        assert!(all.contains("read-only") && all.contains("DRM/KMS") && all.contains("Multi-monitor"), "{all}");
+        assert_eq!(all.matches("read-only").count(), 3, "resolution, refresh rate, monitors");
+        assert!(!all.contains("unavailable"), "a reported figure is not unavailable: {all}");
+        // Read-only rows have no controls: no hotspot overlaps their value text.
         for name in ["Resolution", "Refresh_rate", "Monitors"] {
             let t = l_text(&l, name);
             assert!(!l.rows.iter().any(|r| t.2 >= r[1] && t.2 < r[1] + r[3] && r[0] > t.1), "{name} must have no control");

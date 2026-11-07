@@ -4,7 +4,7 @@
 //! `Fx::apply_edits` and applied by the normal hot reload), so the panel
 //! never holds a second copy of any setting: it is rebuilt from the theme
 //! after every change. Things that are not settable are rows too, shown as
-//! unavailable with the reason.
+//! read-only with the reason.
 //!
 //! Layout is arithmetic in LOGICAL units (`build`), producing a display list
 //! (`Built`): text, pills and hotspots. Drawing, hit-testing and the log lines
@@ -388,7 +388,12 @@ pub fn build(pages: &[Page], page: usize, status: &str, font: f32, scale: f64, m
                 }
             }
             Control::Fixed { value } => {
-                let v = clip(t, &format!("{value}   \u{b7}   unavailable"), &spec, cw, scale);
+                // "read-only", not "unavailable". The VALUE is right there and is perfectly
+                // available; what cannot be had is the ability to change it from here, and the
+                // note underneath already says why. Reading "1280 x 800 . unavailable" as a
+                // report that the resolution is unknown is the obvious misreading and it is the
+                // opposite of what the row is saying.
+                let v = clip(t, &format!("{value}   \u{b7}   read-only"), &spec, cw, scale);
                 text(&mut b, X0, line(&m, y, base), &v, font, false, 165, false);
             }
         }
