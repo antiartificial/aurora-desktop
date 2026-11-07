@@ -61,6 +61,9 @@ pub struct SysFigures {
     /// What the machine is connected by, if anything could be read.
     pub link: Option<super::sysinfo::Link>,
     pub battery: Option<super::sysinfo::Battery>,
+    /// From `system.audio@v1` over the bus. None when no audio server answered, which is not
+    /// the same as silence and must not be drawn as 0%.
+    pub audio: Option<crate::shell::apps::Audio>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -273,6 +276,12 @@ pub fn system_text(s: &SysFigures) -> Vec<String> {
         Some(super::sysinfo::Link::Wireless) => v.push("wi-fi".into()),
         Some(super::sysinfo::Link::Down) => v.push("offline".into()),
         None => {}
+    }
+    if let Some(a) = &s.audio {
+        // Muted says muted rather than a number: the number is what it will be when unmuted,
+        // and showing "vol 45%" on a silent machine is the readout being wrong in the one case
+        // somebody is looking at it to find out why there is no sound.
+        v.push(if a.muted { "muted".to_string() } else { format!("vol {}%", a.volume) });
     }
     if let Some(b) = &s.battery {
         // Labelled, like every other figure here: a bare "98%" beside "cpu 34%" is a number

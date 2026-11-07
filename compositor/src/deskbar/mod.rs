@@ -271,6 +271,9 @@ impl Aurora {
         }
         self.deskbar.figures = self.deskbar.sampler.domains(&doms, now);
         self.deskbar.sys = self.deskbar.sampler.system();
+        // Volume does not come from the machine's files; it comes from whatever the registry's
+        // poll last heard back from system.audio@v1.
+        self.deskbar.sys.audio = self.shell.registry.audio;
     }
 
     fn deskbar_row_at(&self, dp: (f64, f64)) -> Option<(Rect, Option<Kind>)> {

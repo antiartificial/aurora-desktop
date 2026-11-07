@@ -119,6 +119,9 @@ pub struct Registry {
     pub status: Status,
     /// Bumped whenever `apps` or `status` changes.
     pub generation: u64,
+    /// The last audio state the bus answered with, or None when nothing did.
+    pub audio: Option<Audio>,
+    audio_rx: Option<mpsc::Receiver<Option<Audio>>>,
     rx: Option<mpsc::Receiver<Result<Snapshot, String>>>,
     last: Option<Instant>,
     /// Set by a launch that just finished: ask again now instead of at the next refresh, so a
@@ -129,12 +132,18 @@ pub struct Registry {
 impl Registry {
     pub fn new(sock: Option<PathBuf>) -> Self {
         let status = if sock.is_some() { Status::Pending } else { Status::NoBus };
-        Registry { sock, apps: vec![], verbs: None, status, generation: 0, rx: None, last: None, refresh_now: Arc::new(AtomicBool::new(false)) }
+        Registry { sock, apps: vec![], verbs: None, status, generation: 0, audio: None, audio_rx: None, rx: None, last: None, refresh_now: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Collect a finished ask and start the next one when due. Cheap; call per frame.
     pub fn tick(&mut self) {
         if let Some(rx) = &self.rx {
+            if let Some(arx) = &self.audio_rx {
+                if let Ok(a) = arx.try_recv() {
+                    self.audio = a;
+                    self.audio_rx = None;
+                }
+            }
             match rx.try_recv() {
                 Ok(r) => {
                     self.rx = None;
@@ -161,7 +170,14 @@ impl Registry {
         self.last = Some(Instant::now());
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
+        let (atx, arx) = mpsc::channel();
+        self.audio_rx = Some(arx);
         std::thread::spawn(move || {
+            // Audio rides along on the registry's existing poll rather than opening a second
+            // one. It is a figure that changes when a person moves a slider, so five seconds
+            // late is visible -- but a thread of its own, dialling the bus on its own clock,
+            // would be a second moving part for a number in a status line.
+            let audio = call_to(&sock, "registry", "system.audio@v1", Some(json!({}))).ok().and_then(|v| parse_audio(&v));
             let r = call_to(&sock, "registry", "registry.apps@v1", Some(json!({}))).and_then(|v| parse(&v)).map(|apps| {
                 let verbs = call_to(&sock, "registry", "registry.verbs@v1", Some(json!({}))).and_then(|v| parse_verbs(&v));
                 if let Err(e) = &verbs {
@@ -169,14 +185,51 @@ impl Registry {
                 }
                 (apps, verbs.ok())
             });
+            let _ = atx.send(audio);
             let _ = tx.send(r);
         });
     }
 }
 
+/// The audio state from `system.audio@v1`.
+///
+/// `available` false is the whole point of the type: it is the difference between "the machine
+/// is at 0%" and "nothing answered", and a status line must not render the second as the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Audio {
+    pub volume: i64,
+    pub muted: bool,
+}
+
+fn parse_audio(v: &serde_json::Value) -> Option<Audio> {
+    if !v.get("available").and_then(|a| a.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    Some(Audio {
+        volume: v.get("volume").and_then(|x| x.as_i64()).unwrap_or(0).clamp(0, 1000),
+        muted: v.get("muted").and_then(|x| x.as_bool()).unwrap_or(false),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unavailable_sink_is_not_a_volume_of_zero() {
+        // The reply shape when no audio server answered. Rendering this as "vol 0%" would be
+        // the status line inventing a fact.
+        assert_eq!(parse_audio(&json!({"available": false, "volume": 0, "reason": "none"})), None);
+        // And a reply with no `available` field at all is treated the same way, not as present.
+        assert_eq!(parse_audio(&json!({"volume": 40})), None);
+    }
+
+    #[test]
+    fn an_available_sink_is_read_with_its_mute() {
+        assert_eq!(parse_audio(&json!({"available": true, "volume": 45, "muted": true})), Some(Audio { volume: 45, muted: true }));
+        // Over-amplification survives; the controller already decided 150 is expressible.
+        assert_eq!(parse_audio(&json!({"available": true, "volume": 150})).unwrap().volume, 150);
+    }
 
     #[test]
     fn parses_the_registry_reply_and_cleans_names() {

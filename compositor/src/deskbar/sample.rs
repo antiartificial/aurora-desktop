@@ -161,6 +161,8 @@ impl Sampler {
             mem: read(&self.roots.proc.join("meminfo")).and_then(|t| mem_used_percent(&t)),
             link: super::sysinfo::link(&self.sys_roots),
             battery: super::sysinfo::battery(&self.sys_roots),
+            // Not from a file: the bus answers for the audio graph, and the caller fills it in.
+            audio: None,
         }
     }
 }

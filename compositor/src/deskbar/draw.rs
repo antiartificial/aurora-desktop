@@ -455,14 +455,36 @@ mod tests {
             mem: None,
             link: Some(crate::deskbar::sysinfo::Link::Down),
             battery: Some(crate::deskbar::sysinfo::Battery { percent: 4, charging: false }),
+            audio: None,
         };
         assert_eq!(head(&cfg, low), "offline \u{b7} batt 4% \u{b7} cpu 12%");
+
+        // Muted says so rather than showing the number it will be when unmuted: the one time
+        // anyone reads this is when they are wondering why there is no sound.
+        let silent = SysFigures {
+            cpu: None,
+            mem: None,
+            link: None,
+            battery: None,
+            audio: Some(crate::shell::apps::Audio { volume: 45, muted: true }),
+        };
+        assert_eq!(head(&cfg, silent), "muted");
+
+        let loud = SysFigures {
+            cpu: None,
+            mem: None,
+            link: None,
+            battery: None,
+            audio: Some(crate::shell::apps::Audio { volume: 45, muted: false }),
+        };
+        assert_eq!(head(&cfg, loud), "vol 45%");
 
         let charging = SysFigures {
             cpu: None,
             mem: None,
             link: Some(crate::deskbar::sysinfo::Link::Wireless),
             battery: Some(crate::deskbar::sysinfo::Battery { percent: 88, charging: true }),
+            audio: None,
         };
         assert_eq!(head(&cfg, charging), "wi-fi \u{b7} batt +88%");
 
@@ -472,6 +494,7 @@ mod tests {
             mem: None,
             link: Some(crate::deskbar::sysinfo::Link::Wired),
             battery: None,
+            audio: None,
         };
         assert_eq!(head(&cfg, desktop), "wired");
         cfg.system = false;
