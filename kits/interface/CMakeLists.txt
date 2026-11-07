@@ -176,3 +176,10 @@ add_test(NAME tk_layout COMMAND tk_layout)
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)
+
+# The chooser's decisions, with no surface: the argv, the verdict for each kind of grant, the words, and the exact
+# stdout line a Go caller parses (chooser_model.h). Json.cpp is only here as an independent reader of that line.
+add_executable(test_chooser_model tests/test_chooser_model.cpp ../src/bus/Json.cpp)
+target_include_directories(test_chooser_model PRIVATE ../include/bus)
+add_test(NAME chooser_model COMMAND test_chooser_model)
+set_tests_properties(chooser_model PROPERTIES TIMEOUT 30)
