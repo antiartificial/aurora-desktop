@@ -29,6 +29,10 @@
 #   including cancellation, wakes its waiters. Regressions: test_exit_thread_wakes_waiter in
 #   kits/tests/test_kits.cpp, which hangs without it.
 #
+#   MEASURED: 4 hangs of 14 before the fix; 0 of 45 after (20 + 25 runs). For comparison, the
+#   BLooper change in 671f967 alone measured 9 of 40 -- it is sound on its own terms but it is not
+#   what fixes this, and no lock split is needed to explain the stacks above.
+#
 #   An earlier diagnosis in this header blamed a lost quit code in kits/src/app/Looper.cpp. That
 #   was wrong: this app links Haiku's own Looper.cpp (kits/haiku-compat), not ours. The defect it
 #   described is real, and is fixed in our BLooper too, but it was never this hang.
