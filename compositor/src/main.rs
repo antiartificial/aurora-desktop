@@ -12,6 +12,7 @@ mod indicator;
 mod render;
 mod scale;
 mod input;
+mod peer;
 mod persist;
 mod shell;
 mod state;

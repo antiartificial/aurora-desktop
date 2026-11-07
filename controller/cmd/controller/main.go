@@ -23,6 +23,8 @@ const usage = `usage: controller [--socket S] <command>
   describe <app> <verb>                      a verb's input/output schema and effect
   invoke <app> <verb> --input F [--output F] [--ticket T] [--output-ticket T] [--arg k=v ...]
                                              run a verb (values: JSON if valid, else string)
+  launch <app>                               launch a windowed app in its own domain (registry.launch@v1)
+  stop <app> | stop --domain NAME            end a launched window; its domain and grants go
   decide <request_id> allow|deny             answer an approval.requested (from the session socket)
   provenance <file> [--verify]               read back the file's provenance xattr; --verify asks the
                                              daemon about the record's handle ids (exit 0 verified,

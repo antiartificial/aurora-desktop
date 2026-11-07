@@ -95,6 +95,15 @@ impl Aurora {
         .unwrap_or_default()
     }
 
+    /// The domain the kernel placed this window's client in, learned at connect (`crate::peer`).
+    /// `None` for a host process, XWayland and a test client: a window with no domain is normal.
+    /// Unlike `window_title`, nothing the client sends can change this.
+    pub fn window_domain(&self, w: &Window) -> Option<String> {
+        let surface = w.wl_surface()?;
+        let client = surface.client()?;
+        client.get_data::<crate::state::ClientState>()?.domain.as_ref().map(|d| d.name.clone())
+    }
+
     pub fn is_maximized(&self, w: &Window) -> bool {
         if let Some(t) = w.toplevel() {
             return t.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Maximized));
@@ -143,7 +152,7 @@ impl Aurora {
                 }
                 let id = win_key(w)?;
                 let hover_close = self.deco.hover.as_ref() == Some(&(id.clone(), Hit::Close));
-                Some(DecoSpec { id, window, title: self.window_title(w), focused: self.is_focused(w), hover_close })
+                Some(DecoSpec { id, window, title: self.window_title(w), domain: self.window_domain(w), focused: self.is_focused(w), hover_close })
             })
             .collect()
     }
@@ -163,7 +172,8 @@ impl Aurora {
             }
             if self.decorated(&w) {
                 let title = self.window_title(&w);
-                let f = self.shell.deco_frame(geo, &title);
+                let domain = self.window_domain(&w);
+                let f = self.shell.deco_frame(geo, &title, domain.as_deref());
                 if let Some(h) = deco::hit(&f, grip, corner, (pos.x, pos.y), self.resizable(&w)) {
                     return Some((w, h));
                 }

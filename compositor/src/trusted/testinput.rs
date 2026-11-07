@@ -133,7 +133,15 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
     if cmd == "state" {
         // The shell state and window layout as one JSON line: what a restart must bring back.
         let t = &state.fx.theme;
-        let wins: Vec<_> = state.live_windows().into_iter().map(|l| serde_json::json!({"app_id": l.app_id, "title": l.title, "x": l.x, "y": l.y, "w": l.w, "h": l.h})).collect();
+        // "domain" is what the kernel says (crate::peer), not what the client says: null for a host process.
+        let wins: Vec<_> = state
+            .live_windows()
+            .into_iter()
+            .map(|l| {
+                let domain = state.space.elements().find(|w| w.toplevel().is_some_and(|t| smithay::reexports::wayland_server::Resource::id(t.wl_surface()) == l.id)).and_then(|w| state.window_domain(w));
+                serde_json::json!({"app_id": l.app_id, "title": l.title, "x": l.x, "y": l.y, "w": l.w, "h": l.h, "domain": domain})
+            })
+            .collect();
         let v = serde_json::json!({
             "scale": state.output_scale(), "scale_setting": t.output.scale,
             "background": format!("{:?}", t.background.mode).to_lowercase(),

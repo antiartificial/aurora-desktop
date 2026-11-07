@@ -5,7 +5,14 @@
 //! `registry.verbs@v1`, which carries what the verb picker shows per verb:
 //! its summary and its effect class.
 
-use std::{path::PathBuf, sync::mpsc, time::{Duration, Instant}};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, mpsc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 
@@ -90,7 +97,7 @@ pub fn parse(reply: &Value) -> Result<Vec<AppEntry>, String> {
             let name = a["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(id);
             let verbs = a["verbs"].as_array().map(|v| v.iter().filter_map(|n| n.as_str().filter(|n| !n.is_empty()).map(String::from)).collect()).unwrap_or_default();
             let launchable = a["launchable"].as_bool().unwrap_or(true);
-            let problem = display_name(a["launch_problem"].as_str().unwrap_or(""));
+            let problem = display_text(a["launch_problem"].as_str().unwrap_or(""), 90);
             let windowed = a["windowed"].as_bool().unwrap_or(false);
             let exec = a["exec"].as_str().unwrap_or("").to_string();
             Some(AppEntry { id: id.to_string(), name: display_name(name), verbs, launchable, problem, windowed, exec })
@@ -114,12 +121,15 @@ pub struct Registry {
     pub generation: u64,
     rx: Option<mpsc::Receiver<Result<Snapshot, String>>>,
     last: Option<Instant>,
+    /// Set by a launch that just finished: ask again now instead of at the next refresh, so a
+    /// failed launch's `launch_problem` shows on the dock at once.
+    pub refresh_now: Arc<AtomicBool>,
 }
 
 impl Registry {
     pub fn new(sock: Option<PathBuf>) -> Self {
         let status = if sock.is_some() { Status::Pending } else { Status::NoBus };
-        Registry { sock, apps: vec![], verbs: None, status, generation: 0, rx: None, last: None }
+        Registry { sock, apps: vec![], verbs: None, status, generation: 0, rx: None, last: None, refresh_now: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Collect a finished ask and start the next one when due. Cheap; call per frame.
@@ -145,7 +155,7 @@ impl Registry {
             }
         }
         let Some(sock) = self.sock.clone() else { return };
-        if self.last.is_some_and(|t| t.elapsed() < REFRESH) {
+        if self.last.is_some_and(|t| t.elapsed() < REFRESH) && !self.refresh_now.swap(false, Ordering::Relaxed) {
             return;
         }
         self.last = Some(Instant::now());

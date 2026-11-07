@@ -162,6 +162,24 @@ fn a_title_bar_appears_above_the_window_with_its_title_and_the_client_is_untouch
     }
 }
 
+/// A client outside every domain (a host process, which is what a test client is) is attributed to
+/// nothing: its bar has no badge, its layout line has no `domain=` field, and the compositor's own
+/// state says `domain: null`. A window with no domain is normal and must keep working. The other
+/// half, a client the kernel puts in `aurora-domains/<name>`, needs a real cgroup and is proved in
+/// demos/windowed-domain; `peer::tests` covers the parsing.
+#[test]
+fn a_window_with_no_domain_is_unbadged_and_the_state_says_null() {
+    let (_t, mut c) = themed("1", "", &[]);
+    c.client_args(&["--size", "300x200", "--title", "Plain"]);
+    let _ = wait_deco(&c, "Plain");
+    let line = c.log().lines().rev().find(|l| l.contains("deco: layout") && l.contains("text=Plain")).expect("a layout line").to_string();
+    assert!(!line.contains("domain="), "a window with no domain logs no domain: {line}");
+    let r = c.inject_reply("state");
+    let v: serde_json::Value = serde_json::from_str(r.strip_prefix("ok ").unwrap()).unwrap();
+    let w = v["windows"].as_array().unwrap().iter().find(|w| w["title"] == "Plain").expect("the window");
+    assert!(w["domain"].is_null(), "state says what the kernel says, and the kernel says no domain: {w}");
+}
+
 #[test]
 fn a_long_title_is_clipped_with_an_ellipsis_to_the_room_beside_the_close_button() {
     for s in SCALES {
