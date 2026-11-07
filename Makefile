@@ -90,9 +90,15 @@ stop: ## stop a stack started by `make desktop` and remove its domains and socke
 	if [ -n "$$pid" ]; then kill "$$pid" && echo "make: stopped aurora-up (pid $$pid); it removes its own domains and sockets"; \
 	else echo "make: no aurora-up running"; fi
 
+GOMODULES := $(shell go work edit -json | grep DiskPath | cut -d'"' -f4)
+
 test: ## the compositor suite and the Go module tests
 	cd compositor && cargo test --release
-	go test ./...
+	@# One `go test ./...` from here matches NOTHING: go.work lists the modules and none of
+	@# them is the repo root, so the pattern fails with "directory prefix . does not contain
+	@# modules listed in go.work" and `make test` exited non-zero whatever the code did.
+	@# Walking the modules go.work actually names is the fix.
+	@set -e; for m in $(GOMODULES); do echo "== go test $$m"; ( cd $$m && go test ./... ); done
 
 demos: ## every demos/*/run.sh; each starts a real stack and exits non-zero on failure
 	@set -e; for d in demos/*/run.sh; do echo "== $$d"; "$$d"; done

@@ -363,44 +363,47 @@ fn the_pointer_over_it_is_the_compositors_and_hovering_restyles_nothing_outside_
 }
 
 #[test]
-fn a_row_opens_on_an_ease_out_so_it_is_ahead_of_linear_on_its_first_frames() {
+fn a_row_opens_over_time_rather_than_snapping_open() {
+    // What only an integration test can say: a click on an app row actually animates the
+    // deskbar, over time, in one direction.
+    //
+    // It does NOT re-check the shape of the curve. That claim is exact in
+    // shell::motion (`the_curve_starts_fast_and_ends_flat` asserts ease_out_cubic(0.33) > 0.6,
+    // which IS "ahead of linear", with no clock involved). Asserting it again here meant
+    // comparing a wall-clock sample against a wall-clock curve while the machine ran nineteen
+    // other test binaries, and a starved compositor produces no frame: a sample at 145 ms read
+    // "0.00 of the way" when the curve says 0.37, so `make test` failed about one run in three.
+    // An earlier attempt softened it to a mean over the early window and it still flaked.
+    //
+    // Every assertion below is a LOWER bound on how long something took, or a direction. Both
+    // survive starvation, because being starved can only make a thing slower, never faster.
     let (_t, mut c) = themed("1", "ease_ms = 1000\n", &[]);
     three_apps(&mut c);
     let closed = settled(&c);
     let h0 = closed.rect[3] as f64;
     click(&c, closed.app("org.test.alpha").rect, closed.scale);
     let start = Instant::now();
+
     let mut samples: Vec<(f64, f64)> = vec![];
-    while start.elapsed() < Duration::from_millis(1300) {
+    while start.elapsed() < Duration::from_millis(1600) {
         if let Some(r) = deskbar_rect(&c) {
             samples.push((start.elapsed().as_secs_f64() * 1000.0, r[3] as f64 - h0));
         }
         std::thread::sleep(Duration::from_millis(40));
     }
     let full = samples.last().unwrap().1;
-    assert!(full > 20.0, "it opened ({full}px)");
-    let early: Vec<_> = samples.iter().filter(|(t, _)| (100.0..=400.0).contains(t)).collect();
-    assert!(early.len() >= 3, "{samples:?}");
-    // Ahead of linear is asserted over the MEAN of the early window, not per sample.
-    //
-    // This samples a wall-clock animation on wall-clock time, so a sample taken while the
-    // compositor was starved reads a height from an older frame than its timestamp implies.
-    // Alone the test passed 3 of 3; in the full suite it failed, which makes a green suite
-    // depend on how busy the machine is.
-    //
-    // The mean is not a weaker claim about the curve. Ease-out means every point is ahead of
-    // linear, so its mean is too; ease-in is behind at every point and so is its mean; linear
-    // sits on it and is caught by the same 0.03 margin. The per-sample shape tolerance below
-    // is unchanged, so an animation of the wrong shape still fails.
-    let n = early.len() as f64;
-    let (mean_prog, mean_lin) = (
-        early.iter().map(|(_, g)| g / full).sum::<f64>() / n,
-        early.iter().map(|(t, _)| t / 1000.0).sum::<f64>() / n,
-    );
-    assert!(mean_prog > mean_lin + 0.03, "over {n} early samples it averaged {mean_prog:.2} of the way; linear would be {mean_lin:.2}: {samples:?}");
-    for (t, g) in early {
-        let eased = 1.0 - (1.0 - t / 1000.0).powi(3);
-        assert!((g / full - eased).abs() < 0.2, "at {t:.0} ms it is {:.2} of the way; ease-out is {eased:.2}", g / full);
+    assert!(full > 20.0, "the row did not open ({full}px): {samples:?}");
+
+    // It animated rather than snapping. The configured ease is 1000 ms, so the first sample
+    // that is all the way open cannot be early. 300 ms is far below 1000, so a slow machine
+    // still passes; only an instant jump fails.
+    let first_full = samples.iter().find(|(_, g)| *g >= full - 1.0).expect("it reached full").0;
+    assert!(first_full > 300.0, "it was fully open after {first_full:.0} ms, so it snapped rather than animated: {samples:?}");
+
+    // And it only ever opened. A row that goes backwards is a flicker, and no amount of
+    // starvation produces one.
+    for w in samples.windows(2) {
+        assert!(w[1].1 >= w[0].1 - 1.0, "the row went backwards, {:?} then {:?}: {samples:?}", w[0], w[1]);
     }
 }
 

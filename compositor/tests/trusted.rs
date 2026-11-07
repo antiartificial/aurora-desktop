@@ -60,6 +60,11 @@ fn keyboard_goes_to_the_overlay_and_not_to_the_focused_client() {
     for k in ["key z", "key q", "down s", "up s", "key Return", "key space"] { c.inject(k); }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(&read(&log)[mark..], "", "client saw input while the overlay was up");
+    // The six keys above are swallowed whether or not the prompt is armed, which is what the
+    // assertion just checked. This one is meant to DECIDE, so it has to be past the window.
+    // In a debug build the six injections and the sleep happened to exceed it; in release they
+    // do not, which is why `make test` caught this and `cargo test` did not.
+    wait_until_armed();
     c.inject("key a");
     let ans = answer(pending);
     assert_eq!(ans["decision"], "allow");
