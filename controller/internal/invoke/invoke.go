@@ -242,6 +242,12 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 	if res.Exit != 0 {
 		return nil, fail("app_failed", "%s exited with status %d", tail(res.Stderr), req.Verb, res.Exit)
 	}
+	var reported json.RawMessage
+	if rep, big := prov.ReportedFrom(bytes.TrimSpace(res.Stdout)); big {
+		iv.logf("WARNING: %s reported more than %d bytes; not recorded in provenance", app.ID(), prov.MaxReported)
+	} else {
+		reported = rep
+	}
 	out := &Result{OK: true, Isolated: isolated, Grants: grants, CapNote: cs.note, NeedsApproval: approval != nil && approval.Required, Approval: approval, Log: tail(res.Stderr)}
 	if t := bytes.TrimSpace(res.Stdout); len(t) > 0 && json.Valid(t) {
 		out.Result = json.RawMessage(t)
@@ -253,7 +259,7 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		return nil, fail("no_output", "%s finished but wrote no file at %s", tail(res.Stderr), req.Verb, output)
 	}
 	rec := prov.Record{File: output, App: app.ID(), Verb: req.Verb, Inputs: []string{input},
-		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, Approval: approval, CapEpoch: cs.epoch, CapNote: cs.note, TS: iv.clock.Now().String()}
+		Domain: ident.ID, DomainAttested: ident.Attested, Args: argsJSON, Isolated: isolated, Grants: grants, Approval: approval, CapEpoch: cs.epoch, CapNote: cs.note, Reported: reported, TS: iv.clock.Now().String()}
 	set := iv.SetProvenance
 	if set == nil {
 		set = prov.Write

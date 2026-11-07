@@ -117,7 +117,34 @@ type Record struct {
 	CapEpoch string `json:"cap_epoch,omitempty"`
 	// CapNote says why a grant has no Cap, or that presenting them failed.
 	CapNote string `json:"cap_note,omitempty"`
-	TS      string `json:"ts"`
+	// Reported is what the app said, in its result's "reported" object,
+	// about what determined the output (a compiler's identity and flags, for
+	// instance). Every other field of the record is the controller's
+	// observation; this one is the app's claim, made from inside its domain,
+	// and is recorded so the claim travels with the file under the same
+	// xattr. Capped at MaxReported bytes: an xattr is small and a record
+	// that cannot be written is no record at all.
+	Reported json.RawMessage `json:"reported,omitempty"`
+	TS       string          `json:"ts"`
+}
+
+// MaxReported bounds Record.Reported.
+const MaxReported = 2048
+
+// ReportedFrom extracts the "reported" object from an app's result JSON. It
+// returns nil when the result has none or it is not an object; tooBig is true
+// when the object exceeds MaxReported (and nil is returned).
+func ReportedFrom(result []byte) (rep json.RawMessage, tooBig bool) {
+	var m struct {
+		Reported json.RawMessage `json:"reported"`
+	}
+	if json.Unmarshal(result, &m) != nil || len(m.Reported) == 0 || m.Reported[0] != '{' {
+		return nil, false
+	}
+	if len(m.Reported) > MaxReported {
+		return nil, true
+	}
+	return m.Reported, false
 }
 
 // Write stores the record on path as an extended attribute.

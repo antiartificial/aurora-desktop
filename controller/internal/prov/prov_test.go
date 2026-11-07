@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -35,5 +36,20 @@ func TestResourceNamesFitTheDaemonSyntaxAndAreStable(t *testing.T) {
 	odd := Resource("/tmp/my pics/\u00e9.png", "ro")
 	if !resourceOK.MatchString(odd) || odd != Resource("/tmp/my pics/\u00e9.png", "ro") || odd == Resource("/tmp/my pics/\u00e9.png", "rw") {
 		t.Fatal(odd)
+	}
+}
+
+func TestReportedFrom(t *testing.T) {
+	if r, big := ReportedFrom([]byte(`{"ok":true,"reported":{"cc":"x"}}`)); string(r) != `{"cc":"x"}` || big {
+		t.Fatal(string(r), big)
+	}
+	for _, in := range []string{`{"ok":true}`, `not json`, `{"reported":"str"}`, `{"reported":null}`} {
+		if r, big := ReportedFrom([]byte(in)); r != nil || big {
+			t.Fatalf("%s: %s %v", in, r, big)
+		}
+	}
+	huge := `{"reported":{"k":"` + strings.Repeat("a", MaxReported) + `"}}`
+	if r, big := ReportedFrom([]byte(huge)); r != nil || !big {
+		t.Fatal("oversize not refused")
 	}
 }

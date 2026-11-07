@@ -6,6 +6,7 @@ App manifests for aurora. Each subdirectory holds one `manifest.toml`, written a
 | --- | --- | --- |
 | `lumen/` | toy native image app | `resize@v1`, `export@v1`, `histogram@v1` |
 | `ffmpeg/` | wrapped CLI tool | `transcode@v1`, `thumbnail@v1` |
+| `build/` | wrapped CLI tool (the host's `cc`) | `compile@v1`, `verify@v1`; the output's provenance records the compiler and flags (`demos/build-verb/run.sh`) |
 | `imagemagick/` | wrapped CLI tool | `convert@v1` |
 | `browser/`, `controls/`, `text/`, `list/`, `menu/`, `layout/`, `kitchensink/` | windowed Haiku apps (`org.aurora.haiku.*`) | none: launched directly, unsandboxed (decision 0012) |
 | `haiku_ledger/` | Haiku bus service, no window | `add@v1`, `total@v1`, `list@v1` (served on the bus, not through `run`) |
