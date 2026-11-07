@@ -36,6 +36,7 @@
 #include "server.h"
 #include "aurora_theme.h"
 #include "aurora_controllook.h"
+#include "a11y_bus.h"
 
 using namespace BPrivate;
 
@@ -93,6 +94,7 @@ BApplication& BApplication::operator=(const BApplication&) { return *this; }
 
 BApplication::~BApplication()
 {
+	aurora::a11y_stop();
 	Lock();
 	_QuitAllWindows(true);
 	if (be_app != NULL && fServerLink != NULL) {
@@ -134,6 +136,16 @@ BApplication::_InitData(const char* signature, bool initGUI, status_t* _error)
 
 	if (initGUI)
 		fInitError = _InitGUIContext();
+
+	// Opt-in, by whoever launched us: the accessibility tree is served only when asked for (decision 0017). Without the
+	// variable nothing here runs and the application never touches the bus.
+	if (initGUI && fInitError == B_OK) {
+		if (const char* svc = getenv("AURORA_A11Y_SERVICE")) {
+			status_t r = aurora::a11y_start(svc);
+			if (r != B_OK) fprintf(stderr, "a11y: AURORA_A11Y_SERVICE=%s but the bus refused (%d): no tree is served\n", svc, (int)r);
+			else fprintf(stderr, "a11y: serving the accessibility tree as '%s' on the bus, identity %s\n", svc, aurora::a11y_identity());
+		}
+	}
 
 	if (_error != NULL)
 		*_error = fInitError;
