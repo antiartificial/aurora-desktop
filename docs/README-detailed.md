@@ -69,7 +69,7 @@ What works, what is partial, what is not built. Evidence is in each component's 
 
 **Partial**
 - Approval is a compositor prompt only on the headless backend, with keys injected through a test-only socket. A real keyboard has never answered one. winit was not verified.
-- Isolation is a mount namespace and a distinct uid. No Landlock, no seccomp, no network filtering (a net grant shares the host network), memory and CPU limits are recorded but not enforced here.
+- Isolation is a mount namespace and a distinct uid. No Landlock, no seccomp, network grants enforced by name through a proxy (0015; a domain that tunnels over a granted host is not stopped), memory and CPU limits are recorded but not enforced here.
 - Compositor: one output, scale 1, shm capture only, no XWayland, no window management beyond move and resize, no animation, no client-to-domain binding.
 - Provenance is a record the controller writes about itself; `--verify` proves the daemon issued the handles, not that the app used them.
 - Ginux: the harness (`harness/ginux-up`) is written and has never run; decision 0005 changed its goal.

@@ -152,7 +152,11 @@ busd listens on its session socket and, optionally, on one socket per domain.
   domain has a set of live runs. `domain run` registers its run
   (`bus.domain.ns@v1 {identity, pid, ns}`, pid = sandbox init) when
   `AURORA_BUS_SOCK` is set, BEFORE releasing the payload (bwrap `--block-fd`),
-  and unregisters when it ends. The daemon reads the ids from `/proc` itself;
+  and unregisters when it ends. (Same socket, same trust: a domain holding a
+  net grant has its connections reported with `bus.net.report@v1`, session
+  socket only, which the daemon turns into `net.conn` / `net.summary` events
+  stamped with the registered domain. `net.` is a system topic: a domain can
+  neither read nor publish it. Decision 0015.) The daemon reads the ids from `/proc` itself;
   ids a registrar sends are cross-checked, not trusted. A run lives exactly as
   long as its init pid (same start time, not a zombie): when it ends it is
   pruned, so a recycled namespace inode can never match, and a destroyed and
