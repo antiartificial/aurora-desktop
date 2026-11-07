@@ -185,6 +185,28 @@ static void RoundRectPath(std::vector<float>& p, FRect r, float rx, float ry, do
 		}
 }
 
+void Canvas::CopyBits(FRect src, FRect dst)
+{
+	DRect s = ToDevice(src), d = ToDevice(dst);
+	// BColumnListView copies a 1,000,000 px wide strip: keep to the part of the source inside the canvas (and the matching part of dst).
+	if (s.x0 < 0) { d.x0 -= s.x0; s.x0 = 0; }
+	if (s.y0 < 0) { d.y0 -= s.y0; s.y0 = 0; }
+	s.x1 = std::min(s.x1, fW); s.y1 = std::min(s.y1, fH);
+	int w = std::min(s.x1 - s.x0, d.x1 - d.x0), h = std::min(s.y1 - s.y0, d.y1 - d.y0);
+	if (w <= 0 || h <= 0) return;
+	std::vector<uint32_t> tmp((size_t)w * h);
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++) {
+			int sx = s.x0 + x, sy = s.y0 + y;
+			tmp[(size_t)y * w + x] = (sx >= 0 && sy >= 0 && sx < fW && sy < fH) ? fPx[(size_t)sy * fW + sx] : 0;
+		}
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++) {
+			int dx = d.x0 + x, dy = d.y0 + y;
+			if (dx >= fClip.x0 && dx < fClip.x1 && dy >= fClip.y0 && dy < fClip.y1) fPx[(size_t)dy * fW + dx] = tmp[(size_t)y * w + x];
+		}
+}
+
 void Canvas::FillRoundRect(FRect r, float rx, float ry, Color c) { FillRoundRect(r, rx, ry, Paint(c)); }
 void Canvas::FillRoundRect(FRect r, float rx, float ry, const Paint& pt)
 {

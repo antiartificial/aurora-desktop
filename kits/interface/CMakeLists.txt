@@ -21,7 +21,7 @@ set(IFACE_REAL
 	SeparatorItem Shape ScrollView ListItem ListView OutlineListView StringItem StringView TextView ToolTipManager ToolTip TwoDimensionalLayout ViewLayoutItem View
 	Window
 	CheckBox RadioButton Box TextControl AbstractSpinner Spinner DecimalSpinner OptionControl OptionPopUp StatusBar TabView Slider ColorControl Alert CardLayout SplitLayout SplitView
-	GroupView SpaceLayoutItem TextInput)
+	GroupView SpaceLayoutItem TextInput ColumnListView ColumnTypes)
 set(SRC_IFACE)
 foreach(n ${IFACE_REAL})
 	list(APPEND SRC_IFACE ${I}/${n}.cpp)
@@ -32,8 +32,10 @@ set(SRC_APP ${K}/app/AppDefs.cpp ${K}/app/AppServerLink.cpp ${K}/app/Cursor.cpp 
 	${K}/app/LinkReceiver.cpp ${K}/app/LinkSender.cpp ${K}/app/MessageRunner.cpp ${K}/app/PortLink.cpp
 	${K}/app/ServerLink.cpp ${K}/app/ServerMemoryAllocator.cpp)
 set(SRC_SUPPORT ${K}/shared/HSL.cpp ${K}/support/PointerList.cpp ${K}/support/Referenceable.cpp ${K}/locale/UnicodeChar.cpp
-	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/registrar.cpp ${CMAKE_CURRENT_SOURCE_DIR}/clipboard.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
+	${CMAKE_CURRENT_SOURCE_DIR}/stubs_iface.cpp ${CMAKE_CURRENT_SOURCE_DIR}/locale_lite.cpp ${CMAKE_CURRENT_SOURCE_DIR}/registrar.cpp ${CMAKE_CURRENT_SOURCE_DIR}/clipboard.cpp ${CMAKE_CURRENT_SOURCE_DIR}/input_shim.cpp)
 
+# ColumnTypes.h embeds a `struct tm` and includes nothing that defines it (Haiku's headers get <time.h> transitively).
+set_source_files_properties(${I}/ColumnTypes.cpp ${I}/ColumnListView.cpp PROPERTIES COMPILE_OPTIONS "-include;time.h")
 add_library(haiku_iface_real STATIC ${SRC_IFACE} ${SRC_LAYOUTER} ${SRC_TEXTVIEW} ${SRC_APP} ${SRC_SUPPORT})
 # Order: our shim syscalls.h first (Haiku's needs the kernel info-struct zoo), then haiku_app_real's include set.
 target_include_directories(haiku_iface_real SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/shim
@@ -106,6 +108,7 @@ iface_exe(iface_list demo/list.cpp)
 iface_exe(iface_text demo/text.cpp)
 iface_exe(iface_menu demo/menu.cpp)
 iface_exe(iface_layout demo/layout.cpp)
+iface_exe(iface_grid demo/grid.cpp)
 iface_exe(iface_kitchensink demo/kitchensink.cpp)
 # The file browser lives with its README and fixtures in demos/browser; it is built here because only this tree knows the kit.
 iface_exe(iface_browser ${CMAKE_CURRENT_SOURCE_DIR}/../../demos/browser/browser.cpp)
@@ -121,7 +124,8 @@ add_test(NAME iface_controls COMMAND test_controls)
 add_test(NAME iface_widgets COMMAND test_widgets)
 # The whole kitchen sink, every tab drawn (KS_REPORT walks them), no compositor: the server must have served every opcode.
 add_test(NAME iface_kitchensink COMMAND sh -c "AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 KS_REPORT=1 HELLO_QUIT_AFTER_MS=4000 $<TARGET_FILE:iface_kitchensink> | tee /dev/stderr | grep -q '^UNHANDLED 0 '")
-set_tests_properties(iface_font iface_controls iface_widgets iface_kitchensink PROPERTIES TIMEOUT 30)
+add_test(NAME iface_grid COMMAND sh -c "AURORA_APPSERVER_PRESENT=0 AURORA_APPSERVER_ACTIVE=1 GRID_EXPAND=1 GRID_SORT=1 HELLO_QUIT_AFTER_MS=2500 $<TARGET_FILE:iface_grid> | tee /dev/stderr | grep -q '^UNHANDLED 0 '")
+set_tests_properties(iface_font iface_controls iface_widgets iface_kitchensink iface_grid PROPERTIES TIMEOUT 30)
 # Colours and the control look. The same rules run over the shipped palette, over a dark one written on the spot, and
 # with the stock Haiku look; test_controls also runs under the stock look, which is the way back.
 add_test(NAME iface_theme COMMAND test_theme)
