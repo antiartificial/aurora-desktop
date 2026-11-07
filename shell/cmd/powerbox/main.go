@@ -55,17 +55,20 @@ func main() {
 	o := picker.Options{App: *app, Verb: *verb, Mode: *mode, Kind: *kind, Start: *start, Suggest: *suggest, TTL: *ttl, Key: key}
 
 	var res picker.Result
-	if *testPath != "" {
+	pb, err := wire(o, *forceTTY, *attest, *sock, *approvalTimeout)
+	if err == nil && *testPath != "" {
 		if os.Getenv("AURORA_POWERBOX_ALLOW_PATH") != "1" {
 			die("--path is a test affordance that skips the user gesture; set AURORA_POWERBOX_ALLOW_PATH=1 to use it (a speed bump, not a security boundary: any same-user process can set it)")
 		}
 		fmt.Fprintln(os.Stderr, "powerbox: WARNING: --path is a test affordance; no user chose this, the ticket proves nothing about a gesture")
-		res, err = picker.Mint(o, *testPath)
-	} else {
-		var pb picker.Powerbox
-		if pb, err = wire(o, *forceTTY, *attest, *sock, *approvalTimeout); err == nil {
-			res, err = pb.Grant(context.Background())
-		}
+		// --path replaces the CHOOSING and nothing else. It used to call Mint
+		// directly, which also skipped the compositor confirm, so --attest
+		// required would answer deny and still hand back a ticket. A flag that
+		// says required has to mean it.
+		pb.Route, pb.FixedPath = picker.RouteFixedPath, *testPath
+	}
+	if err == nil {
+		res, err = pb.Grant(context.Background())
 	}
 	if err != nil {
 		die("%v", err)

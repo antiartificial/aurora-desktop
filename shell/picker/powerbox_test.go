@@ -376,3 +376,82 @@ func TestSaveThroughTheChooserReportsOverwrite(t *testing.T) {
 		t.Fatalf("%+v", q)
 	}
 }
+
+// --path supplies the selection. It must not also skip the confirm: it is
+// documented as skipping the user's GESTURE, and an operator who asked for
+// --attest=required has stated a policy that a test affordance does not get to
+// override. This used to mint on a signed DENY.
+func TestFixedPathStillNeedsTheConfirm(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{App: "org.aurora.notes", Verb: "read@v1", Mode: "ro", Kind: KindFile, Key: []byte("0123456789abcdef0123456789abcdef")}
+
+	for _, tc := range []struct {
+		name    string
+		confirm Confirmer
+		wantErr bool
+	}{
+		{"allowed mints", fixed(Confirmation{Verdict: VerdictAllowed}), false},
+		{"denied mints nothing", fixed(Confirmation{Verdict: VerdictDenied, Err: errors.New("denied at the compositor")}), true},
+		{"failed mints nothing", fixed(Confirmation{Verdict: VerdictFailed, Err: errors.New("no answer")}), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pb := Powerbox{Opts: opts, Route: RouteFixedPath, FixedPath: target, Confirm: tc.confirm, Log: io.Discard}
+			res, err := pb.Grant(context.Background())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("--path minted a ticket despite the confirm: %q", res.Ticket)
+				}
+				if res.Ticket != "" {
+					t.Fatalf("a ticket came back with an error: %q", res.Ticket)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("allowed but no ticket: %v", err)
+			}
+			if res.Ticket == "" {
+				t.Fatal("allowed and the ticket is empty")
+			}
+		})
+	}
+}
+
+// The confirm must be asked for the path --path named, not for something else.
+func TestFixedPathConfirmsTheSamePath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "seen.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got Ask
+	spy := confirmerFunc(func(_ context.Context, a Ask) Confirmation {
+		got = a
+		return Confirmation{Verdict: VerdictAllowed}
+	})
+	pb := Powerbox{
+		Opts:      Options{App: "a", Verb: "read@v1", Mode: "ro", Kind: KindFile, Key: []byte("0123456789abcdef0123456789abcdef")},
+		Route:     RouteFixedPath,
+		FixedPath: target,
+		Confirm:   spy,
+		Log:       io.Discard,
+	}
+	if _, err := pb.Grant(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want, err := Resolve(KindFile, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != want {
+		t.Fatalf("confirmed %q, selection was %q", got.Path, want)
+	}
+}
+
+// fixed is a Confirmer that always returns the same confirmation.
+func fixed(c Confirmation) Confirmer {
+	return confirmerFunc(func(context.Context, Ask) Confirmation { return c })
+}

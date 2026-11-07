@@ -30,9 +30,12 @@ type Powerbox struct {
 	Opts    Options
 	Route   Route
 	Chooser string // binary for RouteChooser
-	TTY     TTYUI
-	Confirm Confirmer
-	Log     io.Writer // warnings; stderr
+	// FixedPath is the selection for RouteFixedPath (--path). It replaces the
+	// chooser, not the confirm.
+	FixedPath string
+	TTY       TTYUI
+	Confirm   Confirmer
+	Log       io.Writer // warnings; stderr
 }
 
 // Grant chooses a path, resolves it, gets the second yes, and only then
@@ -75,6 +78,8 @@ func overwrites(kind, path string) bool {
 // choose returns the path the user picked, by the route's UI.
 func (pb Powerbox) choose(ctx context.Context) (string, error) {
 	switch pb.Route {
+	case RouteFixedPath:
+		return pb.FixedPath, nil
 	case RouteForcedTTY, RouteTTY:
 		return pb.chooseTTY()
 	case RouteChooser:

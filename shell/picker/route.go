@@ -26,6 +26,11 @@ const (
 	// RouteChooser: the graphical chooser, with the terminal as the fallback
 	// for a chooser that cannot run here.
 	RouteChooser
+	// RouteFixedPath: the path came from --path, so no user interface runs and
+	// nobody chose it. It is still a SELECTION and nothing more: the confirm
+	// below it is unchanged, because --path is documented as skipping the
+	// gesture, not as overriding an operator's --attest policy.
+	RouteFixedPath
 )
 
 func (r Route) String() string {
@@ -36,6 +41,8 @@ func (r Route) String() string {
 		return "tty (forced)"
 	case RouteChooser:
 		return "chooser"
+	case RouteFixedPath:
+		return "fixed path (--path)"
 	}
 	return fmt.Sprintf("Route(%d)", int(r))
 }
