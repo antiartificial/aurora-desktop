@@ -191,11 +191,12 @@ func Choose(o Options, in *bufio.Reader, out io.Writer) (string, error) {
 		case line == "q":
 			return "", ErrCancelled
 		case chosen != "":
-			ok, err := confirm(o, chosen, access, in, out)
+			ok, resolved, err := confirm(o, chosen, access, in, out)
 			if err != nil {
 				fmt.Fprintf(out, "  %v\n", err)
 			} else if ok {
-				return chosen, nil
+				// The resolved path, not `chosen`: what was shown is what binds.
+				return resolved, nil
 			} else {
 				fmt.Fprintln(out, "  not granted")
 			}
@@ -257,19 +258,30 @@ func step(o Options, cur string, es []entry, line string) (next, chosen string) 
 	return cur, ""
 }
 
-func confirm(o Options, path, access string, in *bufio.Reader, out io.Writer) (bool, error) {
-	if _, err := Resolve(o.Kind, path); err != nil {
-		return false, err
+// confirm asks about the RESOLVED path and returns it, so that the string the
+// user read is the string that gets bound.
+//
+// It used to resolve only to check for an error, throw the result away, and
+// print the path as typed. Mint then resolved a second time, later, and bound
+// whatever it got. Swapping a symlink component in between meant the user
+// approved ~/tree/docs/report.pdf and the app received ~/tree/secret/report.pdf,
+// which the controller then re-resolved and agreed with. Resolving once and
+// showing what was resolved is the whole fix: there is no second resolution left
+// to disagree with the first.
+func confirm(o Options, path, access string, in *bufio.Reader, out io.Writer) (bool, string, error) {
+	resolved, err := Resolve(o.Kind, path)
+	if err != nil {
+		return false, "", err
 	}
 	extra := ""
 	if o.Kind == KindSave {
-		if _, err := os.Lstat(path); err == nil {
+		if _, err := os.Lstat(resolved); err == nil {
 			extra = " (EXISTS, will be overwritten)"
 		}
 	}
-	fmt.Fprintf(out, "Grant %s access to %s%s\nto %s for %s, for one use within %s? [y/N] ", access, path, extra, o.App, o.Verb, ttlOf(o))
+	fmt.Fprintf(out, "Grant %s access to %s%s\nto %s for %s, for one use within %s? [y/N] ", access, resolved, extra, o.App, o.Verb, ttlOf(o))
 	line, _ := in.ReadString('\n')
-	return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+	return strings.EqualFold(strings.TrimSpace(line), "y"), resolved, nil
 }
 
 func ttlOf(o Options) time.Duration {
