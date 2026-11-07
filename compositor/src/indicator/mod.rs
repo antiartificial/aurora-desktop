@@ -60,7 +60,7 @@ impl Indicator {
         if !cfg.enabled {
             return vec![];
         }
-        self.held.iter().filter(|h| cfg.classes.iter().any(|c| *c == h.resource)).collect()
+        self.held.iter().filter(|h| cfg.classes.iter().any(|c| covers(c, &h.resource))).collect()
     }
 
     /// Whether a point (device pixels) is on the indicator, which then owns the pointer.
@@ -96,5 +96,42 @@ impl crate::Aurora {
             tracing::info!("indicator: panel {}", if self.indicator.pinned { "pinned open" } else { "unpinned" });
         }
         true
+    }
+}
+
+/// Does the theme's class name `c` cover the held resource `r`?
+///
+/// Exact match, or `c` followed by a ':' separator. The second case exists
+/// because not every capability's resource is just its class: the
+/// accessibility grant (decision 0017) is minted as `ui:read:<domain
+/// identity>`, so a theme listing `ui:read` would match nothing and the dot
+/// would silently stay dark for a capability that is genuinely held.
+///
+/// The ':' is required rather than a bare `starts_with`, which would let
+/// `device:gpu` light up for a `device:gpuzzz` nobody listed. The separator is
+/// what makes this a match on the class path and not on the spelling.
+fn covers(c: &str, r: &str) -> bool {
+    r == c || (r.len() > c.len() && r.starts_with(c) && r.as_bytes()[c.len()] == b':')
+}
+
+#[cfg(test)]
+mod covers_tests {
+    use super::covers;
+
+    #[test]
+    fn a_class_covers_its_own_sub_resources_and_nothing_else() {
+        // the case this exists for: a grant whose resource carries the holder
+        assert!(covers("ui:read", "ui:read:domain:a11y-beta-1:abcd"));
+        assert!(covers("device:wayland", "device:wayland"));
+        // and the trap a bare starts_with would fall into
+        assert!(!covers("device:gpu", "device:gpuzzz"));
+        assert!(!covers("ui:read", "ui:readall"));
+        // a longer theme entry never matches a shorter resource
+        assert!(!covers("device:wayland", "device"));
+        assert!(!covers("ui:read:other", "ui:read"));
+        // an unrelated class is not covered
+        assert!(!covers("device:gpu", "device:wayland"));
+        // an empty theme entry must not match everything
+        assert!(!covers("", "device:gpu"));
     }
 }
