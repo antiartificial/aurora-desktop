@@ -595,3 +595,36 @@ fn a_managed_x11_window_is_decorated_and_an_override_redirect_one_never_is() {
         assert_eq!(c.capture("x3.png").bbox([240, 120, 10]).map(|b| (b.0, b.1)), Some((x0, y0)));
     }
 }
+
+/// The pointer has to SAY that an edge resizes, or the affordance may as well not exist.
+///
+/// This is the review note that produced `crate::cursor`: edge resize had worked for some time
+/// and nobody could find it, because eight logical pixels of grip with no cursor change is a
+/// secret. The shape is read back from the compositor rather than from a screenshot, because
+/// what matters is the decision, not how a given host draws an arrow.
+#[test]
+fn the_cursor_says_what_each_edge_and_corner_will_do() {
+    let (_t, mut c) = themed("1", "", &[]);
+    c.client_args(&["--size", "400x300", "--title", "Edges"]);
+    wait_deco(&c, "Edges");
+    let (x, y, w, h) = win_of(&c, "Edges");
+
+    let cursor = |cx: i32, cy: i32| -> String {
+        at(&c, cx as f64 + 0.5, cy as f64 + 0.5);
+        let r = c.inject_reply("state");
+        let v: serde_json::Value = serde_json::from_str(r.trim_start_matches("ok ")).unwrap();
+        v["cursor"].as_str().unwrap().to_string()
+    };
+
+    // Each edge, one pixel outside the frame: inside the grip, outside the client.
+    assert_eq!(cursor(x + w / 2, y + h), "Resize(S)", "bottom edge");
+    assert_eq!(cursor(x - 1, y + h / 2), "Resize(W)", "left edge");
+    assert_eq!(cursor(x + w, y + h / 2), "Resize(E)", "right edge");
+
+    // Corners are two edges at once, and they are what people actually aim for.
+    assert_eq!(cursor(x + w, y + h), "Resize(SE)", "bottom-right corner");
+    assert_eq!(cursor(x - 1, y + h), "Resize(SW)", "bottom-left corner");
+
+    // Well inside the client is the client's own business, and so is its cursor.
+    assert_eq!(cursor(x + w / 2, y + h / 2), "Default", "the middle of the window");
+}

@@ -111,6 +111,27 @@ impl Aurora {
         let deco = if on_dock || pointer.is_grabbed() { None } else { self.deco_hit(pos) };
         self.deco.hover = deco.as_ref().and_then(|(w, h)| crate::windeco::win_key(w).map(|k| (k, *h)));
         let under = if on_dock || deco.is_some() { None } else { self.surface_under(pos) };
+
+        // The pointer's SHAPE, from the hit test a click would use, so the two can never
+        // disagree -- a cursor that promises a resize where a click does something else is worse
+        // than no cursor at all. A grab in progress keeps whatever it started with: the pointer
+        // leaves the edge while you drag it, and flickering back to an arrow mid-resize reads as
+        // the drag having been dropped.
+        let shape = if pointer.is_grabbed() {
+            self.cursor
+        } else {
+            match deco.as_ref().map(|(_, h)| *h) {
+                Some(crate::shell::deco::Hit::Edge(e)) => crate::cursor::Shape::for_edges(e),
+                Some(crate::shell::deco::Hit::Close) => crate::cursor::Shape::Pointer,
+                Some(crate::shell::deco::Hit::Bar) => crate::cursor::Shape::Move,
+                None if hover.is_some() || on_indicator || on_deskbar => {
+                    crate::cursor::Shape::Pointer
+                }
+                None => crate::cursor::Shape::Default,
+            }
+        };
+        self.cursor = shape;
+
         pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);
     }

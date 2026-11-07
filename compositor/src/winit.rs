@@ -146,6 +146,9 @@ pub fn init_winit(
 
     backend.window().request_redraw();
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    // What the host has been told the pointer looks like. Kept so set_cursor is sent on a
+    // CHANGE and not on every pointer sample.
+    let mut shown_cursor = crate::cursor::Shape::Default;
 
     event_loop.handle().insert_source(winit, move |event, _, state| {
         match event {
@@ -155,7 +158,16 @@ pub fn init_winit(
                 state.set_host_scale(&output, scale_factor);
                 state.update_capture_constraints(&output);
             }
-            WinitEvent::Input(event) => state.process_input_event(event),
+            WinitEvent::Input(event) => {
+                state.process_input_event(event);
+                // Apply the pointer shape the motion just decided. Only when it CHANGES: winit
+                // forwards every set_cursor to the host compositor, and doing that per motion
+                // event would be a request per pointer sample.
+                if state.cursor != shown_cursor {
+                    shown_cursor = state.cursor;
+                    backend.window().set_cursor(shown_cursor.icon().into());
+                }
+            }
             WinitEvent::Redraw => {
                 crate::dnd::tick(state);
                 let size = backend.window_size();

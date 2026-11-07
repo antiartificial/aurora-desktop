@@ -63,6 +63,9 @@ pub struct Aurora {
     /// The surface of the client popup currently holding a pointer grab, if any. Kept so that
     /// the grab can be dropped once the popup is gone: see `Aurora::refocus_after_popup`.
     pub popup_grab_surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    /// What the pointer should look like right now, recomputed on every motion from the same
+    /// hit test a click would use. The backend applies it; see `crate::cursor`.
+    pub cursor: crate::cursor::Shape,
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, once `--xwayland` started it.
     pub x: Option<crate::xwayland::XState>,
@@ -201,6 +204,7 @@ impl Aurora {
             host_display: None,
             popups,
             popup_grab_surface: None,
+            cursor: Default::default(),
             xwayland_shell_state,
             x: None,
             text_input_state,

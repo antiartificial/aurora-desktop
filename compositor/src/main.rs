@@ -3,6 +3,7 @@
 mod handlers;
 
 mod capture;
+mod cursor;
 mod clipboard;
 mod deskbar;
 mod dnd;

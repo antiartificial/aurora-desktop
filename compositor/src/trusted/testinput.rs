@@ -184,6 +184,10 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             // Where the Deskbar is, device pixels, or null while it is not drawn (disabled, no windows, a fullscreen window).
             "deskbar": state.shell.deskbar_rect().filter(|_| state.shell.deskbar.show).map(|r| [r.x, r.y, r.w, r.h]),
             "restored": state.persist.as_ref().map(|p| p.restored),
+            // The pointer's shape. Exposed because it is an affordance -- a window you can
+            // resize from its edges is only resizable if the cursor says so -- and an affordance
+            // nothing can assert on is one that quietly stops working.
+            "cursor": format!("{:?}", state.cursor),
         });
         return format!("ok {v}");
     }
