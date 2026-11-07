@@ -72,10 +72,13 @@ if [ "$LIVE" = 1 ]; then
   [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || { echo "atlas-demo --live needs a graphical session" >&2; exit 2; }
   echo "atlas-demo: starting the compositor as a window on this desktop; close it to finish"
   "$COMP" >"$R/comp.log" 2>&1 & CP=$!
-  for _ in $(seq 200); do grep -q 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
+  for _ in $(seq 200); do grep -aq 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
   sock=$(grep -aoE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
   [ -n "$sock" ] || { echo "atlas-demo: the compositor created no socket; see $R/comp.log" >&2; exit 1; }
-  env -u DISPLAY WAYLAND_DISPLAY="$sock" HOME="$D" ATLAS_DIR="$D" "$ATLAS"
+  # Live keeps the REAL home, so the sidebar browses the actual filesystem -- the demo directory
+  # is only where it starts, because its README explains what you are looking at. The recorded
+  # reel overrides HOME instead, so the reel shows content chosen for it.
+  env -u DISPLAY WAYLAND_DISPLAY="$sock" ATLAS_DIR="$D" "$ATLAS"
   exit 0
 fi
 
