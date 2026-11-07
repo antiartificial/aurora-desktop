@@ -3164,6 +3164,8 @@ void Window::HandleKey(const au_key& kk) {
     Window* w = this;
     const au_key* k = &kk;
     w->keys_seen_++;
+    // The app's accelerators first: they must work wherever the focus is.
+    if (w->key_hook_ && w->key_hook_(*k)) return;
     // Tab moves focus. It is handled before the focused node sees the key, because a widget that
     // swallowed Tab would trap a keyboard user inside it.
     if (k->pressed && k->raw_char == '\t') {

@@ -752,6 +752,7 @@ private:
     void HandleKey(const au_key& k);
 
     uint32_t mods_ = 0;
+    std::function<bool(const au_key&)> key_hook_;
     std::atomic<bool> ext_dirty_{false};
     std::mutex size_mu_;
     int want_w_ = 0, want_h_ = 0;
@@ -800,6 +801,16 @@ public:
     // clicks; what was HELD comes from here, which is what lets a list tell a plain click from
     // a Ctrl-click without every node growing a new handler signature.
     uint32_t mods() const { return mods_; }
+
+    // An app-level accelerator, offered every key BEFORE the focused widget sees it. Return true
+    // to consume. This is where Back, Forward, Up and refresh live: they have to work wherever
+    // the focus happens to be, and routing them through whichever widget is focused would mean
+    // every widget knowing about navigation.
+    //
+    // It runs before Tab, so an app can override even that, and it is one hook rather than a
+    // registry because a window has one set of accelerators and a list of them with priorities
+    // would be machinery for a problem nobody has here yet.
+    void SetKeyHook(std::function<bool(const au_key&)> f) { key_hook_ = std::move(f); }
 
     // Clipboard, from a key handler.
     //

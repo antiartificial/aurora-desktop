@@ -48,6 +48,15 @@ fn keycode(name: &str) -> Option<Keycode> {
         "Right" => 106,
         "Down" => 108,
         "Return" => 28,
+        // Keys a file manager's shortcuts need, and which a test could not reach before: going
+        // up a directory is Backspace in every file manager there has ever been.
+        "BackSpace" => 14,
+        "Delete" => 111,
+        "Home" => 102,
+        "End" => 107,
+        "PageUp" => 104,
+        "PageDown" => 109,
+        "Insert" => 110,
         // Function keys. F2 is rename in every file manager; the rest are here because a table
         // missing half the keyboard makes a test write a workaround instead of the real gesture.
         "F1" => 59,

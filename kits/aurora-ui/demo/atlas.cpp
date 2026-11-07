@@ -419,10 +419,17 @@ int main() {
     State<float> sidebar(0.28f);
     Desc tree;                      // built below; `go` reveals into it, so it is named first
     bool revealing = false;         // the tree selecting a folder calls go, which reveals: once
-    std::vector<std::string> history;
+    std::vector<std::string> history, forward;
     State<std::string> status(std::to_string(rows.Count()) + " items");
     State<std::string> filter("");
     State<bool> filter_open(false);
+    // The location bar: Ctrl+L, or a click past the last breadcrumb segment. Separate from the
+    // filter because they mean opposite things -- one narrows what you are looking at, the other
+    // leaves for somewhere else -- and a single box that did both would have to guess which.
+    State<std::string> path_text("");
+    State<bool> path_edit(false);
+    path_text.bind(&w);
+    path_edit.bind(&w);
     status.bind(&w);
     filter.bind(&w);
     filter_open.bind(&w);
@@ -479,7 +486,13 @@ int main() {
     auto go = [&](const std::string& raw, bool record) {
         const std::string to = normalise(raw);
         if (to.empty()) return;
-        if (record && to != path.get()) history.push_back(path.get());
+        if (record && to != path.get()) {
+            history.push_back(path.get());
+            // A new destination ends the forward trail. Keeping it would offer to go "forward"
+            // to a place that is no longer anywhere ahead of you, which is the browser bug
+            // everyone has met.
+            forward.clear();
+        }
         const double ms = rows.Open(to);
         (void)ms;
         path.set(to);
@@ -508,6 +521,33 @@ int main() {
     // reason. The verbs come from registry.plumb@v1, so what the menu offers is what an
     // installed app's manifest actually claims -- Atlas does not know what a PNG can have done
     // to it, and should not.
+    // Back and forward are a pair of stacks and nothing cleverer: going back pushes where you
+    // were onto forward, going forward pushes it onto back. Neither records a new destination,
+    // which is what stops walking back and forth from filling the history with itself.
+    auto go_back = [&] {
+        if (history.empty()) return;
+        const std::string to = history.back();
+        history.pop_back();
+        forward.push_back(path.get());
+        go(to, false);
+    };
+    auto go_forward = [&] {
+        if (forward.empty()) return;
+        const std::string to = forward.back();
+        forward.pop_back();
+        history.push_back(path.get());
+        go(to, false);
+    };
+
+    // Opening it fills it with where you ARE and selects the lot, so typing replaces and
+    // Backspace edits -- which is what makes it useful both for jumping somewhere unrelated and
+    // for trimming a path by a segment.
+    auto open_path_bar = [&] {
+        path_text.set(path.get());
+        path_edit.set(true);
+        w.FocusNamed("pathbar");
+    };
+
     // ---- the preview pane ----
     //
     // docs/aurora-ui.md section 2: the explorer links NO decoder for image, video, PDF or
@@ -902,12 +942,8 @@ int main() {
         padding(HStack({
                     styled(Bold("Atlas"), TextStyle{1.35f, true}),
                     Spacer(),
-                    Button("Back", [&] {
-                        if (history.empty()) return;
-                        const std::string to = history.back();
-                        history.pop_back();
-                        go(to, false);
-                    }),
+                    Button("Back", [&] { go_back(); }),
+                    Button("Forward", [&] { go_forward(); }),
                     Button("Up", [&] { go(parent_of(path.get()), true); }),
                     Button("Preview", [&] {
                         preview_open.set(!preview_open.get());
@@ -927,9 +963,26 @@ int main() {
         // the axis is the stack's, which is the kind of thing a layout API should make harder to
         // get wrong than this one currently does.
         padding(named(Breadcrumb(&path, [&](const std::string& to) { go(to, true); },
-                                 [&] { filter_open.set(true); w.FocusNamed("filter"); }),
+                                 [&] { open_path_bar(); }),
                       "crumbs"),
                 0.25f),
+        // The location bar, above the filter. Enter goes there; Escape leaves it alone.
+        named(Reveal(&path_edit,
+                     padding(named(TextField(&path_text, nullptr,
+                                             [&](const std::string& to) {
+                                                 path_edit.set(false);
+                                                 go(to, true);
+                                                 w.FocusNamed("files");
+                                             },
+                                             [&] {
+                                                 path_edit.set(false);
+                                                 w.FocusNamed("files");
+                                             },
+                                             FieldOpts{"go to\u2026", false, 0, true}),
+                                   "pathbar"),
+                             0.5f),
+                     Transition{Motion::Reveal, 160, Curve::EaseOut}),
+              "pathbarreveal"),
         // Reveal: height animates 0 <-> natural on a cubic ease-out, 160 ms. The child keeps its
         // own layout and is clipped, so revealing never reflows the field's contents.
         named(Reveal(&filter_open,
@@ -1003,6 +1056,34 @@ int main() {
         filter_open.set(true);
         w.FocusNamed("filter");
     }
+    // The keys a file manager is expected to have, wherever the focus happens to be. These are
+    // the ones Dolphin, Finder and every browser agree on; an explorer that needed the mouse for
+    // "go up" would be one people stop using without being able to say why.
+    w.SetKeyHook([&](const au_key& k) -> bool {
+        if (!k.pressed) return false;
+        const bool alt = (k.mods & AU_MOD_ALT) != 0;
+        const bool ctrl = (k.mods & AU_MOD_CTRL) != 0;
+        if (alt && k.raw_char == 0x1c) { go_back(); return true; }        // Alt+Left
+        if (alt && k.raw_char == 0x1d) { go_forward(); return true; }     // Alt+Right
+        if (alt && k.raw_char == 0x1e) { go(parent_of(path.get()), true); return true; }  // Alt+Up
+        if (k.raw_char == 0x08) { go(parent_of(path.get()), true); return true; }         // Backspace
+        if (k.evdev == 63) {                                             // F5
+            go(path.get(), false);
+            last_action.set("refreshed");
+            return true;
+        }
+        if (ctrl && (k.utf8[0] == 'l' || k.utf8[0] == 'L')) {            // Ctrl+L: the location
+            open_path_bar();
+            return true;
+        }
+        if (ctrl && (k.utf8[0] == 'f' || k.utf8[0] == 'F')) {            // Ctrl+F: the filter
+            filter_open.set(true);
+            w.FocusNamed("filter");
+            return true;
+        }
+        return false;
+    });
+
     rows.SetOnChange([&w] { w.InvalidateThreadsafe(); });
     rows.StartWorker();
 
