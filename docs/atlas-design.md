@@ -403,6 +403,12 @@ Marks, drawn in the 0.6-luminance hue inside the page's lower 55%:
   (Music), the play triangle (Videos), a 3-line bin (Trash), a bare rectangle with a 1 px lower
   band (Desktop). At 16 px the marks are drawn; at 48 they are drawn at the 48 stroke.
 
+<figure class="wide">
+<img src="images/specimen-icons.png" alt="The nine icon kinds, the eight special-folder marks and the two badges, drawn at 48 px in the icons view and at 16 px in the details rows.">
+<figcaption>Generated, not drawn: these are the pixels <code>kits/aurora-ui</code> produces today, at scale 1.0 (<a href="images/specimen-icons-1.45x.png">and at 1.45</a>), so this sheet stays honest as the toolkit changes. The one picture C4.2 asks for: eight files whose kind you can tell with the names covered.</figcaption>
+</figure>
+
+
 ### 4.4 Behaviour by view
 
 - **Details**: 16 px, at x = 12, vertically centred in the 24 px row; the name follows 8 px
@@ -479,6 +485,24 @@ same seam when its decoder exists (`docs/file-navigator-plan.md` approved it; no
 a theme lists `name.hvif` and the rasteriser handles it; the cache and the widgets do not
 change. SVG is the authoring and interchange format; HVIF is the compact one.
 
+```mermaid
+flowchart TD
+  A["a row needs an icon<br/>key: source id, logical size, scale"] --> B{"thumbnail from preview@v1?<br/>grid and preview only, Phase 3"}
+  B -- "yes, already rasterised" --> Z["blit the cached ARGB, 1:1"]
+  B -- "no, or not rasterised yet" --> C{"theme entry for this exact<br/>MIME type or extension?"}
+  C -- "yes, already rasterised" --> Z
+  C -- "no, or not rasterised yet" --> D{"theme entry for one of<br/>the nine kinds?"}
+  D -- "yes, already rasterised" --> Z
+  D -- "no, or not rasterised yet" --> E["procedural: section 4.3<br/>always present, never fails"]
+  E --> Z
+  Z --> F["Atlas composites the badge<br/>link, broken, and the hidden opacity"]
+  B -. "not rasterised yet: ask the verb,<br/>off-thread, 200 ms budget" .-> R["icon.rasterise@v1<br/>one file, read-only domain,<br/>raw ARGB back"]
+  C -. "" .-> R
+  D -. "" .-> R
+  R -. "lands on a later frame" .-> A
+```
+
+
 **Bitmap format.** PNG only (8-bit, RGB or RGBA, no interlace), at most 2 MiB and 1024 px a
 side. A theme need not supply every size. Picking one for a needed device size `n`: the
 smallest supplied size whose device size is >= `n` is downscaled with Lanczos3 (the compositor's
@@ -552,6 +576,12 @@ rule, and the Name column absorbs every pixel in between.
 | Modified | 132 | 96 | right | never: the format steps down by width (below) | >= 600 |
 | Kind | 120 | 96 | left | end ellipsis | >= 900 |
 | Created by (Phase 3) | 160 | 120 | left | end ellipsis; "unknown" in `text-2` when indexd has nothing | >= 1100 and switched on |
+
+<figure class="wide">
+<img src="images/specimen-columns.png" alt="The same listing rendered at 520, 760 and 1000 px wide: columns appear whole as the width crosses their thresholds, and the Name column absorbs the slack.">
+<figcaption>The width rule, as pixels (<a href="images/specimen-columns-1.45x.png">at scale 1.45</a>). Nothing is ever cut mid-value: Modified appears whole at 600 and Kind at 900, and between the thresholds every spare pixel goes to Name. Kind's own end-ellipsis on "OpenDocument sheet" is the other half of the rule -- a column elides its own text inside its width, it does not steal from its neighbour.</figcaption>
+</figure>
+
 
 Modified format, chosen by the column's current width: at >= 120, "Today 12:56", "Yesterday
 09:14", "3 Nov 14:02" (this year), "4 Mar 2025" (other years); between 96 and 119 the time is
@@ -701,6 +731,58 @@ Contrast of the halo against every surface it can sit on, both schemes, WCAG 2 n
 `selection-unfocused` 4.0 / 3.5. The 1 px gap is what keeps the halo legible around an `accent`
 fill: without it the ring and the fill are one shape.
 
+<figure class="wide">
+<svg viewBox="0 0 1000 540" role="img" aria-labelledby="fig-halo">
+  <title id="fig-halo">The focus halo's geometry around a details row, magnified six times</title>
+  <rect x="30" y="50" width="600" height="144" class="dg-surface"/>
+  <rect x="30" y="194" width="600" height="144" class="dg-alt"/>
+  <rect x="30" y="338" width="600" height="144" class="dg-surface"/>
+  <line x1="30" y1="194" x2="630" y2="194" class="dg-line"/>
+  <line x1="30" y1="338" x2="630" y2="338" class="dg-line"/>
+  <!-- the neighbours' text, so the overhang has something to overhang -->
+  <text x="78" y="130" class="dg-mono">README.md</text>
+  <text x="78" y="274" class="dg-mono">main.rs</text>
+  <text x="78" y="418" class="dg-mono">photo.png</text>
+  <!-- the selection fill: inset 4 / 1, radius 5 -->
+  <rect x="54" y="200" width="552" height="132" rx="30" class="dg-accent" opacity="0.35"/>
+  <!-- the halo: a 2 px ring whose outer edge is 3 px into each neighbour -->
+  <rect x="36" y="182" width="588" height="168" rx="42" class="dg-mark" stroke-width="12"/>
+  <!-- the overhang brackets -->
+  <g class="dg-edge" stroke-dasharray="4 4">
+    <line x1="30" y1="182" x2="700" y2="182"/>
+    <line x1="30" y1="350" x2="700" y2="350"/>
+  </g>
+  <g class="dg-edge">
+    <line x1="660" y1="50" x2="660" y2="194"/>
+    <line x1="655" y1="50" x2="665" y2="50"/>
+    <line x1="655" y1="194" x2="665" y2="194"/>
+  </g>
+  <text x="672" y="126" class="dg-mono">row 24</text>
+  <!-- callouts -->
+  <g class="dg-edge">
+    <line x1="606" y1="266" x2="760" y2="266"/>
+    <line x1="624" y1="182" x2="760" y2="150"/>
+    <line x1="612" y1="192" x2="760" y2="206"/>
+    <line x1="700" y1="350" x2="740" y2="372"/>
+  </g>
+  <text x="768" y="146" class="dg-label">halo: 2 px in `focus`,</text>
+  <text x="768" y="162" class="dg-label">radius 7 = element radius + 2</text>
+  <text x="768" y="202" class="dg-label">1 px gap, in the row's own</text>
+  <text x="768" y="218" class="dg-label">surface (`content-alt` here)</text>
+  <text x="768" y="262" class="dg-label">selection fill: inset 4 / 1,</text>
+  <text x="768" y="278" class="dg-label">radius 5, 22 px of the 24</text>
+  <text x="708" y="376" class="dg-label">the outer edge is 3 px into</text>
+  <text x="708" y="392" class="dg-label">the row above and below:</text>
+  <text x="708" y="408" class="dg-label">the halo is drawn after every</text>
+  <text x="708" y="424" class="dg-label">row, and its damage is the</text>
+  <text x="708" y="440" class="dg-label">cursor row plus 3 px each side</text>
+  <text x="30" y="512" class="dg-label">Magnified six times. The same construction at the other radii: 10 around a tile (fill radius 8), 8 around a sidebar item (6), 8 around a toolbar button (6). A field has none:</text>
+  <text x="30" y="528" class="dg-label">its 2 px `focus` border is its focus state, and the two must never stack.</text>
+</svg>
+<figcaption>Section 6.3. The gap is what makes the ring read as a ring: `focus` and `accent` are the same value today, so a halo drawn tight against an accent fill is not a ring around a selection but one fatter selection.</figcaption>
+</figure>
+
+
 **When the halo shows.** It follows keyboard use, the way every current platform does it
 (`:focus-visible`, Windows 11, Finder's Full Keyboard Access): it appears on the first keyboard
 navigation (`Tab`, arrows, `Home`, `End`, `Page` keys, type-ahead) and stays on the cursor
@@ -721,6 +803,12 @@ halo is restored to whatever it was. The halo is never shown on hover.
 | cursor only (not selected), pane focused | halo only, no fill | halo only | n/a |
 | cursor only, pane unfocused | nothing (the cursor is remembered, not drawn) | nothing | n/a |
 | hovered and selected | the selection wins; no hover fill; halo unchanged | same | same |
+
+<figure class="wide">
+<img src="images/specimen-row-states.png" alt="Eight details rows, each in one of the selection, focus and hover states, drawn side by side for comparison.">
+<figcaption>The table above, rasterised by the real <code>ListView</code> (<a href="images/specimen-row-states-1.45x.png">at scale 1.45</a>). A state that renders like another state is a correctness bug in this codebase, not a cosmetic one, and this is the sheet that makes it checkable by eye. One picture is missing from it: the pointer-driven selection, which is the keyboard one <em>without</em> the halo. Headless, a list has no window, and the halo follows the window's <code>keyboard_driven</code> flag, so two strips would have coincided rather than differed.</figcaption>
+</figure>
+
 
 So a screenshot with the content focused and three rows selected after a `Shift+Down` shows
 three `accent` rows, the last with a halo; a click in the sidebar turns them
@@ -1038,6 +1126,77 @@ site. A call site names a token; it never writes a number.
 | `select` | 0 | `linear` | the selection fill and halo moving; **0 by default** |
 | `scroll` | 0 | `enter` | the wheel step once pixel scrolling exists; **0 by default** |
 | `sweep` | 900, looping | `linear` | the loading hairline |
+
+<figure class="wide">
+<svg viewBox="0 0 1000 472" role="img" aria-labelledby="fig-motion">
+  <title id="fig-motion">The motion tokens: what each one lasts, and the curve it resolves to</title>
+  <line x1="220.0" y1="44" x2="220.0" y2="368.0" class="dg-line"/>
+  <text x="220.0" y="36" class="dg-mono" text-anchor="middle">0 ms</text>
+  <line x1="322.0" y1="44" x2="322.0" y2="368.0" class="dg-line"/>
+  <text x="322.0" y="36" class="dg-mono" text-anchor="middle">50 ms</text>
+  <line x1="424.0" y1="44" x2="424.0" y2="368.0" class="dg-line"/>
+  <text x="424.0" y="36" class="dg-mono" text-anchor="middle">100 ms</text>
+  <line x1="526.0" y1="44" x2="526.0" y2="368.0" class="dg-line"/>
+  <text x="526.0" y="36" class="dg-mono" text-anchor="middle">150 ms</text>
+  <line x1="628.0" y1="44" x2="628.0" y2="368.0" class="dg-line"/>
+  <text x="628.0" y="36" class="dg-mono" text-anchor="middle">200 ms</text>
+  <line x1="730.0" y1="44" x2="730.0" y2="368.0" class="dg-line"/>
+  <text x="730.0" y="36" class="dg-mono" text-anchor="middle">250 ms</text>
+  <text x="20" y="90.0" class="dg-mono">reveal</text>
+  <text x="92" y="90.0" class="dg-label">enter</text>
+  <text x="748.0" y="90.0" class="dg-label">a pane or bar appearing</text>
+  <path d="M 220.0 90.0 C 220.0 90.0 220.0 68.0 546.4 68.0" class="dg-mark" stroke-width="2"/>
+  <line x1="546.4" y1="68.0" x2="730.0" y2="68.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="552.4" y="78.0" class="dg-mono">160</text>
+  <text x="20" y="128.0" class="dg-mono">conceal</text>
+  <text x="92" y="128.0" class="dg-label">exit</text>
+  <text x="748.0" y="128.0" class="dg-label">the same pane leaving</text>
+  <path d="M 220.0 128.0 C 317.9 128.0 464.8 106.0 464.8 106.0" class="dg-mark" stroke-width="2"/>
+  <line x1="464.8" y1="106.0" x2="730.0" y2="106.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="470.8" y="116.0" class="dg-mono">120</text>
+  <text x="20" y="166.0" class="dg-mono">fade</text>
+  <text x="92" y="166.0" class="dg-label">linear</text>
+  <text x="748.0" y="166.0" class="dg-label">opacity only: the pill</text>
+  <path d="M 220.0 166.0 L 424.0 144.0" class="dg-mark" stroke-width="2"/>
+  <line x1="424.0" y1="144.0" x2="730.0" y2="144.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="430.0" y="154.0" class="dg-mono">100</text>
+  <text x="20" y="204.0" class="dg-mono">promote</text>
+  <text x="92" y="204.0" class="dg-label">enter</text>
+  <text x="748.0" y="204.0" class="dg-label">a colour change: glass</text>
+  <path d="M 220.0 204.0 C 220.0 204.0 220.0 182.0 628.0 182.0" class="dg-mark" stroke-width="2"/>
+  <line x1="628.0" y1="182.0" x2="730.0" y2="182.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="634.0" y="192.0" class="dg-mono">200</text>
+  <text x="20" y="242.0" class="dg-mono">emphasis</text>
+  <text x="92" y="242.0" class="dg-label">enter-emphasised</text>
+  <text x="748.0" y="242.0" class="dg-label">a large arrival</text>
+  <path d="M 220.0 242.0 C 240.4 226.6 260.8 220.0 628.0 220.0" class="dg-mark" stroke-width="2"/>
+  <line x1="628.0" y1="220.0" x2="730.0" y2="220.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="634.0" y="230.0" class="dg-mono">200</text>
+  <text x="20" y="280.0" class="dg-mono">hover</text>
+  <text x="92" y="280.0" class="dg-label">linear</text>
+  <text x="748.0" y="280.0" class="dg-label">row, tile, button hover</text>
+  <line x1="220.0" y1="280.0" x2="220.0" y2="258.0" class="dg-mark" stroke-width="2"/>
+  <line x1="220.0" y1="258.0" x2="730.0" y2="258.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="228.0" y="270.0" class="dg-mono">0 by default</text>
+  <text x="20" y="318.0" class="dg-mono">select</text>
+  <text x="92" y="318.0" class="dg-label">linear</text>
+  <text x="748.0" y="318.0" class="dg-label">the fill and halo moving</text>
+  <line x1="220.0" y1="318.0" x2="220.0" y2="296.0" class="dg-mark" stroke-width="2"/>
+  <line x1="220.0" y1="296.0" x2="730.0" y2="296.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="228.0" y="308.0" class="dg-mono">0 by default</text>
+  <text x="20" y="356.0" class="dg-mono">scroll</text>
+  <text x="92" y="356.0" class="dg-label">enter</text>
+  <text x="748.0" y="356.0" class="dg-label">the wheel step</text>
+  <line x1="220.0" y1="356.0" x2="220.0" y2="334.0" class="dg-mark" stroke-width="2"/>
+  <line x1="220.0" y1="334.0" x2="730.0" y2="334.0" class="dg-edge" stroke-dasharray="3 3"/>
+  <text x="228.0" y="346.0" class="dg-mono">0 by default</text>
+  <text x="20" y="396.0" class="dg-label">Each line is the eased progress of the quantity itself: flat is no movement, steep is movement. The three zeroes are deliberate. A hover fade is cheap once and ruinous as a</text>
+  <text x="20" y="412.0" class="dg-label">pattern -- a pointer crossing forty rows a second starts forty of them, each a tick source, and the window stops sleeping for as long as the pointer moves. The primitive</text>
+  <text x="20" y="428.0" class="dg-label">supports every one of them, so the exploration the user wants is setting a number here and judging it. `sweep`, the 900 ms looping loading hairline, is off this scale.</text>
+</svg>
+<figcaption>Sections 7.1 and 7.2. A call site names a token, never a duration, so changing how Atlas moves is an edit to this table rather than surgery on call sites.</figcaption>
+</figure>
+
 
 Curves, as the visual system names them (5.1), with the bezier control points so the toolkit's
 evaluator is the same as the compositor's: `enter` (0, 0, 0, 1), `enter-emphasised`

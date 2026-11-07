@@ -376,6 +376,12 @@ by the list, the grid, the text view and the tree.
 
 `Atlas` (`demo/atlas.cpp`) is built from exactly these and nothing else.
 
+<figure class="wide">
+<img src="images/specimen-controls.png" alt="The toolkit's controls: buttons at rest, hovered, pressed and disabled, glyph buttons, checkboxes, a switch, a radio group, a slider, a progress bar and two text fields.">
+<figcaption>What the list above looks like (<a href="images/specimen-controls-1.45x.png">at scale 1.45</a>). Hover and press here are node state driven through the same calls a window makes, not colours a drawing chose. Regenerate with <code>kits/build/interface/ui_specimen docs/images</code>.</figcaption>
+</figure>
+
+
 **Specified here and not built.** `ColumnView` (section 3). The `Selection`
 value as a struct — selection is still a single index per view (section 4).
 Sort-as-snapshot, including clicking a column header to sort (section 5). The

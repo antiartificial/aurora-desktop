@@ -1468,6 +1468,42 @@ disagreement and not a settled fact.
 | `move` | `(0.2,0,0,1)` | M3 standard [M3-TOKENS] | visible-to-visible moves of a surface already on screen |
 | `fade` | identity | CSS `linear` [CSS-EASING] | opacity only; never position |
 
+<figure>
+<svg viewBox="0 0 560 390" role="img" aria-labelledby="fig-curves">
+  <title id="fig-curves">The five curves of the system, on one unit square</title>
+  <rect x="56" y="24" width="240" height="240" class="dg-alt"/>
+  <rect x="56" y="24" width="240" height="240" class="dg-line"/>
+  <line x1="56" y1="264" x2="296" y2="24" class="dg-line" stroke-dasharray="3 3"/>
+  <path d="M 56 264 C 56 264 56 24 296 24" class="dg-mark" stroke-width="2" opacity="1.00"/>
+  <line x1="310" y1="54" x2="326" y2="54" class="dg-mark" stroke-width="2" opacity="1.00"/>
+  <text x="334" y="58" class="dg-mono">enter</text>
+  <text x="334" y="70" class="dg-label">anything arriving</text>
+  <path d="M 56 264 C 68 96 80 24 296 24" class="dg-mark" stroke-width="2" opacity="0.86"/>
+  <line x1="310" y1="80" x2="326" y2="80" class="dg-mark" stroke-width="2" opacity="0.86"/>
+  <text x="334" y="84" class="dg-mono">enter-emphasised</text>
+  <text x="334" y="96" class="dg-label">a large arrival</text>
+  <path d="M 56 264 C 152 264 296 24 296 24" class="dg-mark" stroke-width="2" opacity="0.72"/>
+  <line x1="310" y1="106" x2="326" y2="106" class="dg-mark" stroke-width="2" opacity="0.72"/>
+  <text x="334" y="110" class="dg-mono">exit</text>
+  <text x="334" y="122" class="dg-label">anything leaving</text>
+  <path d="M 56 264 C 104 264 56 24 296 24" class="dg-mark" stroke-width="2" opacity="0.58"/>
+  <line x1="310" y1="132" x2="326" y2="132" class="dg-mark" stroke-width="2" opacity="0.58"/>
+  <text x="334" y="136" class="dg-mono">move</text>
+  <text x="334" y="148" class="dg-label">already on screen</text>
+  <line x1="310" y1="158" x2="326" y2="158" class="dg-line" stroke-dasharray="3 3" stroke-width="2"/>
+  <text x="334" y="162" class="dg-mono">linear</text>
+  <text x="334" y="174" class="dg-label">opacity only</text>
+  <text x="176" y="282" class="dg-label" text-anchor="middle">time</text>
+  <text x="38" y="144" class="dg-label" text-anchor="middle" transform="rotate(-90 38 144)">progress</text>
+  <text x="20" y="310" class="dg-label">Every curve but `exit` leaves at full speed and arrives slowly, which is</text>
+  <text x="20" y="326" class="dg-label">what makes something the person started feel immediate. `move` is the</text>
+  <text x="20" y="342" class="dg-label">one place the zero onset is right: the surface is already on screen, so</text>
+  <text x="20" y="358" class="dg-label">continuity matters more than onset.</text>
+</svg>
+<figcaption>Section 5.1. A curve is a value a caller passes, not a branch inside each animating node, which is what makes adding one a row of a table.</figcaption>
+</figure>
+
+
 `move` is the one place the zero-onset curve is correct: the surface is
 already on screen and continuity matters more than onset, which is also the
 one case with real experimental support in the other direction (section 5.5).
@@ -1541,6 +1577,90 @@ M3 50..1000 in 50 ms steps [M3-TOKENS]:
 | trusted overlay rise | 150 | — | `enter-emphasised` | |
 | trusted overlay fall | — | 100 | `exit` | |
 | theme hot reload | 0 | 0 | none | a theme change snaps; animating it would hide what changed |
+
+<figure class="wide">
+<svg viewBox="0 0 1000 440" role="img" aria-labelledby="fig-dur">
+  <title id="fig-dur">Every duration in the system, against the latency thresholds they were chosen against</title>
+  <line x1="300" y1="44" x2="300" y2="330" class="dg-line"/>
+  <text x="300" y="36" class="dg-mono" text-anchor="middle">0</text>
+  <line x1="400" y1="44" x2="400" y2="330" class="dg-line"/>
+  <text x="400" y="36" class="dg-mono" text-anchor="middle">50</text>
+  <line x1="500" y1="44" x2="500" y2="330" class="dg-line"/>
+  <text x="500" y="36" class="dg-mono" text-anchor="middle">100</text>
+  <line x1="600" y1="44" x2="600" y2="330" class="dg-line"/>
+  <text x="600" y="36" class="dg-mono" text-anchor="middle">150</text>
+  <line x1="700" y1="44" x2="700" y2="330" class="dg-line"/>
+  <text x="700" y="36" class="dg-mono" text-anchor="middle">200</text>
+  <line x1="800" y1="44" x2="800" y2="330" class="dg-line"/>
+  <text x="800" y="36" class="dg-mono" text-anchor="middle">250</text>
+  <text x="560" y="20" class="dg-mono" text-anchor="middle">milliseconds</text>
+  <text x="20" y="64" class="dg-mono">dock item hover highlight</text>
+  <text x="836" y="64" class="dg-label">fade</text>
+  <rect x="300" y="52" width="200" height="7" rx="3" class="dg-accent"/>
+  <text x="505" y="59" class="dg-mono">100</text>
+  <rect x="300" y="62" width="200" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="505" y="69" class="dg-mono">100</text>
+  <text x="20" y="90" class="dg-mono">dock item press</text>
+  <text x="836" y="90" class="dg-label">spring</text>
+  <rect x="300" y="78" width="100" height="7" rx="3" class="dg-accent"/>
+  <text x="405" y="85" class="dg-mono">50</text>
+  <rect x="300" y="88" width="200" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="505" y="95" class="dg-mono">100</text>
+  <text x="20" y="116" class="dg-mono">window open</text>
+  <text x="836" y="116" class="dg-label">enter-emphasised</text>
+  <rect x="300" y="104" width="400" height="7" rx="3" class="dg-accent"/>
+  <text x="705" y="111" class="dg-mono">200</text>
+  <text x="20" y="142" class="dg-mono">window close</text>
+  <text x="836" y="142" class="dg-label">exit</text>
+  <rect x="300" y="140" width="300" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="605" y="147" class="dg-mono">150</text>
+  <text x="20" y="168" class="dg-mono">popup / menu open</text>
+  <text x="836" y="168" class="dg-label">enter / exit</text>
+  <rect x="300" y="156" width="200" height="7" rx="3" class="dg-accent"/>
+  <text x="505" y="163" class="dg-mono">100</text>
+  <rect x="300" y="166" width="200" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="505" y="173" class="dg-mono">100</text>
+  <text x="20" y="194" class="dg-mono">switcher open</text>
+  <text x="836" y="194" class="dg-label">spring</text>
+  <rect x="300" y="182" width="400" height="7" rx="3" class="dg-accent"/>
+  <text x="705" y="189" class="dg-mono">200</text>
+  <text x="20" y="220" class="dg-mono">switcher close</text>
+  <text x="836" y="220" class="dg-label">exit</text>
+  <rect x="300" y="218" width="300" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="605" y="225" class="dg-mono">150</text>
+  <text x="20" y="246" class="dg-mono">trusted overlay rise</text>
+  <text x="836" y="246" class="dg-label">enter-emphasised</text>
+  <rect x="300" y="234" width="300" height="7" rx="3" class="dg-accent"/>
+  <text x="605" y="241" class="dg-mono">150</text>
+  <text x="20" y="272" class="dg-mono">trusted overlay fall</text>
+  <text x="836" y="272" class="dg-label">exit</text>
+  <rect x="300" y="270" width="200" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="505" y="277" class="dg-mono">100</text>
+  <text x="20" y="298" class="dg-mono">Atlas reveal / conceal</text>
+  <text x="836" y="298" class="dg-label">enter / exit</text>
+  <rect x="300" y="286" width="320" height="7" rx="3" class="dg-accent"/>
+  <text x="625" y="293" class="dg-mono">160</text>
+  <rect x="300" y="296" width="240" height="7" rx="3" class="dg-soft" opacity="0.5"/>
+  <text x="545" y="303" class="dg-mono">120</text>
+  <text x="20" y="324" class="dg-mono">theme hot reload</text>
+  <text x="836" y="324" class="dg-label">none</text>
+  <text x="304" y="324" class="dg-mono">it snaps: animating a theme change would hide what changed</text>
+  <line x1="364" y1="44" x2="364" y2="348" class="dg-mark" stroke-dasharray="4 4"/>
+  <text x="364" y="362" class="dg-mono" text-anchor="middle">32</text>
+  <line x1="410" y1="44" x2="410" y2="348" class="dg-mark" stroke-dasharray="4 4"/>
+  <text x="410" y="362" class="dg-mono" text-anchor="middle">55</text>
+  <line x1="492" y1="44" x2="492" y2="348" class="dg-mark" stroke-dasharray="4 4"/>
+  <text x="492" y="362" class="dg-mono" text-anchor="middle">96</text>
+  <line x1="700" y1="44" x2="700" y2="348" class="dg-mark" stroke-dasharray="4 4"/>
+  <text x="700" y="362" class="dg-mono" text-anchor="middle">200</text>
+  <text x="20" y="390" class="dg-label">The dashed marks are measurements, not taste. 32 ms is where visual feedback to a press is still perceived as simultaneous; 55 and 96 ms are the just-noticeable</text>
+  <text x="20" y="406" class="dg-label">differences for added latency when dragging and when tapping; 200 ms is the ceiling that follows from them. The solid bar is the enter, the faint one the exit. An ease-in</text>
+  <text x="20" y="422" class="dg-label">curve on a 200 ms animation covers 1.2 per cent in the first frame, which manufactures 30 to 60 ms of "nothing visibly happened" -- squarely inside that discrimination</text>
+  <text x="20" y="438" class="dg-label">range. Window open is the longest thing on the list because it is the only one where the person has to find out WHERE the new window went.</text>
+</svg>
+<figcaption>Section 5.3, with the evidence of 5.5 on the same axis. The values are snapped to the grid the platforms already use: Kirigami 50/100/200/400, Fluent 50 to 500, M3 in 50 ms steps.</figcaption>
+</figure>
+
 
 **And there is a second, compositor-specific reason to keep the effects pass
 cheap, which belongs here rather than in section 11.** Blur does not only cost

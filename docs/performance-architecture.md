@@ -178,15 +178,79 @@ otherwise) and is allowed to cost the worst case once.
 
 ### 1.2 The pipeline, client damage to scanout
 
-```
-client:  input -> node damage -> Draw (clip to damage) -> copy damage to pooled shm -> damage_buffer + frame + commit
-         (toolkit draws only after the previous frame's callback, section 6)
-comp:    commit -> import damaged rects -> surface damage -> output damage (+ blur reach)
-         -> recompose dirty region of the persistent scene (section 3)
-         -> present (winit: one textured quad + swap; DRM: page flip of the scanout buffer)
-output:  vblank -> frame callbacks to clients whose buffers were shown -> clients draw the next frame
-```
-
+<figure class="wide">
+<svg viewBox="0 0 1000 340" role="img" aria-labelledby="fig-pipe">
+  <title id="fig-pipe">One frame, from the keystroke that caused it to the vblank that shows it</title>
+  <text x="20" y="74" class="dg-label">client</text>
+  <text x="20" y="90" class="dg-mono">toolkit</text>
+  <text x="20" y="174" class="dg-label">compositor</text>
+  <text x="20" y="264" class="dg-label">output</text>
+  <g class="dg-alt">
+    <rect x="100" y="46" width="880" height="56" rx="6"/>
+    <rect x="100" y="146" width="880" height="56" rx="6"/>
+    <rect x="100" y="236" width="880" height="42" rx="6"/>
+  </g>
+  <g class="dg-surface">
+    <rect x="112" y="56" width="120" height="36" rx="5"/>
+    <rect x="248" y="56" width="140" height="36" rx="5"/>
+    <rect x="404" y="56" width="166" height="36" rx="5"/>
+    <rect x="586" y="56" width="166" height="36" rx="5"/>
+    <rect x="768" y="56" width="200" height="36" rx="5"/>
+  </g>
+  <g class="dg-line">
+    <rect x="112" y="56" width="120" height="36" rx="5"/>
+    <rect x="248" y="56" width="140" height="36" rx="5"/>
+    <rect x="404" y="56" width="166" height="36" rx="5"/>
+    <rect x="586" y="56" width="166" height="36" rx="5"/>
+    <rect x="768" y="56" width="200" height="36" rx="5"/>
+  </g>
+  <text x="172" y="79" class="dg-mono" text-anchor="middle">input</text>
+  <text x="318" y="79" class="dg-mono" text-anchor="middle">node damage</text>
+  <text x="487" y="79" class="dg-mono" text-anchor="middle">Draw, clipped to it</text>
+  <text x="669" y="79" class="dg-mono" text-anchor="middle">copy to pooled shm</text>
+  <text x="868" y="79" class="dg-mono" text-anchor="middle">damage_buffer + commit</text>
+  <g class="dg-surface">
+    <rect x="112" y="156" width="170" height="36" rx="5"/>
+    <rect x="298" y="156" width="150" height="36" rx="5"/>
+    <rect x="464" y="156" width="210" height="36" rx="5"/>
+    <rect x="690" y="156" width="170" height="36" rx="5"/>
+    <rect x="876" y="156" width="92" height="36" rx="5"/>
+  </g>
+  <g class="dg-line">
+    <rect x="112" y="156" width="170" height="36" rx="5"/>
+    <rect x="298" y="156" width="150" height="36" rx="5"/>
+    <rect x="464" y="156" width="210" height="36" rx="5"/>
+    <rect x="690" y="156" width="170" height="36" rx="5"/>
+    <rect x="876" y="156" width="92" height="36" rx="5"/>
+  </g>
+  <text x="197" y="179" class="dg-mono" text-anchor="middle">import damaged rects</text>
+  <text x="373" y="179" class="dg-mono" text-anchor="middle">surface damage</text>
+  <text x="569" y="179" class="dg-mono" text-anchor="middle">output damage + blur reach</text>
+  <text x="775" y="179" class="dg-mono" text-anchor="middle">recompose dirty</text>
+  <text x="922" y="179" class="dg-mono" text-anchor="middle">present</text>
+  <g class="dg-surface"><rect x="876" y="244" width="92" height="26" rx="5"/></g>
+  <g class="dg-line"><rect x="876" y="244" width="92" height="26" rx="5"/></g>
+  <text x="922" y="261" class="dg-mono" text-anchor="middle">vblank</text>
+  <!-- the flow -->
+  <g class="dg-edge">
+    <line x1="232" y1="74" x2="246" y2="74"/>
+    <line x1="388" y1="74" x2="402" y2="74"/>
+    <line x1="570" y1="74" x2="584" y2="74"/>
+    <line x1="752" y1="74" x2="766" y2="74"/>
+    <path d="M 968 92 L 988 92 L 988 130 L 90 130 L 90 174 L 110 174"/>
+    <line x1="282" y1="174" x2="296" y2="174"/>
+    <line x1="448" y1="174" x2="462" y2="174"/>
+    <line x1="674" y1="174" x2="688" y2="174"/>
+    <line x1="860" y1="174" x2="874" y2="174"/>
+    <line x1="922" y1="192" x2="922" y2="242"/>
+  </g>
+  <!-- the return: a frame callback is permission to draw the next one -->
+  <path d="M 922 272 L 922 312 L 68 312 L 68 100 L 108 100" class="dg-mark" stroke-dasharray="5 4"/>
+  <text x="112" y="330" class="dg-label">frame callback: the toolkit draws the NEXT frame only after this arrives, so a client that renders faster than the output simply does not</text>
+  <text x="120" y="228" class="dg-label">a frame with no demand costs 0 ms and produces no callbacks</text>
+</svg>
+<figcaption>Section 1.2. Damage is the unit at every hop: the toolkit clips its draw to it, the copy carries only it, the compositor imports only it, and the only place it is allowed to grow is where glass reaches past it.</figcaption>
+</figure>
 ### 1.3 The budget, split by phase
 
 Two columns because the toolkit, the compositor and the shell must all still fit at 120 Hz,
@@ -301,6 +365,37 @@ every frame because the scene is rebuilt every frame).
   DRM discards it as `_age` today) and the scene-generation age on the other backends.
   Captures that need a full frame read the scene texture, which is always complete, rather
   than forcing a full repaint.
+
+<figure class="wide">
+<svg viewBox="0 0 1000 300" role="img" aria-labelledby="fig-reach">
+  <title id="fig-reach">The one place damage is allowed to grow: a surface whose glass reaches into it</title>
+  <rect x="40" y="40" width="440" height="220" class="dg-alt"/>
+  <rect x="40" y="40" width="440" height="220" class="dg-line"/>
+  <rect x="40" y="40" width="440" height="26" class="dg-surface"/>
+  <rect x="40" y="40" width="440" height="26" class="dg-line"/>
+  <text x="52" y="57" class="dg-mono">chrome glass</text>
+  <rect x="150" y="120" width="180" height="16" class="dg-accent"/>
+  <text x="160" y="160" class="dg-mono">one row changed</text>
+  <text x="40" y="286" class="dg-label">What the client damaged: 180 x 16, and nothing else is redrawn.</text>
+
+  <rect x="520" y="40" width="440" height="220" class="dg-alt"/>
+  <rect x="520" y="40" width="440" height="220" class="dg-line"/>
+  <rect x="520" y="40" width="440" height="26" class="dg-surface"/>
+  <rect x="520" y="40" width="440" height="26" class="dg-line"/>
+  <text x="532" y="57" class="dg-mono">chrome glass</text>
+  <text x="948" y="57" class="dg-mono" text-anchor="end">recomputes</text>
+  <rect x="630" y="120" width="180" height="16" class="dg-accent"/>
+  <rect x="568" y="58" width="304" height="140" rx="4" class="dg-mark" stroke-dasharray="6 4"/>
+  <text x="576" y="214" class="dg-label">the damaged rect, dilated by the reach</text>
+  <text x="576" y="230" class="dg-label">of every glass surface over it: 33 px for</text>
+  <text x="576" y="246" class="dg-label">window glass, 62 px for chrome</text>
+  <text x="520" y="286" class="dg-label">The chrome's blur chain recomputes only because its reach touches that rect; nothing else does.</text>
+  <text x="40" y="24" class="dg-mono">damage as the client sent it</text>
+  <text x="520" y="24" class="dg-mono">damage as the compositor must treat it</text>
+</svg>
+<figcaption>Sections 2.3 and 3.2. Reach is a number from the blur's own kernel, so "which surfaces must recompute" is a rectangle test rather than a judgement call -- and a surface whose reach does not touch the damage keeps its cached chain at zero cost.</figcaption>
+</figure>
+
 
 ### 2.4 What makes it verifiable
 

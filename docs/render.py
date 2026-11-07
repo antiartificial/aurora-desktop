@@ -110,6 +110,10 @@ body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:
    colour tokens via currentColor and the .dg-* classes, so one drawing serves both schemes. */
 figure{margin:0 0 24px;max-width:var(--measure)}
 figure svg,figure .mermaid{display:block;max-width:100%;height:auto;margin:0 auto}
+/* A generated specimen sheet is a screenshot of a dark interface and does not follow the page's
+   scheme, so it gets its own frame and padding rather than bleeding into a light surface. */
+figure img{display:block;max-width:100%;height:auto;margin:0 auto;border:1px solid var(--rule);
+  border-radius:8px;padding:6px;background:#1e202a}
 figure figcaption{color:var(--ink-faint);font-size:12.5px;margin-top:10px;text-align:center}
 figure.wide{max-width:none}
 .dg-ink{fill:var(--ink)} .dg-soft{fill:var(--ink-soft)} .dg-faint{fill:var(--ink-faint)}

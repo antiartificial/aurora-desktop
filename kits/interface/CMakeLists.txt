@@ -184,6 +184,16 @@ target_link_libraries(test_ui_toolkit PRIVATE aurora_ui_tk)
 add_test(NAME ui_toolkit COMMAND test_ui_toolkit)
 set_tests_properties(ui_toolkit PROPERTIES TIMEOUT 60)
 
+# The component sheets the design documents show (docs/images/specimen-*.png). A GENERATOR, not
+# a test: it asserts nothing and draws the real nodes into an offscreen surface, so the gallery in
+# a document is a rasterisation of the shipping toolkit rather than a drawing of it. zlib is only
+# here for the PNG encoder, which is forty lines on top of it; nothing else links it.
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+	add_executable(ui_specimen tests/ui_specimen.cpp)
+	target_link_libraries(ui_specimen PRIVATE aurora_ui_tk ZLIB::ZLIB)
+endif()
+
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)
