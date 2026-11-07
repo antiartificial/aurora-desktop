@@ -171,6 +171,9 @@ pub fn init_drm(
     scale: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Prepared { session, notifier, gpu } = p;
+    // On DRM the compositor owns the hardware, so the pointer settings in the panel are live
+    // rather than advisory.
+    state.shell.nested = false;
     let seat = session.seat();
     let handle: LoopHandle<'static, Aurora> = event_loop.handle();
 
@@ -196,9 +199,21 @@ pub fn init_drm(
     handle.insert_source(LibinputInputBackend::new(libinput), move |mut event, _, state| {
         match &mut event {
             InputEvent::DeviceAdded { device } if device.has_capability(DeviceCapability::Pointer) => {
-                // Touchpads: tap to click is what people expect. No-op for mice.
+                // From the theme now, rather than hard-coded. Each is attempted and the result
+                // ignored: libinput refuses what a device cannot do (a mouse has no tap), and a
+                // refusal is information about the device, not an error.
+                let i = &state.fx.theme.input;
                 if device.config_tap_finger_count() > 0 {
-                    let _ = device.config_tap_set_enabled(true);
+                    let _ = device.config_tap_set_enabled(i.tap_to_click);
+                }
+                if device.config_scroll_has_natural_scroll() {
+                    let _ = device.config_scroll_set_natural_scroll_enabled(i.natural_scroll);
+                }
+                if device.config_accel_is_available() {
+                    let _ = device.config_accel_set_speed(i.pointer_speed.clamp(-1.0, 1.0));
+                }
+                if device.config_left_handed_is_available() {
+                    let _ = device.config_left_handed_set(i.left_handed);
                 }
             }
             InputEvent::Keyboard { event: k } => {

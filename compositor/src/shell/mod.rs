@@ -156,6 +156,10 @@ pub struct Shell {
     pub hover: Option<usize>,
     /// What the host (or `--scale`) says the scale is; the theme's `[output] scale` may override it.
     pub host_scale: f64,
+    /// True when this compositor runs inside another one (the winit backend). Input settings
+    /// reach libinput, which only the DRM backend has, so this is how the settings panel knows
+    /// to say that a pointer control will not take effect here.
+    pub nested: bool,
     /// The theme as last synced, kept only while the settings panel is open.
     snap: Theme,
     pub menu: Option<Menu>,
@@ -203,6 +207,7 @@ impl Shell {
             known: Default::default(),
             hover: None,
             host_scale: 1.0,
+            nested: true,
             snap: Theme::default(),
             menu: None,
             menu_seq: 0,

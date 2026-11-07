@@ -30,6 +30,9 @@ pub struct Ctx<'a> {
     pub scale: f64,
     pub out_phys: (i32, i32),
     pub families: &'a [String],
+    /// True when the compositor is a client of another one. Input settings reach libinput, which
+    /// only exists on the DRM backend, so nested is the case where they are inert.
+    pub nested: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -186,7 +189,33 @@ pub fn pages(c: &Ctx) -> Vec<Page> {
             row("Repeat delay", Control::Stepper(stepper(i.repeat_delay as f64, (100.0, 800.0, 50.0), |v| format!("{v:.0} ms"), |v| vec![Edit::new("input", "repeat_delay", Val::Int(v as i64))]))),
         ],
     };
-    vec![display, desktop, dock, keyboard]
+    // Pointer. These reach libinput, which only exists on the DRM backend: while nested, the
+    // host owns the devices and nothing here would take effect. Saying so on every row beats a
+    // control that looks live and is not -- the Display page already takes that line about
+    // resolution and refresh rate.
+    let only_on_drm = if c.nested { " Applies on DRM/KMS; the host owns input while nested." } else { "" };
+    let pointer = Page {
+        title: "Pointer",
+        rows: vec![
+            noted(
+                row("Pointer speed", Control::Stepper(stepper(i.pointer_speed, (-1.0, 1.0, 0.25), |v| if v == 0.0 { "Default".into() } else { format!("{v:+.2}") }, |v| vec![Edit::n("input", "pointer_speed", v)]))),
+                format!("libinput acceleration, -1 slowest to 1 fastest.{only_on_drm}"),
+            ),
+            noted(
+                row("Natural scrolling", Control::Toggle { on: i.natural_scroll, flip: vec![Edit::new("input", "natural_scroll", Val::Bool(!i.natural_scroll))] }),
+                format!("Scrolling moves the content, not the view.{only_on_drm}"),
+            ),
+            noted(
+                row("Tap to click", Control::Toggle { on: i.tap_to_click, flip: vec![Edit::new("input", "tap_to_click", Val::Bool(!i.tap_to_click))] }),
+                format!("Touchpads only; a mouse has no tap.{only_on_drm}"),
+            ),
+            noted(
+                row("Left handed", Control::Toggle { on: i.left_handed, flip: vec![Edit::new("input", "left_handed", Val::Bool(!i.left_handed))] }),
+                format!("Swaps the buttons.{only_on_drm}"),
+            ),
+        ],
+    };
+    vec![display, desktop, dock, keyboard, pointer]
 }
 
 // ---- layout ----------------------------------------------------------------
@@ -414,7 +443,7 @@ mod tests {
     use super::*;
 
     fn ctx<'a>(t: &'a Theme, fams: &'a [String]) -> Ctx<'a> {
-        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), families: fams }
+        Ctx { theme: t, host_scale: 1.45, scale: 1.45, out_phys: (1856, 1160), families: fams, nested: true }
     }
 
     #[test]
@@ -426,6 +455,39 @@ mod tests {
             let r = d.rows.iter().find(|r| r.label == name).unwrap();
             assert!(matches!(r.ctl, Control::Fixed { .. }) && r.note.as_deref().unwrap().contains("DRM/KMS"), "{name}");
             assert!(r.left.is_none() && r.right.is_none());
+        }
+    }
+
+    #[test]
+    fn the_pointer_page_writes_the_input_table_and_says_when_it_is_inert() {
+        let (t, f) = (Theme::default(), vec![]);
+        let p = pages(&ctx(&t, &f));
+        let page = p.iter().find(|p| p.title == "Pointer").expect("a Pointer page");
+        let labels: Vec<&str> = page.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Pointer speed", "Natural scrolling", "Tap to click", "Left handed"]);
+
+        // Every row says it will not take effect while nested. A control that looks live and
+        // does nothing is worse than one that explains itself, which is the line the Display
+        // page already takes about resolution.
+        for r in &page.rows {
+            assert!(r.note.as_deref().unwrap_or("").contains("nested"), "{} has no reason", r.label);
+        }
+
+        // And they edit the input table, which is what the theme and libinput both read.
+        let Control::Toggle { on, flip } = &page.rows[2].ctl else { panic!("tap is a toggle") };
+        assert!(*on, "tap to click defaults on, as it was hard-coded before it was a setting");
+        assert_eq!(flip, &vec![Edit::new("input", "tap_to_click", Val::Bool(false))]);
+    }
+
+    #[test]
+    fn on_drm_the_pointer_rows_do_not_claim_to_be_inert() {
+        let (t, f) = (Theme::default(), vec![]);
+        let mut c = ctx(&t, &f);
+        c.nested = false;
+        let p = pages(&c);
+        let page = p.iter().find(|p| p.title == "Pointer").unwrap();
+        for r in &page.rows {
+            assert!(!r.note.as_deref().unwrap_or("").contains("nested"), "{} still disclaims", r.label);
         }
     }
 

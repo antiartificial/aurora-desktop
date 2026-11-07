@@ -144,6 +144,18 @@ pub struct Input {
     pub options: String,
     pub repeat_delay: i32,
     pub repeat_rate: i32,
+    // ---- pointer ----
+    //
+    // These reach libinput, so they apply on the DRM backend and are inert while nested, where
+    // the host owns the devices. The settings panel says so rather than offering a control that
+    // silently does nothing.
+    /// Tap a touchpad to click. No-op on a mouse.
+    pub tap_to_click: bool,
+    /// Scrolling moves the content rather than the viewport.
+    pub natural_scroll: bool,
+    /// libinput's pointer acceleration, -1 (slowest) to 1 (fastest). 0 is the device default.
+    pub pointer_speed: f64,
+    pub left_handed: bool,
 }
 /// The output. `scale` overrides the host's scale factor (nested) or the
 /// backend's default; 0 means "follow the host". Written by the settings panel.
@@ -295,7 +307,21 @@ impl Default for Dock {
 impl Default for FontCfg { fn default() -> Self { FontCfg { file: String::new(), family: String::new(), size: 14.0 } } }
 impl Default for Input {
     fn default() -> Self {
-        Input { rules: String::new(), model: String::new(), layout: String::new(), variant: String::new(), options: String::new(), repeat_delay: 200, repeat_rate: 25 }
+        Input {
+            rules: String::new(),
+            model: String::new(),
+            layout: String::new(),
+            variant: String::new(),
+            options: String::new(),
+            repeat_delay: 200,
+            repeat_rate: 25,
+            // Tap to click defaults ON: it is what people expect of a touchpad, and it was
+            // already hard-coded that way in the DRM backend before it was a setting.
+            tap_to_click: true,
+            natural_scroll: false,
+            pointer_speed: 0.0,
+            left_handed: false,
+        }
     }
 }
 
