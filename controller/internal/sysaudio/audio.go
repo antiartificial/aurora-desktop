@@ -10,9 +10,13 @@
 // every application at once, so `system.audio.set@v1` is refused to callers inside a domain by
 // the same rule that refuses them registry.launch@v1.
 //
-// The tool is injectable so the parsing can be tested without an audio server. That matters
-// here more than usual: on the machine this was written on, PipeWire is not running and wpctl
-// cannot load its plugins, so the only part anyone could verify is the part that is pure.
+// The tool is injectable so the parsing can be tested without an audio server. That matters here
+// more than usual, and the reason is worth writing down rather than leaving as "it did not work":
+// the machine this was written on has /usr/lib/spa-0.2 containing 32-bit i386 plugins and no
+// /usr/lib64/spa-0.2 at all. The 64-bit SPA package is simply not installed, so a 64-bit wpctl
+// cannot load `support.system` and no audio server can run. That is a missing package, not a
+// sandbox and not a configuration mistake, and it is why nobody has watched these commands
+// answer for real.
 package sysaudio
 
 import (
