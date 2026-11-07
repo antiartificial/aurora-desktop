@@ -153,7 +153,11 @@ func cmdInspect(args []string) int {
 		if h.Expires != nil {
 			exp = h.Expires.Format("15:04:05.000")
 		}
-		fmt.Printf("  %s  resource=%s  holder=%s  minter=%s  expires=%s\n", h.ID, h.Resource, h.Holder, h.Minter, exp)
+		kind := h.Access
+		if h.Lease {
+			kind += " lease"
+		}
+		fmt.Printf("  %s  resource=%s  rights=%s  access=%s  holder=%s  minter=%s  expires=%s\n", h.ID, h.Resource, h.Rights, kind, h.Holder, h.Minter, exp)
 	}
 	return 0
 }

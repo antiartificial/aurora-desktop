@@ -38,7 +38,7 @@ func (b *Client) Verify(rec prov.Record) prov.CapReport {
 	}
 	all := func(status, detail string) prov.CapReport {
 		for _, g := range claims {
-			rep.Caps = append(rep.Caps, prov.CapVerdict{Path: g.Path, Mode: g.Mode, Cap: g.Cap, Status: status, Detail: detail})
+			rep.Caps = append(rep.Caps, prov.CapVerdict{Path: g.Path, Mode: g.Mode, Cap: g.Cap, Access: g.Access, Effect: prov.AccessNote(g.Access), Status: status, Detail: detail})
 		}
 		rep.Summarise()
 		return rep
@@ -75,7 +75,7 @@ func (b *Client) Verify(rec prov.Record) prov.CapReport {
 		epochKnown, _ = known(rec.CapEpoch)
 	}
 	for _, g := range claims {
-		v := prov.CapVerdict{Path: g.Path, Mode: g.Mode, Cap: g.Cap}
+		v := prov.CapVerdict{Path: g.Path, Mode: g.Mode, Cap: g.Cap, Access: g.Access, Effect: prov.AccessNote(g.Access)}
 		want := g.Resource()
 		if h, ok := live[g.Cap]; ok {
 			switch {
@@ -83,6 +83,11 @@ func (b *Client) Verify(rec prov.Record) prov.CapReport {
 				v.Status, v.Detail = prov.StatusNotVerified, fmt.Sprintf("daemon says it was minted by %s, not by the controller (%s)", h.Minter, self)
 			case h.Resource != want:
 				v.Status, v.Detail = prov.StatusNotVerified, fmt.Sprintf("daemon says it names %q, the record claims %q", h.Resource, want)
+			case g.Access != "" && h.Access != g.Access:
+				// The daemon's label is the one that decides what revocation
+				// does; a record claiming a stronger one than the daemon holds
+				// is overstating its own authority.
+				v.Status, v.Detail = prov.StatusNotVerified, fmt.Sprintf("daemon labels it %q, the record claims %q", h.Access, g.Access)
 			default:
 				v.Status, v.Detail = prov.StatusVerified, fmt.Sprintf("outstanding: minted by the controller for %s, not revoked (held by %s)", want, h.Holder)
 			}
