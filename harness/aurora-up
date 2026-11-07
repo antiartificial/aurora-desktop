@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# aurora-up: bring the whole desktop up as a window on the current session.
+#
+# busd, controllerd and the compositor, wired together the way they are meant to be: the
+# compositor gets --bus-socket, so a window's domain is what the KERNEL says rather than what the
+# client claims, and the capability indicator has grants to learn from. Approvals stay ON and are
+# drawn by the compositor, because the trusted path is the thing most worth looking at.
+#
+# This is for REVIEW, not for tests. Tests use --headless with --test-input; see harness/atlas-demo.
+#
+#   harness/aurora-up            bring it up, log to harness/aurora-up-out/
+#   harness/aurora-up --quiet    the same, without tailing the compositor log
+#
+# Everything stops when the compositor window is closed.
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="$ROOT/harness/aurora-up-out"
+QUIET=0
+[ "${1:-}" = "--quiet" ] && QUIET=1
+
+COMP="$ROOT/compositor/target/release/aurora-compositor"
+BUSD="$ROOT/kits/build/busd"
+CTL="$ROOT/build/bin/controllerd"
+[ -x "$COMP" ] || { echo "aurora-up: no compositor at $COMP (cargo build --release in compositor/)" >&2; exit 2; }
+
+[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || {
+  echo "aurora-up: no graphical session. This nests inside one; for a bare TTY see docs/bare-metal.md (--drm)." >&2
+  exit 2
+}
+
+rm -rf "$OUT"; mkdir -p "$OUT"
+cleanup() { kill ${CP:-} ${CD:-} ${BP:-} 2>/dev/null; }
+trap cleanup EXIT
+
+# ---- the bus ------------------------------------------------------------------------------------
+if [ -x "$BUSD" ]; then
+  "$BUSD" --data-dir "$OUT/buslog" 2>"$OUT/busd.log" & BP=$!
+  for _ in $(seq 100); do grep -aq "listening on" "$OUT/busd.log" 2>/dev/null && break; sleep 0.05; done
+  AURORA_BUS_SOCK="$(grep -aoE '/[^ ]*bus\.sock' "$OUT/busd.log" | head -1)"
+fi
+[ -n "${AURORA_BUS_SOCK:-}" ] || AURORA_BUS_SOCK=/run/user/$(id -u)/aurora/bus.sock
+export AURORA_BUS_SOCK
+echo "aurora-up: bus      $AURORA_BUS_SOCK"
+
+# ---- the controller: manifests, verbs, the plumber ----------------------------------------------
+if [ -x "$CTL" ]; then
+  "$CTL" --socket "$AURORA_BUS_SOCK" --apps "$ROOT/apps" >"$OUT/controllerd.log" 2>&1 & CD=$!
+  sleep 1.0
+  echo "aurora-up: apps     $(ls "$ROOT/apps" | grep -v README | tr '\n' ' ')"
+else
+  echo "aurora-up: no controllerd at $CTL -- the context menu will show its no-registry reason" >&2
+fi
+
+# ---- the desktop --------------------------------------------------------------------------------
+# The compositor is a winit client of the host, so it arrives as an ordinary window.
+"$COMP" --bus-socket "$AURORA_BUS_SOCK" >"$OUT/compositor.log" 2>&1 & CP=$!
+for _ in $(seq 200); do grep -aq 'socket wayland' "$OUT/compositor.log" && break; sleep 0.05; done
+SOCK=$(grep -aoE 'socket wayland-[0-9]+' "$OUT/compositor.log" | head -1 | awk '{print $2}')
+[ -n "$SOCK" ] || { echo "aurora-up: the compositor created no socket; see $OUT/compositor.log" >&2; exit 1; }
+
+cat <<INFO
+aurora-up: display  $SOCK
+aurora-up: logs     $OUT/
+
+  Right-click the desktop for the menu. The dock launches the apps above; Atlas is the
+  file explorer. Alt-Tab is Flip 3D. To start something by hand into this desktop:
+
+    WAYLAND_DISPLAY=$SOCK $ROOT/kits/build/interface/atlas
+
+Close the compositor window to stop everything.
+INFO
+
+if [ "$QUIET" = 0 ]; then
+  tail -f "$OUT/compositor.log" 2>/dev/null & TL=$!
+  trap 'kill ${TL:-} 2>/dev/null; cleanup' EXIT
+fi
+wait $CP

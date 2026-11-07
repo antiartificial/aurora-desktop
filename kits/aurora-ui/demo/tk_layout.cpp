@@ -350,9 +350,9 @@ int main() {
         Desc list = ListView(&few, &selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
-        // Near the top, because with three rows y = 300 is past the last one -- which would
-        // make this pass for the wrong reason.
-        list->OnPressAt(395, 12, 1);
+        // Just inside the first row. Not y = 12: that is the column header with a real font
+        // loaded, and it only ever "passed" because the negative row index truncated to zero.
+        list->OnPressAt(395, list->frame.y + 40, 1);
         list->OnRelease(true);
         eq("with nothing to scroll the press reaches the rows", selected >= 0);
     }
@@ -429,6 +429,103 @@ int main() {
         near("sized() leaves the rest to the weighted child", list2->frame.w, 740);
         near("and the sized pane is the width it asked for", pane2->frame.w, 260);
         near("the sized pane keeps its natural height", pane2->frame.h, 600);
+    }
+
+    // ---- drag payloads ------------------------------------------------------------------------
+    // text/uri-list is line-delimited, so the dangerous character in a filename is a NEWLINE: an
+    // unescaped one splits one file into two URIs, and the second is a path nobody chose. The
+    // round trip is where that gets caught.
+    {
+        std::vector<std::string> files;
+        files.push_back("/tmp/plain.txt");
+        files.push_back("/tmp/with space.png");
+        files.push_back("/tmp/a#hash.md");
+        files.push_back("/tmp/new\nline.txt");
+        const DragData d = DragData::uri_list(files);
+        eq("the mime is the one the host speaks", d.mime == "text/uri-list");
+        eq("a space is escaped", d.bytes.find("with%20space") != std::string::npos);
+        eq("a hash is escaped", d.bytes.find("a%23hash") != std::string::npos);
+        eq("a newline is escaped", d.bytes.find("new%0Aline") != std::string::npos);
+        eq("lines end CRLF", d.bytes.find("\r\n") != std::string::npos);
+
+        const DragData back = DragData::parse_uri_list(d.bytes);
+        eq("every path survives the round trip", back.paths.size() == files.size());
+        for (size_t i = 0; i < files.size() && i < back.paths.size(); i++)
+            eq("path round trips", back.paths[i] == files[i]);
+    }
+
+    // Comments and blank lines are part of text/uri-list and appear in the wild. A file manager
+    // that treated "# comment" as a filename would be the one with the bug.
+    {
+        const DragData d = DragData::parse_uri_list(
+            "# a comment\r\n\r\nfile:///tmp/real.txt\r\nhttp://example.com/no.txt\r\n");
+        eq("comments, blanks and non-file URIs are dropped", d.paths.size() == 1);
+        eq("and the file URI survives", !d.paths.empty() && d.paths[0] == "/tmp/real.txt");
+    }
+
+    // ---- a list drags out and takes drops -------------------------------------------------------
+    // Row heights come from the loaded font, so nothing here names a pixel row. The test asks
+    // which row the widget thinks it was given and holds it to its own answer -- an earlier
+    // version hardcoded y = 20 for "row 0", which with a real font is the HEADER, and another
+    // passed only because integer truncation turned a negative row index into zero.
+    {
+        ManyRows src(20);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+
+        DragData out;
+        // No mapping set: a list is NOT a drag source by default, because a list of search
+        // results should not hand out file URIs because it happens to be a list.
+        eq("no mapping means no drag", !list->OnDragStart(100, 100, &out));
+
+        int asked = -99;
+        OnListDragPaths(list, [&](int row) {
+            asked = row;
+            return std::vector<std::string>{"/tmp/row" + std::to_string(row)};
+        });
+        eq("a row drags once the app says what a row is", list->OnDragStart(100, 100, &out));
+        eq("it asked about a real row", asked >= 0);
+        eq("and carries that row's path",
+           out.paths.size() == 1 && out.paths[0] == "/tmp/row" + std::to_string(asked));
+        // y at the very top is the column header, which is not a row and must not drag.
+        eq("the header is not a row", !list->OnDragStart(100, list->frame.y, &out));
+
+        eq("it does not accept a drop until it can", !list->CanAcceptDrop(out));
+        int dropped_on = -2;
+        OnListDrop(list, [&](int row, const DragData& d) {
+            dropped_on = row;
+            return !d.paths.empty();
+        });
+        eq("now it accepts", list->CanAcceptDrop(out));
+        eq("an empty payload is still refused", !list->CanAcceptDrop(DragData{}));
+
+        eq("a drop on a row is taken", list->OnDrop(100, 100, out));
+        eq("and names the same row the drag came from", dropped_on == asked);
+        // Below the last row is "in here", which is what every file manager means by it.
+        eq("a drop past the end is taken", list->OnDrop(100, 595, out));
+        eq("and reports no row", dropped_on == -1);
+    }
+
+    // ---- the sidebar takes drops ----------------------------------------------------------------
+    {
+        Fake src;
+        State<std::string> sel("");
+        Desc t = TreeView(&src, &sel);
+        lay(t, e, Rect{0, 0, 200, 600});
+        TreeRowCount(t);                       // flatten
+
+        const DragData d = DragData::uri_list({"/tmp/a.txt"});
+        eq("a tree refuses drops until the app takes them", !t->CanAcceptDrop(d));
+        std::string onto;
+        OnTreeDrop(t, [&](const std::string& id, const DragData&) {
+            onto = id;
+            return true;
+        });
+        eq("now it accepts", t->CanAcceptDrop(d));
+        eq("a drop on row 0 is taken", t->OnDrop(100, 1, d));
+        eq("and names that row's id", onto == "/a");
     }
 
     if (fails == 0) printf("tk_layout: ok\n");

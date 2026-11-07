@@ -123,6 +123,24 @@ private:
     std::vector<Node*> nodes_;
 };
 
+// ---- drag and drop ----------------------------------------------------------------------------
+
+// What a drag carries. One MIME type and its bytes, which is all a file manager needs: a drag of
+// files is `text/uri-list`, lines of file:// URIs, and that is the same thing the host hands the
+// compositor (decision 0020). Richer payloads are the compositor's story, not a widget's.
+//
+// `paths` is a convenience over the same data -- the URIs already decoded -- so a drop target
+// does not re-parse what the source just encoded. It is advisory: `mime` and `bytes` are what
+// would cross a process boundary, and what a target must be willing to read.
+struct DragData {
+    std::string mime;
+    std::string bytes;
+    std::vector<std::string> paths;
+
+    static DragData uri_list(const std::vector<std::string>& files);   // builds mime/bytes/paths
+    static DragData parse_uri_list(const std::string& bytes);          // the other direction
+};
+
 // ---- nodes -----------------------------------------------------------------------------------
 
 class Node;
@@ -180,6 +198,31 @@ public:
     virtual void Retarget(bool motion_allowed) { (void)motion_allowed; }
     virtual bool Animating() const { return false; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
+
+    // ---- drag and drop ----
+    //
+    // A drag is a press that MOVED. The window asks the pressed node for a payload once the
+    // pointer passes a threshold, and a node that has nothing to drag says so by returning
+    // false, which leaves the press meaning whatever it meant before -- a selection, a scroll.
+    // That ordering is the whole reason a threshold exists: without one, every click on a file
+    // name would begin a drag and nothing could be selected.
+    virtual bool OnDragStart(float x, float y, DragData* out) {
+        (void)x; (void)y; (void)out;
+        return false;
+    }
+
+    // A target is asked whether it would take this payload BEFORE the drop, so it can say so by
+    // drawing. `OnDropHover(.., false)` means the drag left; a target that highlighted itself
+    // clears it there, and the window guarantees that call.
+    virtual bool CanAcceptDrop(const DragData& d) const {
+        (void)d;
+        return false;
+    }
+    virtual void OnDropHover(float x, float y, bool inside) { (void)x; (void)y; (void)inside; }
+    virtual bool OnDrop(float x, float y, const DragData& d) {
+        (void)x; (void)y; (void)d;
+        return false;
+    }
 
     // Wheel and keys return true when handled. Unhandled events bubble to `parent`, which is
     // what replaced routing them to a global pointer to the one list a window happened to have.
@@ -304,6 +347,22 @@ void OnListSelect(const Desc& list, std::function<void(int)> f);
 void OnIconsSelect(const Desc& icons, std::function<void(int)> f);
 
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
+
+// ---- dragging out of, and into, a list --------------------------------------------------------
+
+// What a row IS, as paths. Set this and the list becomes a drag source; leave it unset and it is
+// not one. That is the right default: a list of search results or of mail should not start
+// handing out file URIs because it happens to be a list.
+void OnListDragPaths(const Desc& list, std::function<std::vector<std::string>(int)> f);
+
+// A drop landed. `row` is the row it landed on, or -1 for the list's own container -- dropping
+// below the last row means "in here", which is what every file manager means by it. Return true
+// if the drop was taken.
+void OnListDrop(const Desc& list, std::function<bool(int, const DragData&)> f);
+
+// The same for the sidebar, keyed by tree id. Dragging into a folder you can see but are not
+// inside is most of what dragging is for.
+void OnTreeDrop(const Desc& tree, std::function<bool(const std::string&, const DragData&)> f);
 void BeginListRename(const Desc& list, int row);
 
 // ---- multiline text ---------------------------------------------------------------------------
@@ -612,8 +671,22 @@ public:
     void Invalidate(Rect r) { dirty_ = true; damage_.add(r); }
     void Quit() { quit_ = true; }
 
+    // What is being dragged right now, or nullptr. A node that wants to draw differently while
+    // a drag is in flight -- a list dimming the rows it cannot accept -- reads this.
+    const DragData* dragging() const { return drag_live_ ? &drag_ : nullptr; }
+
 private:
     void damage_for(Node* n);
+    // The drag state machine: see Window::Event's POINTER_MOVE case for why a drag is a press
+    // that moved rather than a mode the app enters.
+    void drag_motion(float x, float y);
+    void drag_finish(float x, float y);
+
+    DragData drag_;
+    Node* drag_src_ = nullptr;      // where it started, so a drop on the source is a no-op
+    Node* drag_tgt_ = nullptr;      // what is currently highlighted
+    float drag_x0_ = 0, drag_y0_ = 0;
+    bool drag_live_ = false, drag_armed_ = false;
 
 public:
 

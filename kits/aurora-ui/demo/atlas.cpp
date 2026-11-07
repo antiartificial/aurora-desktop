@@ -587,6 +587,92 @@ int main() {
         return true;
     });
 
+    // ---- dragging files ------------------------------------------------------------------------
+    //
+    // A drag inside Atlas MOVES, by rename(2). It is deliberately not a copy and deliberately
+    // not a cross-filesystem move: rename within one filesystem is atomic and instant, and the
+    // moment a move has to read and rewrite bytes it is a long-running operation that wants
+    // progress, cancellation and a verb to run it in -- which is `move@v1` in a domain, not a
+    // drop handler in a widget. EXDEV therefore says so instead of pretending.
+    //
+    // Nothing here overwrites. rename(2) is happy to clobber the destination, and a file manager
+    // that silently destroyed a file because two folders had one with the same name would be the
+    // worst bug in this program.
+    auto move_into = [&](const std::string& dest_dir, const std::vector<std::string>& paths) {
+        int moved = 0;
+        std::string err;
+        for (const std::string& from : paths) {
+            const size_t slash = from.find_last_of('/');
+            const std::string leaf = slash == std::string::npos ? from : from.substr(slash + 1);
+            if (leaf.empty() || leaf == "." || leaf == "..") continue;
+            const std::string to = (dest_dir == "/" ? "" : dest_dir) + "/" + leaf;
+            if (to == from) continue;                    // dropped where it already is
+            // Into itself, or into its own subtree: rename(2) returns EINVAL for this, but the
+            // message it produces is not one anybody can act on.
+            if (dest_dir == from || dest_dir.compare(0, from.size() + 1, from + "/") == 0) {
+                err = "a folder cannot be moved into itself";
+                continue;
+            }
+            struct stat st;
+            if (lstat(to.c_str(), &st) == 0) {
+                err = "\"" + leaf + "\" already exists there";
+                continue;
+            }
+            if (rename(from.c_str(), to.c_str()) != 0) {
+                err = errno == EXDEV
+                          ? std::string("that is a different filesystem; a copy is move@v1, not a drag")
+                          : std::string(strerror(errno));
+                continue;
+            }
+            moved++;
+        }
+        if (moved) {
+            rows.Open(path.get());        // the listing changed under us either way
+            rows.SetFilter(filter.get());
+            status.set(std::to_string(rows.Count()) + " items");
+            selected = -1;
+        }
+        // Both halves are reported. "3 moved, 1 refused" is the honest answer to a multi-file
+        // drop, and silence about the refusal is how a user loses track of a file.
+        std::string msg;
+        if (moved) msg = "moved " + std::to_string(moved) + (moved == 1 ? " item" : " items");
+        if (!err.empty()) msg += (msg.empty() ? "" : "; ") + ("refused: " + err);
+        if (!msg.empty()) last_action.set(msg);
+        w.Invalidate();
+        return moved > 0;
+    };
+
+    // A row is a path. Without this the list is not a drag source at all.
+    OnListDragPaths(list, [&](int row) -> std::vector<std::string> {
+        std::string name = rows.Cell(row, 0).text;
+        if (name.empty()) return {};
+        if (name.back() == '/') name.pop_back();
+        const std::string base = path.get() == "/" ? "" : path.get();
+        return {base + "/" + name};
+    });
+
+    // A drop on a FOLDER row moves into it; anywhere else in the list means this directory,
+    // which for a drag that started here is a no-op and for one from the sidebar is a move out.
+    OnListDrop(list, [&](int row, const DragData& d) {
+        std::string dest = path.get();
+        if (row >= 0) {
+            const std::string name = rows.Cell(row, 0).text;
+            if (!name.empty() && name.back() == '/') {
+                const std::string base = path.get() == "/" ? "" : path.get();
+                dest = base + "/" + name.substr(0, name.size() - 1);
+            }
+        }
+        return move_into(dest, d.paths);
+    });
+
+    // The sidebar takes drops too: dragging into a folder you can see but are not inside is
+    // most of what dragging is for.
+    OnTreeDrop(tree, [&](const std::string& id, const DragData& d) {
+        const bool ok = move_into(id, d.paths);
+        if (ok) places.Forget(id);        // its children changed
+        return ok;
+    });
+
     // ---- the real plumber ----
     //
     // The menu's verbs come from registry.plumb@v1: the controller ranks what can be done with a

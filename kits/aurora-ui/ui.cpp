@@ -43,6 +43,43 @@ float baseline_in(const Env& e, Rect r) {
     return r.y + (r.h + m.ascent - m.descent) / 2;
 }
 
+// ---- drag payloads ----------------------------------------------------------------------------
+
+// Percent-encoding, as text/uri-list requires. Only the unreserved set survives literally; a
+// space in a filename is the common case and a newline in one is the dangerous case, because
+// text/uri-list is line-delimited and an unescaped newline would split one file into two URIs.
+static std::string uri_escape(const std::string& p) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : p) {
+        const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+                           c == '~' || c == '/';
+        if (plain) {
+            out += (char)c;
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+static std::string uri_unescape(const std::string& p) {
+    std::string out;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '%' && i + 2 < p.size() && isxdigit((unsigned char)p[i + 1]) &&
+            isxdigit((unsigned char)p[i + 2])) {
+            out += (char)strtol(p.substr(i + 1, 2).c_str(), nullptr, 16);
+            i += 2;
+        } else {
+            out += p[i];
+        }
+    }
+    return out;
+}
+
 // ---- the scrollbar ----------------------------------------------------------------------------
 //
 // A VALUE, not a widget. Four things scroll here -- the list, the icon grid, the text view and
@@ -392,6 +429,19 @@ public:
             }
         }
         rows_drawn_ = last >= first ? (last - first + 1) : 0;
+
+        // Where the drop would land. A row gets an outline; "no row" outlines the whole list,
+        // because dropping below the last row means into this directory and the user is owed
+        // the difference between those two before they let go, not after.
+        if (drop_active_) {
+            if (drop_row_ >= first && drop_row_ <= last) {
+                const float ry = frame.y + head_h_ + 1 + (drop_row_ - first) * row_h_;
+                au_stroke_rect(s, au_rect{frame.x + 1, ry, frame.x + frame.w - 2, ry + row_h_ - 1},
+                               e.accent, 2);
+            } else if (drop_row_ < 0) {
+                au_stroke_rect(s, frame.box(), e.accent, 2);
+            }
+        }
         // Below the header, so the thumb measures the rows and not the chrome.
         sb_.set(Rect{frame.x, frame.y + head_h_ + 1, frame.w, frame.h - head_h_ - 1}, n,
                 visible(), top_);
@@ -424,6 +474,54 @@ public:
     }
     void SetClickY(float y) { click_y_ = y; }
     void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
+    void SetDragPaths(std::function<std::vector<std::string>(int)> f) { drag_paths_ = std::move(f); }
+    void SetDropHandler(std::function<bool(int, const DragData&)> f) { on_drop_ = std::move(f); }
+
+    // The row under a y, or -1 for the header, past the last row, or outside. One place decides
+    // it, because a press, a drag and a drop all have to agree about which row they mean.
+    int row_at(float y) const {
+        if (y < frame.y + head_h_ + 1) return -1;
+        const int i = top_ + (int)((y - frame.y - head_h_ - 1) / row_h_);
+        return (i >= 0 && i < r_->Count()) ? i : -1;
+    }
+
+    bool OnDragStart(float x, float y, DragData* out) override {
+        // The app says what a row IS -- the list only knows cells of text, and a path is the
+        // app's business. No mapping means this list is not a drag source, which is the right
+        // default: a list of search results should not hand out file URIs by accident.
+        if (!drag_paths_ || sb_.hit(x, y)) return false;
+        const int row = row_at(y);
+        if (row < 0) return false;
+        const std::vector<std::string> p = drag_paths_(row);
+        if (p.empty()) return false;
+        *out = DragData::uri_list(p);
+        return true;
+    }
+
+    bool CanAcceptDrop(const DragData& d) const override {
+        return on_drop_ && d.mime == "text/uri-list" && !d.paths.empty();
+    }
+
+    void OnDropHover(float x, float y, bool inside) override {
+        (void)x;
+        const int r = inside ? row_at(y) : -1;
+        if (r == drop_row_ && inside == drop_active_) return;
+        drop_row_ = r;
+        drop_active_ = inside;
+        whole_ = true;
+        dirty_ = true;
+    }
+
+    bool OnDrop(float x, float y, const DragData& d) override {
+        (void)x;
+        // -1 means the list's own directory: dropping below the last row is dropping "in here",
+        // which is what every file manager means by it.
+        const int r = row_at(y);
+        drop_row_ = -1;
+        drop_active_ = false;
+        whole_ = true;
+        return on_drop_ ? on_drop_(r, d) : false;
+    }
 
     int visible() const { return std::max(1, (int)((frame.h - head_h_) / row_h_)); }
 
@@ -613,6 +711,10 @@ private:
     int top_ = 0, rows_drawn_ = 0;
     Scroller sb_;
     bool on_bar_ = false;
+    std::function<std::vector<std::string>(int)> drag_paths_;
+    std::function<bool(int, const DragData&)> on_drop_;
+    int drop_row_ = -1;
+    bool drop_active_ = false;
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;
@@ -1668,6 +1770,11 @@ public:
                 au_text_draw(s, e.font, e.size - 2, "...", -1, frame.x + frame.w - e.unit * 2,
                              ry + row_h_ * 0.74f, e.dim);
         }
+        if (drop_row_ >= first && drop_row_ <= last) {
+            const float ry = frame.y + (drop_row_ - first) * row_h_;
+            au_stroke_rect(s, au_rect{frame.x + 1, ry, frame.x + frame.w - 2, ry + row_h_ - 1},
+                           e.accent, 2);
+        }
         sb_.set(frame, (int)flat_.size(), vis, first);
         sb_.draw(s, e);
         au_clip_reset(s);
@@ -1772,6 +1879,37 @@ public:
 
     void SetSelectHandler(std::function<void(const std::string&)> f) { on_sel_ = std::move(f); }
     void SetActivateHandler(std::function<void(const std::string&)> f) { on_act_ = std::move(f); }
+    void SetDropHandler(std::function<bool(const std::string&, const DragData&)> f) {
+        on_drop_ = std::move(f);
+    }
+
+    // The sidebar is the other half of a file manager's drag: dragging into a folder you can
+    // see but are not inside is most of what dragging is FOR.
+    bool CanAcceptDrop(const DragData& d) const override {
+        return on_drop_ && d.mime == "text/uri-list" && !d.paths.empty();
+    }
+
+    void OnDropHover(float x, float y, bool inside) override {
+        (void)x;
+        const int r = inside ? row_at(y) : -1;
+        if (r == drop_row_) return;
+        drop_row_ = r;
+        whole_ = true;
+    }
+
+    bool OnDrop(float x, float y, const DragData& d) override {
+        (void)x;
+        const int r = row_at(y);
+        drop_row_ = -1;
+        whole_ = true;
+        if (r < 0 || r >= (int)flat_.size() || !on_drop_) return false;
+        return on_drop_(flat_[r].id, d);
+    }
+
+    int row_at(float y) const {
+        const int i = top_ + (int)((y - frame.y) / row_h_);
+        return (i >= 0 && i < (int)flat_.size()) ? i : -1;
+    }
 
     // Expand down to `id` and select it. The chain is collected from the source's Parent and
     // opened from the top, because opening a node is what makes its children askable at all.
@@ -1899,8 +2037,9 @@ private:
     std::vector<int> dirty_rows_;
     std::function<void(const std::string&)> on_sel_, on_act_;
     Scroller sb_;
+    std::function<bool(const std::string&, const DragData&)> on_drop_;
     float row_h_ = 16, unit_ = 8;
-    int top_ = 0, cur_ = -1;
+    int top_ = 0, cur_ = -1, drop_row_ = -1;
     bool focused_ = false, flat_valid_ = false, whole_ = true;
 };
 
@@ -2115,6 +2254,35 @@ Rect Damage::bounds() const {
     return Rect{x0, y0, x1 - x0, y1 - y0};
 }
 
+// ---- drag payloads ----------------------------------------------------------------------------
+
+DragData DragData::uri_list(const std::vector<std::string>& files) {
+    DragData d;
+    d.mime = "text/uri-list";
+    d.paths = files;
+    // CRLF, which RFC 2483 asks for and which every other toolkit sends.
+    for (const std::string& f : files) d.bytes += "file://" + uri_escape(f) + "\r\n";
+    return d;
+}
+
+DragData DragData::parse_uri_list(const std::string& bytes) {
+    DragData d;
+    d.mime = "text/uri-list";
+    d.bytes = bytes;
+    size_t i = 0;
+    while (i < bytes.size()) {
+        size_t j = bytes.find('\n', i);
+        std::string line = bytes.substr(i, j == std::string::npos ? std::string::npos : j - i);
+        i = j == std::string::npos ? bytes.size() : j + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        // "#" is a comment in text/uri-list, and a blank line is nothing. Both appear in the
+        // wild and a file manager that treated them as filenames would be the one with the bug.
+        if (line.empty() || line[0] == '#') continue;
+        if (line.compare(0, 7, "file://") == 0) d.paths.push_back(uri_unescape(line.substr(7)));
+    }
+    return d;
+}
+
 // ---- modifiers --------------------------------------------------------------------------------
 
 Desc padding(Desc d, float units) { d->pad = Insets(units * 8); return d; }
@@ -2142,6 +2310,14 @@ Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
 }
+void OnListDragPaths(const Desc& list, std::function<std::vector<std::string>(int)> f) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetDragPaths(std::move(f));
+}
+
+void OnListDrop(const Desc& list, std::function<bool(int, const DragData&)> f) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetDropHandler(std::move(f));
+}
+
 void OnListActivate(const Desc& list, std::function<void(int)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetActivateHandler(std::move(f));
 }
@@ -2176,6 +2352,10 @@ void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f) {
 
 void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f) {
     if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->SetActivateHandler(std::move(f));
+}
+
+void OnTreeDrop(const Desc& tree, std::function<bool(const std::string&, const DragData&)> f) {
+    if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->SetDropHandler(std::move(f));
 }
 
 void RevealInTree(const Desc& tree, const std::string& id) {
@@ -2620,8 +2800,13 @@ void Window::Event(void* user, int kind, int a, int b) {
             // pointer now: dragging a selection past the end of a field must keep selecting in
             // that field rather than hand the motion to a neighbour.
             if (w->pressed_) {
-                w->pressed_->OnDragTo(w->px_, w->py_);
-                w->Invalidate(w->pressed_->frame);
+                w->drag_motion(w->px_, w->py_);
+                // While a payload is in flight the press no longer means "scrub inside this
+                // widget": a scrollbar thumb must not follow the pointer that is carrying a file.
+                if (!w->drag_live_) {
+                    w->pressed_->OnDragTo(w->px_, w->py_);
+                    w->Invalidate(w->pressed_->frame);
+                }
                 break;
             }
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
@@ -2675,6 +2860,10 @@ void Window::Event(void* user, int kind, int a, int b) {
                 w->last_y_ = w->py_;
 
                 w->pressed_ = n;
+                // Arm, do not start: whether this press is a drag is not known until it moves.
+                w->drag_armed_ = n != nullptr;
+                w->drag_x0_ = w->px_;
+                w->drag_y0_ = w->py_;
                 if (n) {
                     // A press moves focus to what was pressed, if it takes focus. Clicking a
                     // thing and then typing should talk to that thing.
@@ -2683,7 +2872,12 @@ void Window::Event(void* user, int kind, int a, int b) {
                     w->Invalidate(n->frame);
                 }
             } else {
-                if (w->pressed_) {
+                // A drag that was in flight ends here and the release is ITS ending, not a
+                // click on whatever happens to be under the pointer: releasing over a folder
+                // after dragging a file there must not also select that folder.
+                const bool was_drag = w->drag_live_;
+                w->drag_finish(w->px_, w->py_);
+                if (w->pressed_ && !was_drag) {
                     w->pressed_->OnRelease(w->pressed_ == n);
                     w->Invalidate(w->pressed_->frame);
                 }
@@ -2804,6 +2998,80 @@ bool Window::FocusNamed(const char* name) {
 void Window::FocusFirst() {
     if (focusables_.empty()) CollectFocusables();
     if (!focusables_.empty()) SetFocus(focusables_.front());
+}
+
+// ---- the drag state machine ---------------------------------------------------------------------
+//
+// A drag is a PRESS THAT MOVED, not a mode. The pressed node is asked for a payload only once
+// the pointer has travelled past a threshold, and a node with nothing to drag declines, leaving
+// the press meaning what it meant before. Without the threshold every click on a filename would
+// begin a drag and nothing could be selected; without the decline, a list could not both select
+// and drag.
+void Window::drag_motion(float x, float y) {
+    if (getenv("AURORA_UI_TRACE"))
+        fprintf(stderr, "ui: drag_motion armed=%d live=%d pressed=%s d=%.1f,%.1f\n",
+                (int)drag_armed_, (int)drag_live_,
+                pressed_ ? (pressed_->name.empty() ? "(unnamed)" : pressed_->name.c_str()) : "NONE",
+                x - drag_x0_, y - drag_y0_);
+    if (drag_armed_ && !drag_live_) {
+        // 6 layout units. Below about four, a drag starts on the hand tremor of an ordinary
+        // click; far above it, dragging feels like it is resisting.
+        if (std::fabs(x - drag_x0_) < 6 && std::fabs(y - drag_y0_) < 6) return;
+        drag_armed_ = false;
+        DragData d;
+        if (!pressed_ || !pressed_->OnDragStart(drag_x0_, drag_y0_, &d) || d.mime.empty()) return;
+        drag_ = std::move(d);
+        drag_src_ = pressed_;
+        drag_live_ = true;
+        if (getenv("AURORA_UI_TRACE"))
+            fprintf(stderr, "ui: drag START %zu path(s) first=%s\n", drag_.paths.size(),
+                    drag_.paths.empty() ? "-" : drag_.paths[0].c_str());
+        Invalidate();
+    }
+    if (!drag_live_) return;
+
+    // The target is whatever is under the pointer and willing, walking UP from the hit so a row
+    // inside a list can decline and let the list answer.
+    //
+    // The SOURCE is not excluded, and that is the important part. Excluding it to stop a drop on
+    // itself looked like care and broke the main gesture outright: dragging a file onto a folder
+    // in the same list is a drop on the source. Whether a particular drop is a no-op is a
+    // question only the node can answer -- the list compares destination against origin per path
+    // -- so the node answers it.
+    Node* hit = root_ ? root_->HitTest(x, y) : nullptr;
+    Node* want = nullptr;
+    for (Node* n = hit; n; n = n->parent)
+        if (n->CanAcceptDrop(drag_)) { want = n; break; }
+
+    if (want != drag_tgt_) {
+        // The leave is guaranteed: a target that highlighted itself gets told, even when the
+        // pointer left the window entirely or the drag was cancelled.
+        if (drag_tgt_) { drag_tgt_->OnDropHover(x, y, false); Invalidate(drag_tgt_->frame); }
+        drag_tgt_ = want;
+        if (drag_tgt_) Invalidate(drag_tgt_->frame);
+    }
+    if (drag_tgt_) { drag_tgt_->OnDropHover(x, y, true); Invalidate(drag_tgt_->frame); }
+}
+
+void Window::drag_finish(float x, float y) {
+    drag_armed_ = false;
+    if (!drag_live_) return;
+    Node* tgt = drag_tgt_;
+    // Cleared BEFORE the handler runs: a drop handler may rebuild the tree (dropping a file into
+    // a folder re-reads the directory), and leaving a pointer to a node it might free is how a
+    // use-after-free gets written.
+    drag_live_ = false;
+    drag_tgt_ = nullptr;
+    drag_src_ = nullptr;
+    if (getenv("AURORA_UI_TRACE"))
+        fprintf(stderr, "ui: drag FINISH tgt=%s\n",
+                tgt ? (tgt->name.empty() ? "(unnamed)" : tgt->name.c_str()) : "NONE");
+    if (tgt) {
+        tgt->OnDropHover(x, y, false);
+        tgt->OnDrop(x, y, drag_);
+    }
+    drag_ = DragData{};
+    Invalidate();
 }
 
 // Damage for a node that has just ticked.
