@@ -46,3 +46,6 @@ apps/*/bin/
 
 # agent worktrees: real git repos, never part of this one
 .claude/worktrees/
+
+# atlas-demo writes its frames and reel here; the script regenerates them.
+harness/atlas-demo-out/

@@ -755,12 +755,15 @@ int main() {
                       HStack({
                    weight(Either(&list_view, list, icons), 2),
                    named(Reveal(&preview_open,
-                                padding(VStack({
+                                // 260 units wide, stated. Without it the TextView inside
+                                // answers with the whole offer and the file list is placed at
+                                // zero -- the pane opened OVER the list.
+                                sized(padding(VStack({
                                             styled(Label(&preview_head),
                                                    TextStyle{0.95f, true}),
                                             weight(named(TextView(&preview_text), "preview"), 1),
                                         }, 0.25f),
-                                        0.5f),
+                                        0.5f), 260),
                                 // RevealX: a side pane reveals by WIDTH. A height reveal here
                                 // kept its full width while invisible and swallowed the list's
                                 // hit test, which is how the axis mistake announced itself.

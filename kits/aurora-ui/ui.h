@@ -420,6 +420,16 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
 // toggle back.
 Desc Either(State<bool>* first, Desc a, Desc b);
 
+// A fixed size on one axis, or both; -1 keeps the child's natural size on that axis.
+//
+//   sized(previewPane, 260)        -- 260 units wide, natural height
+//
+// Needed, not merely convenient. A stack gives an unweighted child its NATURAL size, and a
+// widget whose width depends on what it is given -- TextView, because a wrapped document has no
+// width of its own -- answers with the whole offer. Beside a weighted sibling that starves the
+// sibling to zero. A pane with an intended width has to be able to state it.
+Desc sized(Desc child, float w, float h = -1);
+
 // ---- tree -------------------------------------------------------------------------------------
 
 // One node of a tree. `id` is whatever the source knows it by -- for a file tree, the path -- and
@@ -601,6 +611,11 @@ public:
     // restyles one button must not repaint the window.
     void Invalidate(Rect r) { dirty_ = true; damage_.add(r); }
     void Quit() { quit_ = true; }
+
+private:
+    void damage_for(Node* n);
+
+public:
 
     // Runs until the window closes.
     //

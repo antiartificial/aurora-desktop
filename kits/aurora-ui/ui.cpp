@@ -318,14 +318,26 @@ public:
     }
 
     void Draw(au_surface* s, const Env& e) override {
+        // Nothing to draw, and more importantly nothing that MAY be drawn: the cells clip to
+        // their column, not to the list, so a list placed at zero width went on painting its
+        // header and rows across whatever was beside it.
+        if (frame.w <= 0 || frame.h <= 0) return;
         au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
+
+        // Column widths come from the Rows source and have nothing to do with how much room the
+        // list was given, so every column has to be clipped to the list's own right edge and a
+        // column starting past it skipped. Without this the header and the cells carried on
+        // across the neighbour: opening the preview pane left "Size" and "Mod" painted inside it.
+        const float edge = frame.x + frame.w - 1;
 
         // header
         float x = frame.x;
-        for (int col = 0; col < r_->Columns(); col++) {
+        for (int col = 0; col < r_->Columns() && x <= edge; col++) {
             const float cw = r_->ColumnWidth(col);
+            au_clip_set(s, au_rect{x, frame.y, std::min(x + cw - 6, edge), frame.y + head_h_});
             au_text_draw(s, e.bold, e.size - 1, r_->ColumnTitle(col).c_str(), -1,
                          x + e.unit * 0.75f, frame.y + head_h_ * 0.72f, e.dim);
+            au_clip_reset(s);
             x += cw;
         }
         au_stroke_line(s, frame.x, frame.y + head_h_, frame.x + frame.w - 1,
@@ -364,14 +376,15 @@ public:
                 au_fill_rect(s, au_rect{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1},
                              e.accent);
             float cx = frame.x;
-            for (int col = 0; col < r_->Columns(); col++) {
+            for (int col = 0; col < r_->Columns() && cx <= edge; col++) {
                 const CellValue v = r_->Cell(i, col);
                 const char* txt = v.state == CellState::Unknown ? "unknown" : v.text.c_str();
                 if (v.state == CellState::Pending) txt = "";
                 const au_color c = (sel_ && *sel_ == i)
                                        ? au_color{24, 26, 34, 255}
                                        : (v.state == CellState::Ready ? e.fg : e.dim);
-                au_clip_set(s, au_rect{cx, ry, cx + r_->ColumnWidth(col) - 6, ry + row_h_ - 1});
+                au_clip_set(s, au_rect{cx, ry, std::min(cx + r_->ColumnWidth(col) - 6, edge),
+                                       ry + row_h_ - 1});
                 au_text_draw(s, e.font, e.size, txt, -1, cx + e.unit * 0.75f,
                              ry + row_h_ * 0.72f, c);
                 au_clip_reset(s);
@@ -1441,6 +1454,46 @@ private:
     Window* win_ = nullptr;
 };
 
+// ---- Sized ------------------------------------------------------------------------------------
+
+// A fixed size on one axis or both.
+//
+// Its absence was a real bug and not a missing convenience. A child that is not weighted gets
+// its NATURAL size from a stack, and several widgets answer "as much as you will give me" --
+// TextView returns the constraint it was handed, because a wrapped document has no width of its
+// own. Put one of those in a row beside a weighted sibling and it takes everything, and the
+// weighted sibling is placed at zero: the preview pane opened over the file list rather than
+// beside it, and the list was still drawn only because it did not clip to its own frame.
+//
+// So a pane that should be 260 units wide has to be able to SAY 260. Every toolkit in this
+// family has this (SwiftUI's .frame(width:), Flutter's SizedBox); we had left it out.
+class SizedNode : public Node {
+public:
+    SizedNode(Desc c, float w, float h) : c_(std::move(c)), w_(w), h_(h) {}
+
+    Size Measure(const Env& e, Constraints c) override {
+        Constraints cc = c;
+        // The child is measured against the fixed size, not the parent's offer, so a wrapping
+        // child wraps to the width it will be drawn at.
+        if (w_ >= 0) cc.max_w = w_;
+        if (h_ >= 0) cc.max_h = h_;
+        const Size s = c_->Measure(e, cc);
+        return Size{w_ >= 0 ? w_ : s.w, h_ >= 0 ? h_ : s.h};
+    }
+    void Place(Rect r) override {
+        frame = r;
+        c_->parent = this;
+        c_->Place(r);
+    }
+    void Draw(au_surface* s, const Env& e) override { c_->Draw(s, e); }
+    Node* HitTest(float x, float y) override { return c_->HitTest(x, y); }
+    void Children(std::vector<Node*>* out) override { out->push_back(c_.get()); }
+
+private:
+    Desc c_;
+    float w_, h_;
+};
+
 // ---- Either -----------------------------------------------------------------------------------
 
 class EitherNode : public Node {
@@ -1450,7 +1503,10 @@ public:
     }
     Node* live() const { return (f_ && f_->get()) ? a_.get() : b_.get(); }
 
-    Size Measure(const Env& e, Constraints c) override { return live()->Measure(e, c); }
+    Size Measure(const Env& e, Constraints c) override {
+        applied_ = pick();
+        return live()->Measure(e, c);
+    }
     void Place(Rect r) override {
         frame = r;
         live()->parent = this;
@@ -1460,9 +1516,22 @@ public:
     Node* HitTest(float x, float y) override { return live()->HitTest(x, y); }
     void Children(std::vector<Node*>* out) override { out->push_back(live()); }
 
+    // A switch needs a LAYOUT, not just a repaint, and saying so is this node's whole job beyond
+    // picking. The child that was not live has never been measured or placed -- that is the
+    // point of Either, and it is stated in the header -- so on the switch it still holds the
+    // frame it was born with, which is nothing. It then drew nothing: an icon view that was
+    // reached by pressing the button, rather than by starting in it, was a blank pane.
+    //
+    // Animating() is the existing way to tell the window "my layout is stale", the same way the
+    // splitter uses it. `applied_` starts at -1 so the first layout settles it.
+    bool Animating() const override { return (int)pick() != applied_; }
+
 private:
+    bool pick() const { return f_ && f_->get(); }
+
     State<bool>* f_;
     Desc a_, b_;
+    int applied_ = -1;
 };
 
 // ---- Reveal -----------------------------------------------------------------------------------
@@ -1481,6 +1550,7 @@ public:
         want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
         if (t_.motion == Motion::None) e_.snap();
         const float f = e_.value();
+        applied_ = f;
         return t_.motion == Motion::RevealX ? Size{nat_.w * f, nat_.h} : Size{nat_.w, nat_.h * f};
     }
 
@@ -1520,13 +1590,23 @@ public:
         if (!allowed || t_.motion == Motion::None) { e_.target(want_, 0); e_.snap(); return; }
         e_.target(want_, t_.ms);
     }
-    bool Animating() const override { return e_.running(); }
+    // Running is not the only way to be stale. When motion is NOT allowed -- Motion::None, or
+    // the budget gate degrading under frame pressure -- Retarget SNAPS and nothing is running,
+    // so a check of e_.running() alone said "settled" while the layout still held the old
+    // fraction. The pane then never appeared at all.
+    //
+    // That is the worst possible shape for a degradation path: it failed precisely when the
+    // system was already struggling, and it failed by disappearing rather than by being abrupt.
+    // Comparing against the fraction the last layout actually used covers both cases, and it is
+    // the same thing Split and Either answer.
+    bool Animating() const override { return e_.running() || e_.value() != applied_; }
 
 private:
     State<bool>* shown_;
     Desc c_;
     Transition t_;
     Ease e_;
+    float applied_ = -1;
     Size nat_{};
     float want_ = 0;
 };
@@ -2078,6 +2158,10 @@ void OnListRename(const Desc& list, std::function<bool(int, const std::string&)>
 void BeginListRename(const Desc& list, int row) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->BeginRename(row);
 }
+Desc sized(Desc child, float w, float h) {
+    return std::make_shared<SizedNode>(std::move(child), w, h);
+}
+
 Desc Either(State<bool>* first, Desc a, Desc b) {
     return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
 }
@@ -2434,6 +2518,11 @@ void Window::Draw() {
     }
     if (moving) {
         Layout();
+        // Re-collect, because what answered Animating may have changed WHICH children exist:
+        // an Either hands over a different subtree, and the focus order and the tick scan are
+        // both built from that walk. Without this, Tab still led to the view you had left.
+        // CollectFocusables already drops a focus that is no longer in the tree.
+        CollectFocusables();
         damage_.all();        // a reveal moves everything below it; its own rect is not enough
     }
 
@@ -2717,6 +2806,21 @@ void Window::FocusFirst() {
     if (!focusables_.empty()) SetFocus(focusables_.front());
 }
 
+// Damage for a node that has just ticked.
+//
+// A node animating its own GEOMETRY cannot damage itself. While a reveal opens from zero its
+// frame is zero-WIDE, so Invalidate(frame) adds a degenerate rectangle, the damage list stays
+// empty, and Draw returns at its first line -- before the layout that would have given the node
+// a frame to damage. The animation then advanced correctly and invisibly, forever: the preview
+// pane reported open and running at fraction 0.000 every frame.
+//
+// A node whose size is part of the layout owes the window a full frame anyway; Draw's own
+// `moving` branch already says so with damage_.all(). This is that same rule, one step earlier.
+void Window::damage_for(Node* n) {
+    if (n->Animating()) Invalidate();
+    else Invalidate(n->frame);
+}
+
 int Window::Run(int frames, bool force_redraw, int max_ms) {
     if (!win_) return 1;
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -2764,10 +2868,19 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
         }
         const int wait = max_ms > 0 ? std::min(20, tick > 0 ? tick : 20)
                                     : (tick > 0 ? tick : 100);
-        if (!au_wl_wait(wl_, wait) && tick > 0) {
+        // Tick after the wait WHATEVER the wait returned. This used to tick only on a timeout,
+        // which meant an animation advanced only while nothing else was happening: under a
+        // compositor sending frame callbacks the wait is woken every time, so the ease never
+        // got a tick and every transition in the toolkit sat frozen at its starting value. The
+        // preview pane reported itself open, running and at fraction 0.000, forever.
+        //
+        // Ticking extra times is free and correct because Ease::tick reads the clock rather
+        // than counting calls; ticking too rarely was the bug.
+        au_wl_wait(wl_, wait);
+        if (tick > 0) {
             for (Node* n : all_)
-                if (n->TickMs() > 0) { n->OnTick(); Invalidate(n->frame); }
-            if (focus_ && focus_->TickMs() > 0) { focus_->OnTick(); Invalidate(focus_->frame); }
+                if (n->TickMs() > 0) { n->OnTick(); damage_for(n); }
+            if (focus_ && focus_->TickMs() > 0) { focus_->OnTick(); damage_for(focus_); }
         }
     }
     return 0;

@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# atlas-demo: drive Atlas through a scripted walkthrough and record it.
+#
+# Brings up the whole stack -- busd, controllerd, the compositor headless, and
+# Atlas -- then drives it through the test-input socket, capturing the
+# compositor's own frame at each beat. The frames are assembled into an mp4 and
+# a gif. Nothing here touches the host desktop; see --live for that.
+#
+# The point of recording it rather than describing it is that the compositor
+# renders the frame, so what lands in the file is what a person would see,
+# overlays and all. A demo that is a list of claims is not a demo.
+#
+#   harness/atlas-demo              headless, writes the reel
+#   harness/atlas-demo --live       run the stack nested on the current desktop
+#                                   instead, with Atlas inside it, and no reel
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${ATLAS_DEMO_OUT:-$ROOT/harness/atlas-demo-out}"
+LIVE=0
+[ "${1:-}" = "--live" ] && LIVE=1
+
+ATLAS="$ROOT/kits/build/interface/atlas"
+COMP="$ROOT/compositor/target/release/aurora-compositor"
+CAP="$ROOT/harness/capture/target/release/aurora-capture"
+for b in "$ATLAS" "$COMP"; do
+  [ -x "$b" ] || { echo "atlas-demo: missing $b -- build it first" >&2; exit 2; }
+done
+
+# ---- a directory worth showing ----------------------------------------------------------------
+# Named content, not a scratch dir: a reel of tmpXXXX directories demonstrates the widget and
+# none of the point.
+D=$(mktemp -d); W=$(mktemp -d); R=$(mktemp -d)
+trap 'kill ${AP:-} ${CP:-} ${CD:-} ${BP:-} 2>/dev/null; rm -rf "$D" "$W" "$R"' EXIT
+mkdir -p "$D"/{Documents,Pictures,Projects,Music}
+mkdir -p "$D"/Projects/{aurora,atlas}
+cat > "$D/README.md" <<'EOF'
+Atlas
+=====
+
+A file explorer built on aurora::ui, which is built on our own canvas, text
+and presenter -- not on BView and not on the app_server.
+
+Everything in this window is a primitive from kits/aurora-ui/ui.h: the tree in
+the sidebar, the divider you can drag, the list with its columns, the
+breadcrumb, the scrollbars, and the menu that asks the plumber what can
+actually be done with a file.
+
+The preview pane you are reading this in links no decoder. Plain text is
+rendered with the same text stack that draws the filenames; anything else is
+preview@v1, a verb that runs in a domain holding the file read-only.
+EOF
+printf 'x' > "$D/photo.png"
+printf 'notes\n' > "$D/Documents/notes.txt"
+head -c 4096 /dev/urandom > "$D/archive.zip"
+
+# ---- the bus, so the context menu shows real verbs ---------------------------------------------
+"$ROOT/kits/build/busd" --data-dir "$W/buslog" 2>"$W/busd.err" & BP=$!
+for _ in $(seq 100); do grep -q "listening on" "$W/busd.err" 2>/dev/null && break; sleep 0.05; done
+AURORA_BUS_SOCK="$(grep -oE '/[^ ]*bus\.sock' "$W/busd.err" | head -1)"
+[ -n "$AURORA_BUS_SOCK" ] || AURORA_BUS_SOCK=/run/user/$(id -u)/aurora/bus.sock
+export AURORA_BUS_SOCK
+if [ -x "$ROOT/build/bin/controllerd" ]; then
+  "$ROOT/build/bin/controllerd" --socket "$AURORA_BUS_SOCK" --apps "$ROOT/apps" \
+    --no-compositor-approval >"$W/ctl.log" 2>&1 & CD=$!
+  sleep 1.2
+else
+  echo "atlas-demo: no controllerd; the context menu will show its no-registry reason" >&2
+fi
+
+# ---- live: nest on the current desktop and stop here -------------------------------------------
+if [ "$LIVE" = 1 ]; then
+  [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] || { echo "atlas-demo --live needs a graphical session" >&2; exit 2; }
+  echo "atlas-demo: starting the compositor as a window on this desktop; close it to finish"
+  "$COMP" >"$R/comp.log" 2>&1 & CP=$!
+  for _ in $(seq 200); do grep -q 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
+  sock=$(grep -aoE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
+  [ -n "$sock" ] || { echo "atlas-demo: the compositor created no socket; see $R/comp.log" >&2; exit 1; }
+  env -u DISPLAY WAYLAND_DISPLAY="$sock" HOME="$D" ATLAS_DIR="$D" "$ATLAS"
+  exit 0
+fi
+
+# ---- headless: run, drive, capture -------------------------------------------------------------
+[ -x "$CAP" ] || { echo "atlas-demo: missing $CAP (cargo build --release in harness/capture)" >&2; exit 2; }
+rm -rf "$OUT"; mkdir -p "$OUT"
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$R" \
+  "$COMP" --headless=1280x800 --test-input "$R/ti" >"$R/comp.log" 2>&1 & CP=$!
+for _ in $(seq 200); do [ -S "$R/ti" ] && grep -aq 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
+sock=$(grep -aoE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
+[ -n "$sock" ] || { echo "atlas-demo: the compositor created no socket; see $R/comp.log" >&2; exit 1; }
+
+env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" HOME="$D" ATLAS_DIR="$D" "$ATLAS" >"$R/atlas.out" 2>&1 & AP=$!
+for _ in $(seq 200); do grep -aq 'deco: layout' "$R/comp.log" && break; sleep 0.05; done
+sleep 1.0
+
+n=0
+ti() { python3 -I "$ROOT/demos/kitchen-sink/ti.py" "$R/ti" --pause 0.08 "$@" >/dev/null 2>&1; }
+# Each beat is captured several times so it HOLDS in the reel. Capturing is the slow part, so
+# the hold is frames rather than a sleep: a reel that flashes each state for 40 ms shows nothing.
+beat() {
+  local hold=${2:-6}
+  for _ in $(seq "$hold"); do
+    n=$((n + 1))
+    env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" \
+      "$CAP" -o "$(printf '%s/f%04d.png' "$OUT" "$n")" >/dev/null 2>&1
+  done
+  echo "  beat: $1 (through frame $n)"
+}
+
+echo "atlas-demo: recording"
+beat "Atlas opens: sidebar, breadcrumb, list, scrollbars"
+ti "pointer 41 135" click;            beat "the twisty expands Home in place, without navigating"
+ti "pointer 640 75" click;            beat "the icon grid, over the same rows"
+ti "pointer 640 75" click;            beat "back to the list"
+ti "pointer 577 75" click;            beat "the preview pane reveals"
+ti "pointer 300 287" click;           beat "README.md previews in process: text needs no decoder"
+ti "pointer 300 265" rclick;          beat "the plumber says what can be done with a PNG"
+ti "key Escape";                      beat "dismissed" 3
+ti "pointer 90 215" click;            beat "clicking a place in the sidebar navigates"
+ti "pointer 212 300" press "pointer 330 300" "sleep 0.2" "pointer 330 300" release
+                                      beat "and the divider is yours to drag"
+
+kill $AP 2>/dev/null
+
+# ---- assemble -----------------------------------------------------------------------------------
+if command -v ffmpeg >/dev/null 2>&1; then
+  ffmpeg -y -framerate 6 -i "$OUT/f%04d.png" -vf "crop=700:470:20:14,scale=1050:-2:flags=lanczos" \
+    -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$OUT/atlas.mp4" >/dev/null 2>&1 \
+    && echo "atlas-demo: $OUT/atlas.mp4"
+  ffmpeg -y -framerate 6 -i "$OUT/f%04d.png" \
+    -vf "crop=700:470:20:14,scale=700:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse" \
+    "$OUT/atlas.gif" >/dev/null 2>&1 && echo "atlas-demo: $OUT/atlas.gif"
+else
+  echo "atlas-demo: no ffmpeg; the frames are in $OUT"
+fi
+echo "atlas-demo: $n frames in $OUT"

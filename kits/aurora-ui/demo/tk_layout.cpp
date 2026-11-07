@@ -91,6 +91,25 @@ struct ManyRows : Rows {
     std::string ColumnTitle(int) const override { return "Name"; }
 };
 
+// A child with a natural size and no font behind it. Spacer measures zero, and everything that
+// measures text needs a face, so a layout test of anything that reveals or divides needs this.
+struct Box : Node {
+    Size want;
+    explicit Box(Size w) : want(w) {}
+    Size Measure(const Env&, Constraints) override { return want; }
+    void Draw(au_surface*, const Env&) override {}
+};
+
+// A child that answers with whatever it is offered, which is what TextView does: a wrapped
+// document has no width of its own. Harmless alone, and the cause of the preview-pane bug the
+// moment it sits unweighted beside a weighted sibling.
+struct Greedy : Node {
+    Size Measure(const Env&, Constraints c) override {
+        return Size{c.max_w >= 0 ? c.max_w : 100, 50};
+    }
+    void Draw(au_surface*, const Env&) override {}
+};
+
 int main() {
     Env e;              // unit 8, no fonts needed by anything here
     const Rect box{0, 0, 1000, 600};
@@ -336,6 +355,80 @@ int main() {
         list->OnPressAt(395, 12, 1);
         list->OnRelease(true);
         eq("with nothing to scroll the press reaches the rows", selected >= 0);
+    }
+
+    // ---- switching views is a layout, not a repaint -------------------------------------------
+    // Either deliberately never measures the child that is not showing, so that child holds no
+    // frame at all. Switching to it therefore has to force a layout, and when it did not, the
+    // icon view came up BLANK -- but only when reached by pressing the button, because starting
+    // in it laid it out like anything else. That is why this is a test and not a glance.
+    {
+        State<bool> first(true);
+        Desc a = Spacer(), b = Spacer();
+        Desc ei = Either(&first, a, b);
+        lay(ei, e, box);
+        eq("settled after layout", !ei->Animating());
+        near("the live child was placed", a->frame.w, 1000);
+        eq("the hidden child was not placed at all", b->frame.w == 0);
+
+        first.set(false);
+        eq("a view switch leaves the layout stale", ei->Animating());
+        lay(ei, e, box);
+        near("the newly live child is placed", b->frame.w, 1000);
+        near("and gets the full height", b->frame.h, 600);
+        eq("settled again", !ei->Animating());
+    }
+
+    // ---- a reveal that cannot animate must still appear ---------------------------------------
+    // Motion::None is the same path the budget gate takes when it degrades under frame pressure:
+    // Retarget snaps, and nothing is left running. Reporting "settled" there meant no layout was
+    // ever requested and the pane kept its old zero fraction -- so under load the preview pane
+    // did not appear ABRUPTLY, it did not appear at all. A degradation path that fails exactly
+    // when the system is already struggling is worth its own test.
+    {
+        State<bool> shown(false);
+        Desc child = std::make_shared<Box>(Size{200, 50});
+        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        lay(rv, e, box);
+        near("hidden measures no width", rv->Measure(e, Constraints{1000, 600}).w, 0);
+        eq("settled while hidden", !rv->Animating());
+
+        shown.set(true);
+        rv->Retarget(false);                      // motion not allowed: snap
+        eq("a snapped reveal still needs a layout", rv->Animating());
+        near("revealed measures its natural width", rv->Measure(e, Constraints{1000, 600}).w, 200);
+        eq("settled once the layout used it", !rv->Animating());
+    }
+
+    // The same with motion allowed: it should be running, and still settle.
+    {
+        State<bool> shown(false);
+        Desc child = std::make_shared<Box>(Size{200, 50});
+        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        lay(rv, e, box);
+        shown.set(true);
+        rv->Retarget(true);
+        eq("an allowed reveal animates", rv->Animating());
+    }
+
+    // ---- sized(), and the starvation it exists to prevent --------------------------------------
+    {
+        Desc list = std::make_shared<Box>(Size{0, 0});
+        Desc pane = std::make_shared<Greedy>();
+        Desc row = HStack({weight(list, 1), pane}, 0);
+        lay(row, e, box);
+        // Not a bug in the stack -- an unweighted child gets its natural size, and this child's
+        // natural size really is "everything". It is a bug in asking for it. Recorded so the
+        // stack's rule is not quietly changed to paper over the call site.
+        near("a greedy unweighted child starves the weighted one", list->frame.w, 0);
+
+        Desc list2 = std::make_shared<Box>(Size{0, 0});
+        Desc pane2 = sized(std::make_shared<Greedy>(), 260);
+        Desc row2 = HStack({weight(list2, 1), pane2}, 0);
+        lay(row2, e, box);
+        near("sized() leaves the rest to the weighted child", list2->frame.w, 740);
+        near("and the sized pane is the width it asked for", pane2->frame.w, 260);
+        near("the sized pane keeps its natural height", pane2->frame.h, 600);
     }
 
     if (fails == 0) printf("tk_layout: ok\n");
