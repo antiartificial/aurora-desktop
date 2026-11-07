@@ -298,8 +298,26 @@ void OnListActivate(const Desc& list, std::function<void(int)> f);
 // The list owns the field rather than the app placing one, because the list is the only thing
 // that knows where a row is and the tree is built once: a field that appears over a row is
 // structural change, and structural change is a widget's job.
+// Selection changed, by any means: click, arrow, type-ahead. A preview pane wants this and a
+// status line wants this, and neither should have to poll the int it was handed.
+void OnListSelect(const Desc& list, std::function<void(int)> f);
+void OnIconsSelect(const Desc& icons, std::function<void(int)> f);
+
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
 void BeginListRename(const Desc& list, int row);
+
+// ---- multiline text ---------------------------------------------------------------------------
+
+// Read-only multiline text: wraps, scrolls, and draws only the visible lines.
+//
+// This is the display half of a text area, and it exists first because a preview pane needs
+// exactly this and nothing more. Editing multiline text -- a caret as line and column, selection
+// across lines, up and down moving by VISUAL line rather than logical -- is the other half and
+// is genuinely harder; building the display first means the preview is not waiting on it.
+//
+// Lines are split and wrapped once per (text, width) and cached, because wrapping measures text
+// and a scroll must not re-measure the document.
+Desc TextView(State<std::string>* text, bool wrap = true);
 
 // ---- breadcrumb -------------------------------------------------------------------------------
 

@@ -306,9 +306,7 @@ public:
         if (!inside || !sel_) return;
         const int i = top_ + (int)((click_y_ - frame.y - head_h_ - 1) / row_h_);
         if (i < 0 || i >= r_->Count()) return;
-        const int before = *sel_;
-        *sel_ = i;
-        if (before != i) { rows_dirty_.push_back(before); rows_dirty_.push_back(i); dirty_ = true; }
+        select(i);
         if (clicks_ >= 2 && on_act_) on_act_(i);      // double-click activates
     }
     void OnPressAt(float x, float y, int clicks) override {
@@ -379,6 +377,18 @@ public:
     }
     bool renaming() const { return edit_row_ >= 0 && edit_field_ != nullptr; }
     void SetRenameHandler(std::function<bool(int, const std::string&)> f) { on_ren_ = std::move(f); }
+    void SetSelectHandler(std::function<void(int)> f) { on_sel_ = std::move(f); }
+
+    // Every path that moves the selection goes through here, so a listener cannot miss one.
+    void select(int row) {
+        if (!sel_ || *sel_ == row) return;
+        const int before = *sel_;
+        *sel_ = row;
+        rows_dirty_.push_back(before);
+        rows_dirty_.push_back(row);
+        dirty_ = true;
+        if (on_sel_) on_sel_(row);
+    }
     void Attached(Window* w) override { win_ = w; }
 
     bool OnKey(const au_key& k) override {
@@ -411,11 +421,10 @@ public:
         }
         if (next != cur) {
             const int before_top = top_;
-            *sel_ = next;
+            select(next);
             Reveal(next);
             ahead_.clear();
             if (top_ != before_top) whole_ = true;        // it scrolled: every row moved
-            else { rows_dirty_.push_back(cur); rows_dirty_.push_back(next); }
             dirty_ = true;
             return true;
         }
@@ -434,11 +443,9 @@ public:
                 if (v.text.size() >= ahead_.size() &&
                     strncasecmp(v.text.c_str(), ahead_.c_str(), ahead_.size()) == 0) {
                     const int before_top = top_;
-                    const int before_sel = cur;
-                    *sel_ = row;
+                    select(row);
                     Reveal(row);
                     if (top_ != before_top) whole_ = true;
-                    else { rows_dirty_.push_back(before_sel); rows_dirty_.push_back(row); }
                     dirty_ = true;
                     return true;
                 }
@@ -474,7 +481,7 @@ public:
         const int row = top_ + (int)((y - frame.y - head_h_ - 1) / row_h_);
         if (row < 0 || row >= r_->Count()) return false;
         ctx_row_ = row;
-        if (sel_ && *sel_ < 0) { *sel_ = row; rows_dirty_.push_back(row); dirty_ = true; }
+        if (sel_ && *sel_ < 0) select(row);
         if (on_ctx_) on_ctx_(row, x, y);
         return true;
     }
@@ -495,6 +502,7 @@ private:
     std::function<void(int, float, float)> on_ctx_;
     std::function<void(int)> on_act_;
     std::function<bool(int, const std::string&)> on_ren_;
+    std::function<void(int)> on_sel_;
     int ctx_row_ = -1, clicks_ = 1, edit_row_ = -1;
     State<std::string> edit_text_;
     Desc edit_field_;
@@ -616,6 +624,143 @@ void draw_icon_geometry(au_surface* s, Rect r, FileKind k) {
 }
 
 }  // namespace
+
+// ---- TextView ---------------------------------------------------------------------------------
+
+class TextViewNode : public Node {
+public:
+    TextViewNode(State<std::string>* t, bool wrap) : t_(t), wrap_(wrap) {
+        if (t_) t_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        line_h_ = text_h(e) + 2;
+        return Size{c.max_w >= 0 ? c.max_w : 300, c.max_h >= 0 ? c.max_h : 200};
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        au_fill_rect(s, frame.box(), au_color{22, 24, 32, 255});
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        rewrap(e);
+
+        au_clip_set(s, frame.box());
+        const int vis = std::max(1, (int)(frame.h / line_h_));
+        const int first = std::min(top_, std::max(0, (int)lines_.size() - 1));
+        const int last = std::min((int)lines_.size() - 1, first + vis);
+        for (int i = first; i <= last; i++) {
+            const float y = frame.y + 4 + (i - first) * line_h_ + line_h_ * 0.75f;
+            au_text_draw(s, e.font, e.size, lines_[i].c_str(), -1, frame.x + e.unit * 0.75f, y,
+                         e.fg);
+        }
+        // A scroll hint, so a long document does not look like a short one.
+        if ((int)lines_.size() > vis) {
+            const float frac = (float)vis / (float)lines_.size();
+            const float pos = (float)first / (float)lines_.size();
+            au_fill_round_rect(s,
+                               au_rect{frame.x + frame.w - 5, frame.y + 2 + pos * (frame.h - 4),
+                                       frame.x + frame.w - 3,
+                                       frame.y + 2 + (pos + frac) * (frame.h - 4)},
+                               1, 1, e.dim);
+        }
+        au_clip_reset(s);
+    }
+
+    Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+
+    bool OnWheel(float dy) override {
+        scroll(dy > 0 ? 3 : -3);
+        return true;
+    }
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed) return false;
+        const int vis = std::max(1, (int)(frame.h / line_h_));
+        switch (k.raw_char) {
+            case 0x1e: scroll(-1); return true;
+            case 0x1f: scroll(1); return true;
+            case 0x0b: scroll(-vis); return true;
+            case 0x0c: scroll(vis); return true;
+            case 0x01: top_ = 0; return true;
+            case 0x04: top_ = std::max(0, (int)lines_.size() - vis); return true;
+            default: return false;
+        }
+    }
+
+    int line_count() const { return (int)lines_.size(); }
+
+private:
+    void scroll(int by) {
+        const int vis = std::max(1, (int)(frame.h / line_h_));
+        top_ = std::max(0, std::min(top_ + by, std::max(0, (int)lines_.size() - vis)));
+    }
+
+    // Split and wrap once per (text, width). A scroll must not re-measure the document, which is
+    // what doing this in Draw unconditionally would cost: wrapping calls au_text_width per word.
+    void rewrap(const Env& e) {
+        const std::string& v = t_->get();
+        if (v == cached_ && frame.w == cached_w_ && lines_valid_) return;
+        cached_ = v;
+        cached_w_ = frame.w;
+        lines_valid_ = true;
+        lines_.clear();
+        top_ = 0;
+        const float maxw = frame.w - e.unit * 2;
+        size_t i = 0;
+        while (i <= v.size()) {
+            const size_t nl = v.find('\n', i);
+            std::string line = v.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            // Tabs as four spaces: a tab drawn as a glyph is a box, and as zero width it hides
+            // the indentation that is most of what makes a text preview readable.
+            std::string flat;
+            for (char c : line) {
+                if (c == '\t') flat += "    ";
+                else if ((unsigned char)c < 0x20) flat += ' ';   // other control bytes
+                else flat += c;
+            }
+            if (!wrap_ || au_text_width(e.font, e.size, flat.c_str(), -1) <= maxw) {
+                lines_.push_back(flat);
+            } else {
+                // Wrap at spaces when there is one, mid-word when there is not: a path or a long
+                // token must still be readable rather than vanishing off the edge.
+                size_t start = 0;
+                while (start < flat.size()) {
+                    size_t lo = 1, hi = flat.size() - start, best = 1;
+                    while (lo <= hi) {
+                        const size_t mid = (lo + hi) / 2;
+                        if (au_text_width(e.font, e.size, flat.substr(start, mid).c_str(),
+                                          (int)mid) <= maxw) {
+                            best = mid;
+                            lo = mid + 1;
+                        } else {
+                            if (mid == 0) break;
+                            hi = mid - 1;
+                        }
+                    }
+                    size_t take = best;
+                    if (start + take < flat.size()) {
+                        const size_t sp = flat.rfind(' ', start + take);
+                        if (sp != std::string::npos && sp > start) take = sp - start + 1;
+                    }
+                    lines_.push_back(flat.substr(start, take));
+                    start += take;
+                    if (lines_.size() > 20000) break;   // a cap, so a pathological line cannot hang
+                }
+            }
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+    }
+
+    State<std::string>* t_;
+    bool wrap_;
+    std::vector<std::string> lines_;
+    std::string cached_;
+    float cached_w_ = -1, line_h_ = 16;
+    int top_ = 0;
+    bool focused_ = false, lines_valid_ = false;
+};
 
 // ---- Breadcrumb -------------------------------------------------------------------------------
 
@@ -823,13 +968,13 @@ public:
     void OnPressAt(float x, float y, int clicks) override {
         const int i = index_at(x, y);
         if (i < 0) return;
-        if (sel_) *sel_ = i;
+        select(i);
         if (clicks >= 2 && on_act_) on_act_(i);
     }
     bool OnContext(float x, float y) override {
         const int i = index_at(x, y);
         if (i < 0) return false;
-        if (sel_ && *sel_ < 0) *sel_ = i;
+        if (sel_ && *sel_ < 0) select(i);
         if (on_ctx_) on_ctx_(i, x, y);
         return true;
     }
@@ -860,7 +1005,7 @@ public:
             default: return false;
         }
         if (next == cur) return true;
-        *sel_ = next;
+        select(next);
         // Keep it on screen, scrolling by whole tile rows.
         const int r = next / c;
         if (r < top_row_) top_row_ = r;
@@ -870,11 +1015,18 @@ public:
 
     void SetActivateHandler(std::function<void(int)> f) { on_act_ = std::move(f); }
     void SetContextHandler(std::function<void(int, float, float)> f) { on_ctx_ = std::move(f); }
+    void SetSelectHandler(std::function<void(int)> f) { on_sel_ = std::move(f); }
+    void select(int i) {
+        if (!sel_ || *sel_ == i) return;
+        *sel_ = i;
+        if (on_sel_) on_sel_(i);
+    }
 
 private:
     Rows* r_;
     int* sel_;
     Env env_;
+    std::function<void(int)> on_sel_;
     float tile_w_ = 96, tile_h_ = 84;
     int top_row_ = 0;
     bool focused_ = false;
@@ -1336,6 +1488,13 @@ void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
 void OnListActivate(const Desc& list, std::function<void(int)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetActivateHandler(std::move(f));
 }
+void OnListSelect(const Desc& list, std::function<void(int)> f) {
+    if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetSelectHandler(std::move(f));
+}
+void OnIconsSelect(const Desc& d, std::function<void(int)> f) {
+    if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetSelectHandler(std::move(f));
+}
+
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetRenameHandler(std::move(f));
 }
@@ -1348,6 +1507,10 @@ Desc Either(State<bool>* first, Desc a, Desc b) {
 
 Desc Reveal(State<bool>* shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
+}
+
+Desc TextView(State<std::string>* t, bool wrap) {
+    return std::make_shared<TextViewNode>(t, wrap);
 }
 
 Desc IconView(Rows* r, int* sel) { return std::make_shared<IconsNode>(r, sel); }

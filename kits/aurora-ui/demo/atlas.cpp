@@ -46,6 +46,7 @@ struct Entry {
     time_t mtime = 0;
 };
 
+std::string human(off_t n);
 std::string human(off_t n) {
     const char* u[] = {"B", "KB", "MB", "GB", "TB"};
     double v = (double)n;
@@ -310,8 +311,93 @@ int main() {
     // effects marked, destructive behind a separator, and a disabled item left visible with its
     // reason. The verbs are stubs here -- wiring registry.plumb@v1 is the next piece -- but the
     // ORDER and the MARKING are the part the user is owed, and they are real.
+    // ---- the preview pane ----
+    //
+    // docs/aurora-ui.md section 2: the explorer links NO decoder for image, video, PDF or
+    // archive, ever. Decoding an untrusted file is preview@v1 -- effect read, run in a domain
+    // holding the file read-only -- and this pane asks for it rather than doing it.
+    //
+    // Plain text is the exception and it is a real one, not a loophole: rendering bytes with the
+    // text stack we already use for filenames involves no parser and no library with a CVE
+    // history. It is capped at 256 KiB and 2,000 lines, the caps porpoise uses, and the cap is
+    // here because here is where the read happens.
+    //
+    // Everything else reports Unavailable WITH A REASON, which names the verb as the thing that
+    // would supply it. A blank pane would imply the file has nothing to show.
+    State<std::string> preview_text("");
+    State<std::string> preview_head("");
+    preview_text.bind(&w);
+    preview_head.bind(&w);
+    int preview_row = -1;
+
+    auto looks_like_text = [](const char* buf, size_t n) {
+        if (n == 0) return true;
+        size_t odd = 0;
+        for (size_t i = 0; i < n; i++) {
+            const unsigned char c = (unsigned char)buf[i];
+            if (c == 0) return false;                       // a NUL settles it
+            if (c < 0x09 || (c > 0x0d && c < 0x20)) odd++;  // control bytes that are not whitespace
+        }
+        return odd * 100 < n * 5;    // under 5% odd bytes: a heuristic, and labelled as one
+    };
+
+    auto load_preview = [&](int row) {
+        preview_row = row;
+        if (row < 0) {
+            preview_head.set("");
+            preview_text.set("");
+            return;
+        }
+        std::string name = rows.Cell(row, 0).text;
+        const bool dir = !name.empty() && name.back() == '/';
+        if (dir) name.pop_back();
+        const std::string base = path.get() == "/" ? "" : path.get();
+        const std::string full = base + "/" + name;
+
+        if (dir) {
+            preview_head.set(name + "  (directory)");
+            preview_text.set("A directory. Enter to open it.");
+            return;
+        }
+        struct stat st;
+        const bool ok = lstat(full.c_str(), &st) == 0;
+        char head[512];
+        snprintf(head, sizeof head, "%s  (%s)", name.c_str(),
+                 ok ? human(st.st_size).c_str() : "unreadable");
+        preview_head.set(head);
+
+        FILE* f = fopen(full.c_str(), "rb");
+        if (!f) {
+            preview_text.set(std::string("Unavailable: cannot open (") + strerror(errno) + ")");
+            return;
+        }
+        static const size_t kCap = 256 * 1024;
+        std::string buf;
+        buf.resize(kCap);
+        const size_t n = fread(&buf[0], 1, kCap, f);
+        fclose(f);
+        buf.resize(n);
+        if (!looks_like_text(buf.data(), std::min<size_t>(n, 1024))) {
+            preview_text.set(
+                "Unavailable: not text.\n\n"
+                "Previewing this type needs preview@v1 -- a verb that runs in a domain holding "
+                "the file read-only. Atlas links no image, video, PDF or archive decoder, so it "
+                "cannot and will not decode this itself.");
+            return;
+        }
+        // 2,000 lines, so a one-line 256 KiB file does not become 20,000 wrapped lines.
+        size_t lines = 0, cut = buf.size();
+        for (size_t i = 0; i < buf.size(); i++)
+            if (buf[i] == '\n' && ++lines >= 2000) { cut = i; break; }
+        if (cut < buf.size()) buf.resize(cut);
+        if (n == kCap) buf += "\n\n[truncated at 256 KiB]";
+        preview_text.set(buf);
+    };
+
     State<bool> list_view(true);
+    State<bool> preview_open(false);
     list_view.bind(&w);
+    preview_open.bind(&w);
     auto list = named(ListView(&rows, &selected), "files");
     auto icons = named(IconView(&rows, &selected), "icons");
     State<std::string> last_action("");
@@ -345,6 +431,16 @@ int main() {
 
     // Rename, for real: rename(2) in the current directory. Returning false keeps the field
     // open, which is what a collision or a refusal from the filesystem should do.
+    OnListSelect(list, [&](int row) {
+        load_preview(row);
+        if (getenv("ATLAS_REPORT"))
+            printf("ATLAS preview open=%s head=\"%s\" bytes=%zu first=\"%.40s\"\n",
+                   preview_open.get() ? "yes" : "no", preview_head.get().c_str(),
+                   preview_text.get().size(), preview_text.get().c_str()),
+                fflush(stdout);
+    });
+    OnIconsSelect(icons, [&](int row) { load_preview(row); });
+
     OnListRename(list, [&](int row, const std::string& to) -> bool {
         std::string from = rows.Cell(row, 0).text;
         if (!from.empty() && from.back() == '/') from.pop_back();
@@ -409,6 +505,11 @@ int main() {
                         go(to, false);
                     }),
                     Button("Up", [&] { go(parent_of(path.get()), true); }),
+                    Button("Preview", [&] {
+                        preview_open.set(!preview_open.get());
+                        if (preview_open.get()) load_preview(selected);
+                        w.Invalidate();
+                    }),
                     Button("View", [&] {
                         list_view.set(!list_view.get());
                         w.Invalidate();
@@ -434,7 +535,19 @@ int main() {
                              0.5f),
                      Transition{Motion::Reveal, 160, Curve::EaseOut}),
               "filterbar"),
-        weight(Either(&list_view, list, icons), 1),
+        weight(HStack({
+                   weight(Either(&list_view, list, icons), 2),
+                   named(Reveal(&preview_open,
+                                padding(VStack({
+                                            styled(Label(&preview_head),
+                                                   TextStyle{0.95f, true}),
+                                            weight(named(TextView(&preview_text), "preview"), 1),
+                                        }, 0.25f),
+                                        0.5f),
+                                Transition{Motion::Reveal, 160, Curve::EaseOut}),
+                         "previewpane"),
+               }, 0),
+               1),
     }, 0));
 
     // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because
@@ -453,6 +566,10 @@ int main() {
             list_view.set(false);
             w.FocusNamed("icons");
         }
+    }
+    if (getenv("ATLAS_PREVIEW")) {
+        preview_open.set(true);
+        load_preview(selected);
     }
     if (getenv("ATLAS_OPEN_FILTER")) {
         filter_open.set(true);
@@ -484,6 +601,9 @@ int main() {
         printf("ATLAS last_action=\"%s\"\n", last_action.get().c_str());
         printf("ATLAS path=%s history=%zu view=%s\n", path.get().c_str(), history.size(),
                list_view.get() ? "list" : "icons");
+        printf("ATLAS preview open=%s head=\"%s\" bytes=%zu first=\"%.48s\"\n",
+               preview_open.get() ? "yes" : "no", preview_head.get().c_str(),
+               preview_text.get().size(), preview_text.get().c_str());
         printf("ATLAS selected=%d name=%s\n", selected,
                selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);
