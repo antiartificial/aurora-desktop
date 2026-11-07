@@ -209,9 +209,13 @@ int main() {
                     Button("Home", [] {}),
                 }),
                 0.75f),
-        weight(ListView(&rows, &selected), 1),
+        weight(named(ListView(&rows, &selected), "files"), 1),
     }, 0));
 
+    // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because
+    // tree order is reading order and the toolbar comes first -- correct for Tab, wrong for
+    // "what should the arrow keys talk to". The keyboard should work without a click.
+    if (!w.FocusNamed("files")) fprintf(stderr, "atlas: could not focus the file list\n");
     rows.StartWorker();
 
     const char* fr = getenv("ATLAS_FRAMES");
@@ -230,6 +234,10 @@ int main() {
         const Window::DamageStats ds = w.damage_stats();
         printf("ATLAS damage full=%zu partial=%zu mean_fraction=%.3f\n",
                ds.full, ds.partial, ds.mean_fraction);
+        printf("ATLAS focusables=%zu focused=%s keys_seen=%zu\n", w.focusable_count(),
+               w.focus() ? "yes" : "no", w.keys_seen());
+        printf("ATLAS selected=%d name=%s\n", selected,
+               selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
         fflush(stdout);
     }
     return 0;

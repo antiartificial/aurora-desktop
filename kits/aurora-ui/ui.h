@@ -18,11 +18,12 @@
 
 #include "au_draw.h"
 
-// Forward-declared at GLOBAL scope on purpose: declaring these inside namespace aurora::ui
-// would create aurora::ui::au_wl, a different type from present.h's, and every call would fail
-// to convert. Including present.h here instead would put Wayland in every consumer's headers.
-struct au_wl;
-struct au_wl_win;
+// present.h, not a forward declaration. au_key is a typedef of an anonymous struct, so it
+// cannot be forward-declared at all -- and present.h turns out to be safe to include anyway:
+// it pulls in <stdint.h> and nothing else, declaring its Wayland types opaquely. The earlier
+// forward declarations also had a subtler bug: written inside namespace aurora::ui they would
+// have created aurora::ui::au_wl, a different type, and every call would have failed to convert.
+#include "../interface/appserver/present.h"
 
 #include <functional>
 #include <memory>
@@ -107,6 +108,27 @@ public:
     virtual void OnPress() {}
     virtual void OnRelease(bool inside) { (void)inside; }
     virtual bool Wants(float* out_weight) { (void)out_weight; return false; }
+
+    // Wheel and keys return true when handled. Unhandled events bubble to `parent`, which is
+    // what replaced routing them to a global pointer to the one list a window happened to have.
+    virtual bool OnWheel(float dy) { (void)dy; return false; }
+    virtual bool OnKey(const au_key& k) { (void)k; return false; }
+
+    // Focus. A node that takes keys says so; the window collects these in tree order for Tab.
+    virtual bool CanFocus() const { return false; }
+    virtual void OnFocus(bool gained) { (void)gained; }
+
+    // How the window walks the tree, for focus order and for nothing else. A container appends
+    // its children in the order they are laid out.
+    virtual void Children(std::vector<Node*>* out) { (void)out; }
+
+    // After handling an event, a node may say that less than its whole frame changed. Without
+    // this the window damages the handler's frame, which for a list that fills the window is a
+    // full repaint for a selection moving one row -- measured at 0.906 of the window before this
+    // existed, against 0.03 for a hover. Return false to mean "my whole frame".
+    virtual bool DamageHint(std::vector<Rect>* out) { (void)out; return false; }
+
+    Node* parent = nullptr;
 
     Rect frame;
     Insets pad;
@@ -228,14 +250,36 @@ public:
     Timing timing() const;
 
     au_surface* surface() const { return sf_; }
+    Node* focus() const { return focus_; }
+    size_t focusable_count() const { return focusables_.size(); }
+    size_t keys_seen() const { return keys_seen_; }
+    // Focus the first focusable node in tree order. Note what that means: tree order is reading
+    // order, so in a window whose toolbar comes before its content the FIRST focusable is a
+    // toolbar button, not the content. That is correct for Tab and wrong for "what should the
+    // keyboard talk to when this opens", which is why FocusNamed exists and is what callers want.
+    void FocusFirst();
+
+    // Focus the node with this `name`. The name modifier is not decoration: it is how a test, an
+    // agent reading the accessibility tree, and the app itself all address a widget. This is its
+    // first real use, and it is the primitive that makes the other two possible.
+    bool FocusNamed(const char* name);
+    Node* FindNamed(const char* name);
 
 private:
     void Layout();
     void Draw();
     static void Event(void* user, int kind, int a, int b);
+    static void Key(void* user, const au_key* k);
+    void CollectFocusables();
+    void MoveFocus(int delta);
+    void SetFocus(Node* n);
 
-    ::au_wl* wl_ = nullptr;
-    ::au_wl_win* win_ = nullptr;
+    std::vector<Node*> focusables_;
+    Node* focus_ = nullptr;
+    size_t keys_seen_ = 0;
+
+    au_wl* wl_ = nullptr;
+    au_wl_win* win_ = nullptr;
     au_surface* sf_ = nullptr;
     Desc root_;
     Env env_;

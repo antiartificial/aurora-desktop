@@ -2,12 +2,12 @@
 // the reasoning.
 
 #include "ui.h"
-#include "../interface/appserver/present.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 namespace aurora {
 namespace ui {
@@ -67,6 +67,8 @@ public:
     void Draw(au_surface* s, const Env& e) override {
         const au_color bg = down_ ? e.accent : (over_ ? e.surface_hi : e.surface);
         au_fill_round_rect(s, frame.box(), 7, 7, bg);
+        // A visible focus ring, always. Hiding where focus is makes a keyboard user guess.
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 2);
         const float tw = au_text_width(e.font, e.size, l_.c_str(), -1);
         au_text_draw(s, e.font, e.size, l_.c_str(), -1, frame.x + (frame.w - tw) / 2,
                      baseline_in(e, frame), down_ ? e.surface : e.fg);
@@ -78,11 +80,26 @@ public:
         down_ = false;
         if (inside && f_) f_();
     }
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; }
+    bool OnKey(const au_key& k) override {
+        // Space and Enter activate, which is what every toolkit since the 1980s does and what a
+        // keyboard-only user reaches for first.
+        if (!k.pressed) return false;
+        if (k.utf8[0] == ' ' || k.utf8[0] == '\r' || k.utf8[0] == '\n') {
+            if (f_) f_();
+            return true;
+        }
+        return false;
+    }
 
 private:
     std::string l_;
     std::function<void()> f_;
-    bool over_ = false, down_ = false;
+    bool over_ = false, down_ = false, focused_ = false;
+
+public:
+    bool is_focused() const { return focused_; }
 };
 
 class SpacerNode : public Node {
@@ -144,6 +161,7 @@ public:
             const bool wants = c_[i]->Wants(&ww);
             const float w = c_[i]->weight > 0 ? c_[i]->weight : (wants ? (ww > 0 ? ww : 1) : 0);
             const float m = w > 0 ? per * w : (vert_ ? meas_[i].h : meas_[i].w);
+            c_[i]->parent = this;
             c_[i]->Place(vert_ ? Rect{in.x, at, in.w, m} : Rect{at, in.y, m, in.h});
             at += m + gap;
         }
@@ -158,6 +176,10 @@ public:
         if (!frame.has(x, y)) return nullptr;
         for (auto& ch : c_) if (Node* n = ch->HitTest(x, y)) return n;
         return nullptr;
+    }
+
+    void Children(std::vector<Node*>* out) override {
+        for (auto& ch : c_) out->push_back(ch.get());
     }
 
     void SetUnit(float u) { env_unit_ = u; }
@@ -198,6 +220,17 @@ public:
         }
         au_stroke_line(s, frame.x, frame.y + head_h_, frame.x + frame.w - 1,
                        frame.y + head_h_, au_color{60, 64, 82, 255}, 1);
+        if (focused_) au_stroke_rect(s, frame.box(), e.accent, 1);
+        if (!ahead_.empty()) {
+            // What you typed, shown where you are looking. Type-ahead that gives no feedback
+            // feels like the program ignoring you.
+            const float w = au_text_width(e.bold, e.size, ahead_.c_str(), -1) + e.unit * 2;
+            const au_rect box{frame.x + frame.w - w - 8, frame.y + head_h_ + 6,
+                              frame.x + frame.w - 8, frame.y + head_h_ + 6 + row_h_ + 4};
+            au_fill_round_rect(s, box, 6, 6, e.accent);
+            au_text_draw(s, e.bold, e.size, ahead_.c_str(), -1, box.l + e.unit,
+                         box.t + row_h_ * 0.78f + 2, au_color{24, 26, 34, 255});
+        }
 
         const int n = r_->Count();
         const int vis = (int)((frame.h - head_h_) / row_h_);
@@ -236,11 +269,104 @@ public:
         if (i >= 0 && i < r_->Count()) *sel_ = i;
     }
     void SetClickY(float y) { click_y_ = y; }
-    void Scroll(float dy) {
-        top_ = std::max(0, top_ + (dy > 0 ? 3 : -3));
-        const int vis = (int)((frame.h - head_h_) / row_h_);
-        top_ = std::min(top_, std::max(0, r_->Count() - vis));
+
+    int visible() const { return std::max(1, (int)((frame.h - head_h_) / row_h_)); }
+
+    void ScrollBy(int rows) {
+        const int before = top_;
+        top_ = std::max(0, top_ + rows);
+        top_ = std::min(top_, std::max(0, r_->Count() - visible()));
+        if (top_ != before) { dirty_ = true; whole_ = true; }
     }
+    // Keep the selection on screen after a keyboard move, scrolling the least that will do it.
+    void Reveal(int row) {
+        if (row < top_) { top_ = row; dirty_ = true; }
+        else if (row >= top_ + visible()) { top_ = row - visible() + 1; dirty_ = true; }
+    }
+
+    bool OnWheel(float dy) override {
+        ScrollBy(dy > 0 ? 3 : -3);
+        return true;
+    }
+
+    bool CanFocus() const override { return true; }
+    void OnFocus(bool g) override { focused_ = g; whole_ = true; dirty_ = true; }
+
+    bool OnKey(const au_key& k) override {
+        if (!k.pressed || !sel_) return false;
+        const int n = r_->Count();
+        if (n == 0) return false;
+        const int cur = *sel_ < 0 ? -1 : *sel_;
+        int next = cur;
+        switch (k.raw_char) {
+            case 0x1e: next = cur <= 0 ? 0 : cur - 1; break;                        // up
+            case 0x1f: next = cur < 0 ? 0 : std::min(n - 1, cur + 1); break;        // down
+            case 0x0b: next = std::max(0, cur - visible()); break;                  // page up
+            case 0x0c: next = std::min(n - 1, (cur < 0 ? 0 : cur) + visible()); break;  // page down
+            case 0x01: next = 0; break;                                             // home
+            case 0x04: next = n - 1; break;                                         // end
+            default: next = cur; break;
+        }
+        if (next != cur) {
+            const int before_top = top_;
+            *sel_ = next;
+            Reveal(next);
+            ahead_.clear();
+            if (top_ != before_top) whole_ = true;        // it scrolled: every row moved
+            else { rows_dirty_.push_back(cur); rows_dirty_.push_back(next); }
+            dirty_ = true;
+            return true;
+        }
+        // Type-ahead. It is never a dialog and never a search box: typing moves the selection,
+        // which is Tracker's behaviour and the one the HIG position in the framework doc argues
+        // for. A printable character extends the buffer; the buffer resets after a pause or on
+        // any navigation key above.
+        if (k.utf8[0] && (unsigned char)k.utf8[0] >= 0x20) {
+            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+            if (std::chrono::duration<double>(now - last_type_).count() > 1.0) ahead_.clear();
+            last_type_ = now;
+            ahead_ += k.utf8;
+            for (int i = 0; i < n; i++) {
+                const int row = (cur + 1 + i) % n;   // search forward from the selection, wrapping
+                const CellValue v = r_->Cell(row, 0);
+                if (v.text.size() >= ahead_.size() &&
+                    strncasecmp(v.text.c_str(), ahead_.c_str(), ahead_.size()) == 0) {
+                    const int before_top = top_;
+                    const int before_sel = cur;
+                    *sel_ = row;
+                    Reveal(row);
+                    if (top_ != before_top) whole_ = true;
+                    else { rows_dirty_.push_back(before_sel); rows_dirty_.push_back(row); }
+                    dirty_ = true;
+                    return true;
+                }
+            }
+            return true;    // no match: swallow it rather than letting it do something else
+        }
+        return false;
+    }
+
+    // The rows whose appearance changed, rather than the whole list. A selection moving one row
+    // repaints two rows; a scroll or a focus change repaints the list, and says so by returning
+    // false. Reported in layout units, clipped to the list's own frame.
+    bool DamageHint(std::vector<Rect>* out) override {
+        if (whole_) { whole_ = false; rows_dirty_.clear(); return false; }
+        if (rows_dirty_.empty()) return false;
+        for (int row : rows_dirty_) {
+            if (row < top_ || row >= top_ + visible()) continue;
+            const float ry = frame.y + head_h_ + 1 + (row - top_) * row_h_;
+            out->push_back(Rect{frame.x, ry, frame.w, row_h_});
+        }
+        rows_dirty_.clear();
+        // The type-ahead badge sits top-right of the list and changes with the buffer.
+        if (!ahead_.empty())
+            out->push_back(Rect{frame.x + frame.w * 0.5f, frame.y + head_h_,
+                                frame.w * 0.5f, row_h_ + 12});
+        return !out->empty();
+    }
+
+    bool take_dirty() { const bool d = dirty_; dirty_ = false; return d; }
+    const std::string& ahead() const { return ahead_; }
     int rows_drawn() const { return rows_drawn_; }
 
 private:
@@ -248,9 +374,11 @@ private:
     int* sel_;
     int top_ = 0, rows_drawn_ = 0;
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
+    bool focused_ = false, dirty_ = false, whole_ = false;
+    std::vector<int> rows_dirty_;
+    std::string ahead_;
+    std::chrono::steady_clock::time_point last_type_{};
 };
-
-ListNode* g_list = nullptr;   // the one list a window has, for wheel routing in the spike stage
 
 }  // namespace
 
@@ -301,11 +429,7 @@ Desc VStack(std::vector<Desc> c, float gap) {
 Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
-Desc ListView(Rows* r, int* sel) {
-    auto n = std::make_shared<ListNode>(r, sel);
-    g_list = n.get();
-    return n;
-}
+Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
 
 // ---- window -----------------------------------------------------------------------------------
 
@@ -319,6 +443,7 @@ Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
     if (!au_font_system("bold", &env_.bold, &sz)) env_.bold = env_.font;
     sf_ = au_surface_new(lw_, lh_, scale_);
     win_ = au_wl_win_create(wl_, title, lw_, lh_, &Window::Event, this);
+    if (win_) au_wl_win_set_key_fn(win_, &Window::Key);
 }
 
 Window::~Window() {
@@ -338,7 +463,7 @@ void Window::Draw() {
     if (damage_.empty()) { dirty_ = false; return; }   // nothing asked to be redrawn
     const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 
-    if (!laid_) { Layout(); damage_.all(); }           // a new layout invalidates everything
+    if (!laid_) { Layout(); CollectFocusables(); damage_.all(); }   // new layout: all of it
 
     const bool full = damage_.is_all();
     const Rect clip = full ? Rect{0, 0, (float)lw_, (float)lh_} : damage_.bounds();
@@ -432,8 +557,13 @@ void Window::Event(void* user, int kind, int a, int b) {
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
             if (b) {
                 w->pressed_ = n;
-                if (g_list && n == g_list) g_list->SetClickY(w->py_);
-                if (n) { n->OnPress(); w->Invalidate(n->frame); }
+                if (n) {
+                    // A press moves focus to what was pressed, if it takes focus. Clicking a
+                    // thing and then typing should talk to that thing.
+                    if (n->CanFocus()) w->SetFocus(n);
+                    n->OnPress();
+                    w->Invalidate(n->frame);
+                }
             } else {
                 if (w->pressed_) {
                     w->pressed_->OnRelease(w->pressed_ == n);
@@ -446,15 +576,112 @@ void Window::Event(void* user, int kind, int a, int b) {
             }
             break;
         }
-        case AU_EV_WHEEL:
-            // A scroll changes every row, so the list's own rect is the damage -- which is still
-            // less than the window, and is why ListView reports its frame rather than calling
-            // the no-argument Invalidate.
-            if (g_list) { g_list->Scroll(b / 256.0f); w->Invalidate(g_list->frame); }
+        case AU_EV_WHEEL: {
+            // Route to the node under the pointer and bubble up until something handles it.
+            // This replaced a global pointer to the one list a window happened to have, which
+            // worked only because there was exactly one.
+            Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
+            for (; n; n = n->parent) {
+                if (n->OnWheel(b / 256.0f)) {
+                    // A scroll changes every row, so the handler's own rect is the damage --
+                    // still less than the window.
+                    w->Invalidate(n->frame);
+                    break;
+                }
+            }
             break;
+        }
         default:
             break;
     }
+}
+
+void Window::Key(void* user, const au_key* k) {
+    Window* w = static_cast<Window*>(user);
+    if (!w || !k) return;
+    w->keys_seen_++;
+    // Tab moves focus. It is handled before the focused node sees the key, because a widget that
+    // swallowed Tab would trap a keyboard user inside it.
+    if (k->pressed && k->raw_char == '\t') {
+        w->MoveFocus((k->mods & AU_MOD_SHIFT) ? -1 : 1);
+        return;
+    }
+    if (w->focus_ && w->focus_->OnKey(*k)) {
+        std::vector<Rect> hint;
+        if (w->focus_->DamageHint(&hint))
+            for (const Rect& r : hint) w->Invalidate(r);
+        else
+            w->Invalidate(w->focus_->frame);
+        return;
+    }
+    // Unhandled: bubble to the ancestors, so a container can act for a child.
+    for (Node* n = w->focus_ ? w->focus_->parent : nullptr; n; n = n->parent)
+        if (n->OnKey(*k)) { w->Invalidate(n->frame); return; }
+}
+
+void Window::CollectFocusables() {
+    focusables_.clear();
+    if (!root_) return;
+    // Depth-first in layout order, which is the order a reader's eye takes and therefore the
+    // order Tab should follow.
+    std::vector<Node*> stack{root_.get()};
+    std::vector<Node*> order;
+    while (!stack.empty()) {
+        Node* n = stack.back();
+        stack.pop_back();
+        order.push_back(n);
+        std::vector<Node*> kids;
+        n->Children(&kids);
+        for (size_t i = kids.size(); i > 0; i--) stack.push_back(kids[i - 1]);
+    }
+    for (Node* n : order)
+        if (n->CanFocus()) focusables_.push_back(n);
+    if (focus_ && std::find(focusables_.begin(), focusables_.end(), focus_) == focusables_.end())
+        focus_ = nullptr;        // it went away with the last layout
+}
+
+void Window::SetFocus(Node* n) {
+    if (n == focus_) return;
+    if (focus_) { focus_->OnFocus(false); Invalidate(focus_->frame); }
+    focus_ = n;
+    if (focus_) { focus_->OnFocus(true); Invalidate(focus_->frame); }
+}
+
+void Window::MoveFocus(int delta) {
+    if (focusables_.empty()) return;
+    int at = 0;
+    for (size_t i = 0; i < focusables_.size(); i++)
+        if (focusables_[i] == focus_) { at = (int)i + delta; break; }
+    const int n = (int)focusables_.size();
+    at = ((at % n) + n) % n;     // wrap both ways
+    SetFocus(focusables_[at]);
+}
+
+Node* Window::FindNamed(const char* name) {
+    if (!root_ || !name) return nullptr;
+    std::vector<Node*> stack{root_.get()};
+    while (!stack.empty()) {
+        Node* n = stack.back();
+        stack.pop_back();
+        if (n->name == name) return n;
+        std::vector<Node*> kids;
+        n->Children(&kids);
+        for (size_t i = kids.size(); i > 0; i--) stack.push_back(kids[i - 1]);
+    }
+    return nullptr;
+}
+
+bool Window::FocusNamed(const char* name) {
+    if (focusables_.empty()) CollectFocusables();
+    Node* n = FindNamed(name);
+    if (!n || !n->CanFocus()) return false;
+    SetFocus(n);
+    return true;
+}
+
+void Window::FocusFirst() {
+    if (focusables_.empty()) CollectFocusables();
+    if (!focusables_.empty()) SetFocus(focusables_.front());
 }
 
 int Window::Run(int frames, bool force_redraw, int max_ms) {
