@@ -54,10 +54,13 @@ pub struct Figures {
 }
 
 /// The whole machine. Percent of all CPU time, and of RAM in use.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct SysFigures {
     pub cpu: Option<f32>,
     pub mem: Option<f32>,
+    /// What the machine is connected by, if anything could be read.
+    pub link: Option<super::sysinfo::Link>,
+    pub battery: Option<super::sysinfo::Battery>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -262,6 +265,20 @@ pub fn meta(g: &Group, fig: Option<&Figures>, net: Option<&DomainNet>) -> Vec<Ve
 /// Machine-wide header figures, only those that were read.
 pub fn system_text(s: &SysFigures) -> Vec<String> {
     let mut v = vec![];
+    // Network and battery come FIRST. They are the two a person glances at and the two that
+    // change what they do next; cpu and mem are diagnostics. An offline laptop at 4% should not
+    // have to be read past a CPU figure to find that out.
+    match &s.link {
+        Some(super::sysinfo::Link::Wired) => v.push("wired".into()),
+        Some(super::sysinfo::Link::Wireless) => v.push("wi-fi".into()),
+        Some(super::sysinfo::Link::Down) => v.push("offline".into()),
+        None => {}
+    }
+    if let Some(b) = &s.battery {
+        // Labelled, like every other figure here: a bare "98%" beside "cpu 34%" is a number
+        // the reader has to guess the meaning of. The "+" is charging.
+        v.push(format!("batt {}{}%", if b.charging { "+" } else { "" }, b.percent));
+    }
     if let Some(c) = s.cpu {
         v.push(format!("cpu {}", cpu_text(c)));
     }

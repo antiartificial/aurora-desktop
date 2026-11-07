@@ -445,10 +445,37 @@ mod tests {
             build(&v, &st(cfg, 900.0), &mut t).rows[0].meta.clone()
         };
         assert_eq!(head(&cfg, SysFigures::default()), "", "nothing read yet: no 0%");
-        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: None }), "cpu 12%");
-        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: Some(61.0) }), "cpu 12% \u{b7} mem 61%");
+        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: None, ..Default::default() }), "cpu 12%");
+        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: Some(61.0), ..Default::default() }), "cpu 12% \u{b7} mem 61%");
+
+        // Network and battery lead, because they are what a person is actually checking. An
+        // offline laptop at 4% should not have to be read past a CPU figure to find that out.
+        let low = SysFigures {
+            cpu: Some(12.0),
+            mem: None,
+            link: Some(crate::deskbar::sysinfo::Link::Down),
+            battery: Some(crate::deskbar::sysinfo::Battery { percent: 4, charging: false }),
+        };
+        assert_eq!(head(&cfg, low), "offline \u{b7} batt 4% \u{b7} cpu 12%");
+
+        let charging = SysFigures {
+            cpu: None,
+            mem: None,
+            link: Some(crate::deskbar::sysinfo::Link::Wireless),
+            battery: Some(crate::deskbar::sysinfo::Battery { percent: 88, charging: true }),
+        };
+        assert_eq!(head(&cfg, charging), "wi-fi \u{b7} batt +88%");
+
+        // A desktop with no battery says nothing about one, rather than 0%.
+        let desktop = SysFigures {
+            cpu: None,
+            mem: None,
+            link: Some(crate::deskbar::sysinfo::Link::Wired),
+            battery: None,
+        };
+        assert_eq!(head(&cfg, desktop), "wired");
         cfg.system = false;
-        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: Some(61.0) }), "");
+        assert_eq!(head(&cfg, SysFigures { cpu: Some(12.0), mem: Some(61.0), ..Default::default() }), "");
     }
 
     #[test]

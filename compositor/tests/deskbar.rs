@@ -296,8 +296,13 @@ fn the_header_shows_machine_figures_labelled_as_such_and_only_ones_it_read() {
     // "cpu 12% . mem 61%": a CPU share needs two readings and a memory share one; whichever is there is a percentage
     for part in h.split(DOT) {
         let p = part.trim();
+        // The link is a STATE, not a figure: one word, no number, and nothing to mislabel.
+        if matches!(p, "wired" | "wi-fi" | "offline") {
+            continue;
+        }
         let (name, val) = p.split_once(' ').unwrap_or((p, ""));
-        assert!(matches!(name, "cpu" | "mem"), "an unlabelled figure in the header: {h:?}");
+        assert!(matches!(name, "cpu" | "mem" | "batt"), "an unlabelled figure in the header: {h:?}");
+        // A leading "+" on the battery means charging and still parses as a number.
         assert!(val.ends_with('%') && val.trim_end_matches('%').trim_start_matches('<').parse::<f32>().is_ok(), "{h:?}");
     }
     assert!(h.contains("mem"), "this machine has /proc/meminfo: {h:?}");

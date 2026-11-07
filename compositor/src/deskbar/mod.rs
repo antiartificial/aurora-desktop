@@ -15,6 +15,7 @@
 //! reads that numbers may come from), `feed` (the bus thread that learns network activity), `draw`
 //! (layout and pixels). This file is the state and the glue to the `Space` and the pointer.
 
+pub mod sysinfo;
 pub mod draw;
 pub mod feed;
 pub mod model;
@@ -170,7 +171,7 @@ impl Aurora {
         // Below the clock and the margin: what is left of the output's height, logical.
         let max_h = ((usable.h as f64 / scale) as f32 - cfg.margin - 130.0).max(120.0);
         let style = draw::Style { cfg: &cfg, scale, font: st.font_size(), glass_on: st.glass_enabled(), radius: st.glass_radius(), max_h };
-        let view = View { groups: &groups, expand: &expand, figures: &self.deskbar.figures, net: &self.deskbar.net, net_watching: self.deskbar.watching, sys: self.deskbar.sys, hover: self.deskbar.hover.clone() };
+        let view = View { groups: &groups, expand: &expand, figures: &self.deskbar.figures, net: &self.deskbar.net, net_watching: self.deskbar.watching, sys: self.deskbar.sys.clone(), hover: self.deskbar.hover.clone() };
         let key = draw::key(&view, &style);
         let rebuilt = (key != self.deskbar.key).then(|| draw::build(&view, &style, &mut self.shell.text));
         self.deskbar.shown = true;

@@ -96,6 +96,9 @@ pub fn mem_used_percent(meminfo: &str) -> Option<f32> {
 #[derive(Default)]
 pub struct Sampler {
     pub roots: Roots,
+    /// Where network and battery are read from. A field for the same reason `roots` is: a test
+    /// cannot assert anything about whatever hardware the machine running it happens to have.
+    pub sys_roots: super::sysinfo::Roots,
     prev: HashMap<String, (u64, Instant)>,
     sys_prev: Option<(u64, u64)>,
 }
@@ -153,7 +156,12 @@ impl Sampler {
             _ => None,
         };
         self.sys_prev = j;
-        SysFigures { cpu, mem: read(&self.roots.proc.join("meminfo")).and_then(|t| mem_used_percent(&t)) }
+        SysFigures {
+            cpu,
+            mem: read(&self.roots.proc.join("meminfo")).and_then(|t| mem_used_percent(&t)),
+            link: super::sysinfo::link(&self.sys_roots),
+            battery: super::sysinfo::battery(&self.sys_roots),
+        }
     }
 }
 
