@@ -268,6 +268,18 @@ pub fn request_json(id: &str, timeout_ms: u64) -> String {
     }).to_string()
 }
 
+/// Wait until a freshly raised trusted prompt will accept a decision.
+///
+/// `trusted::ARM` is 400ms: a prompt ignores the keyboard until then, so that one
+/// raised while the user is typing cannot be answered by their own typing. A test
+/// that injects the deciding key the instant the overlay appears is faster than
+/// any human and gets its key swallowed, then blocks on a reply that never comes.
+/// Call this between raising a prompt and answering it. It is a test-side mirror
+/// of a compositor constant, which a test binary cannot import.
+pub fn wait_until_armed() {
+    std::thread::sleep(Duration::from_millis(550));
+}
+
 /// Open the trusted socket and send a request; the stream is the pending reply.
 pub fn ask(c: &Comp, line: &str) -> UnixStream {
     let mut s = UnixStream::connect(&c.trusted).expect("connect trusted socket");

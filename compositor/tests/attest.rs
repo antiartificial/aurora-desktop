@@ -36,8 +36,16 @@ fn fake_bus(dir: &std::path::Path, events: Vec<(&'static str, &'static str)>) ->
                     "bus.inspect@v1" => serde_json::json!({
                         "clients": [], "services": [], "subscriptions": [], "handles": [], "clock": "x",
                         "domains": [{"identity": IDA, "socket": "/a", "cgroup": "/aurora-domains/a"}, {"identity": IDB, "socket": "/b", "cgroup": "/aurora-domains/b"}]}),
+                    // The compositor is not the only thing that reads the log: the
+                    // deskbar polls net.conn and the indicator polls
+                    // bus.cap.minted, on this same socket. Asserting the topic
+                    // here made the test fail whenever one of those polls landed
+                    // before the preflight, which under load it usually does.
+                    // Answer per topic and let the preflight assertions do the work.
+                    "bus.log@v1" if req["payload"]["topic"] != "approval.preflight" => {
+                        serde_json::json!({"messages": []})
+                    }
                     "bus.log@v1" => {
-                        assert_eq!(req["payload"]["topic"], "approval.preflight");
                         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
                         let msgs: Vec<_> = events.iter().map(|(from, id)| serde_json::json!({
                             "kind": "event", "topic": "approval.preflight", "from": from, "ts": format!("{now:019}-00000000000000000001"),
@@ -45,7 +53,17 @@ fn fake_bus(dir: &std::path::Path, events: Vec<(&'static str, &'static str)>) ->
                                         "grants": ["rw /home/user/Pictures/holiday.png (gesture)"]}})).collect();
                         serde_json::json!({"messages": msgs})
                     }
-                    v => panic!("unexpected verb {v}"),
+                    // Anything else the compositor asks for gets an empty answer.
+                    //
+                    // This used to panic. The compositor has grown bus consumers
+                    // since this fake was written (bus.subscribe@v1,
+                    // registry.apps@v1, system.audio@v1 from the deskbar and the
+                    // registry), and a panic here kills the handler thread without
+                    // replying, so the connection dies and the test blocks on a
+                    // reply that is never coming. The test is about attestation;
+                    // it should not break every time something else learns to talk
+                    // to the bus.
+                    _ => serde_json::json!({}),
                 };
                 let reply = serde_json::json!({"id": "s1", "kind": "response", "corr": req["id"], "verb": req["verb"], "payload": payload});
                 let _ = writeln!(&s, "{reply}");
@@ -70,6 +88,7 @@ fn run(events: Vec<(&'static str, &'static str)>, line: &str) -> (serde_json::Va
     let p = ask(&c, line);
     wait_for("the compositor to dump its own frame", || c.dump.exists());
     let img = Img::load_file(&c.dump);
+    wait_until_armed();
     c.inject("key a");
     (answer(p), img)
 }
@@ -123,6 +142,7 @@ fn an_event_is_accepted_once_and_conflicting_senders_attest_nothing() {
         let p = ask(c, &line);
         n.set(n.get() + 1);
         wait_for("the request to be queued", || c.log().matches("queued").count() >= n.get());
+        wait_until_armed();
         c.inject("key a");
         answer(p)
     };

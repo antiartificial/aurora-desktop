@@ -58,6 +58,7 @@ fn run(extra: &[&str], line: &str) -> (serde_json::Value, Img) {
     let p = ask(&c, line);
     wait_for("the compositor to dump its own frame", || c.dump.exists());
     let img = Img::load_file(&c.dump);
+    wait_until_armed();
     c.inject("key a"); // the prompt still appears, and is still answerable
     (answer(p), img)
 }

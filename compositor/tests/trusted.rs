@@ -81,7 +81,7 @@ fn deny_keys_timeout_and_withdrawal() {
     for (k, name) in [("d", "d"), ("Escape", "Escape")] {
         let p = ask(&c, &request_json("rd", 60_000));
         wait_for("overlay", || c.log().matches("queued").count() >= 1);
-        std::thread::sleep(Duration::from_millis(150));
+        wait_until_armed();
         c.inject(&format!("key {k}"));
         let a = answer(p);
         assert_eq!((a["decision"].as_str(), a["key"].as_str()), (Some("deny"), Some(name)));
@@ -100,6 +100,38 @@ fn deny_keys_timeout_and_withdrawal() {
     wait_for("leave", || read(&log2).matches("leave").count() >= 3);
     drop(p);
     wait_for("focus restored after withdrawal", || read(&log2).matches("enter").count() >= 4);
+}
+
+#[test]
+fn a_key_pressed_before_the_prompt_is_armed_does_not_answer_it() {
+    // `a` allows on one press with no modifier, and a prompt takes the keyboard
+    // the instant it is queued. Any same-uid process may raise one, and it is a
+    // Wayland client, so it knows when the user is typing: without a delay the
+    // user's next `a` answers a prompt they have not read. The letters before it
+    // are swallowed, so the only clue is a missing character.
+    let mut c = Comp::start(&[]);
+    c.client();
+    let p = ask(&c, &request_json("arm", 60_000));
+    wait_for("overlay", || c.log().contains("queued"));
+
+    // Inside the window: this is the user mid-word.
+    for _ in 0..4 {
+        c.inject("key a");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(c.log().contains("queued"), "the prompt is gone");
+    assert!(
+        !c.log().contains("-> allow"),
+        "a key inside the arming window answered the prompt:\n{}",
+        c.log().lines().filter(|l| l.contains("trusted:")).collect::<Vec<_>>().join("\n")
+    );
+
+    // Past it, the same key decides, so the delay is a delay and not a deafness.
+    std::thread::sleep(Duration::from_millis(450));
+    c.inject("key a");
+    let a = answer(p);
+    assert_eq!((a["decision"].as_str(), a["key"].as_str()), (Some("allow"), Some("a")));
 }
 
 #[test]

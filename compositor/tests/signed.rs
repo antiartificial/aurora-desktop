@@ -28,6 +28,7 @@ fn every_reply_carries_a_signature_over_the_whole_decision() {
     // allow, by key
     let pending = ask(&c, &request_json("sig-allow", 60_000));
     wait_for("overlay", || c.dump.exists());
+    wait_until_armed();
     c.inject("key a");
     let a = answer(pending);
     assert_eq!(a["decision"], "allow", "{a}");

@@ -48,8 +48,29 @@ pub struct Pending {
     pub id: u64,
     pub req: Request,
     pub deadline: Instant,
+    /// No key decides this prompt before this instant. See ARM.
+    pub armed: Instant,
     pub out: UnixStream,
 }
+
+/// How long a prompt ignores the keyboard after it goes up.
+///
+/// `a` allows on one press, with no modifier, and every other key is swallowed
+/// while a prompt is up. Without a delay, any same-uid process may raise a
+/// prompt at a moment of its choosing (it is a Wayland client, so it knows when
+/// the user is typing) and the user's next `a`, the second most common letter in
+/// English, answers it. The letters before it vanish, so the only clue is a
+/// missing character, noticed afterwards.
+///
+/// A deliberate answer costs this delay once. An accidental one needs the user
+/// to still be mid-word 400ms after a full-screen panel appeared.
+pub const ARM: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How many prompts may be waiting at once. Any same-uid host process may ask
+/// for one, nothing bounded the queue, and every prompt takes keyboard focus
+/// away from every client until it is answered individually. Enough of them is
+/// a session lockout, so the queue refuses rather than the session hanging.
+pub const MAX_QUEUED: usize = 8;
 
 #[derive(Default)]
 pub struct Trusted {
@@ -121,10 +142,16 @@ impl Aurora {
     /// and the pointer leaves it.
     pub fn trusted_enqueue(&mut self, req: Request, timeout: std::time::Duration, out: UnixStream) -> u64 {
         let was_up = self.trusted.active();
+        if self.trusted.queue.len() >= MAX_QUEUED {
+            tracing::warn!("trusted: refusing approval {}: {} already queued", req.request_id, self.trusted.queue.len());
+            reply(&out, self.trusted.sign_key.as_deref(), &req, false, "", "too many prompts already waiting");
+            return 0;
+        }
         self.trusted.next_id += 1;
         let id = self.trusted.next_id;
         tracing::info!("trusted: approval {} queued: {} {} of {}", req.request_id, req.effect, req.verb, req.app);
-        self.trusted.queue.push_back(Pending { id, req, deadline: Instant::now() + timeout, out });
+        let now = Instant::now();
+        self.trusted.queue.push_back(Pending { id, req, deadline: now + timeout, armed: now + ARM, out });
         if !was_up {
             let kb = self.seat.get_keyboard().unwrap();
             self.trusted.saved_focus = kb.current_focus();
@@ -208,6 +235,13 @@ impl Aurora {
             FilterResult::Intercept(if state == KeyState::Pressed { decide(h.modified_sym()) } else { None })
         });
         if let (Some(id), Some(Some((allow, key)))) = (head, verdict) {
+            // Swallowed either way: the client must not see the key. But a press
+            // inside the arming window does not answer, so a prompt raised while
+            // the user is typing cannot be answered by their own typing.
+            if self.trusted.queue.front().is_some_and(|p| Instant::now() < p.armed) {
+                tracing::debug!("trusted: key {key:?} ignored, prompt not armed yet");
+                return;
+            }
             self.trusted_finish(id, allow, &key, "key");
         }
     }
