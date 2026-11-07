@@ -4,7 +4,7 @@
 usage: python3 -I imgcheck.py CAPTURE.png FRAME.ppm METRICS.txt
        python3 -I imgcheck.py --bbox CAPTURE.png R G B     (bounding box of one colour)
        python3 -I imgcheck.py --scroll CAPTURE.png OX OY [EXPECTED]   (which scroll offset does the scroll demo show?)
-       python3 -I imgcheck.py --band CAPTURE.png OX OY     (runs of non-white pixels down column 100 of the list demo's content)
+       python3 -I imgcheck.py --band CAPTURE.png OX OY [R G B]   (runs of pixels that are not the list's background colour (default white) down column 100 of the list demo's content)
        python3 -I imgcheck.py --diff CAPTURE.png FRAME.ppm OX OY   (prints: count of differing pixels, then each as x,y,got,want, max 8)
        python3 -I imgcheck.py --text CAPTURE OX OY 'GEOM line'   (assert the glyphs of the text demo sit where BFont says; ok:/FAIL: lines)
        python3 -I imgcheck.py --diffbox CAPTURE FRAME OX OY   (prints: n x0 y0 x1 y1 of the differing pixels)
@@ -80,9 +80,10 @@ if len(sys.argv) >= 5 and sys.argv[1] == '--scroll':
 if len(sys.argv) >= 5 and sys.argv[1] == '--band':
     # iface_list: content top is window y=12, 160 rows, column x=100 (right of every label). Prints "top bottom r g b" per run.
     _, _, crow = read_png(sys.argv[2]); ox, oy = int(sys.argv[3]), int(sys.argv[4]); runs = []; prev = None
+    bg = tuple(int(v) for v in sys.argv[5:8]) if len(sys.argv) >= 8 else (255, 255, 255)   # B_LIST_BACKGROUND_COLOR: the theme's, not a constant
     for y in range(160):
         c = tuple(crow[oy + 12 + y][3 * (ox + 100):3 * (ox + 100) + 3])
-        if c != (255, 255, 255):
+        if c != bg:
             if runs and prev == c and runs[-1][1] == y - 1: runs[-1][1] = y
             else: runs.append([y, y, c])
         prev = c

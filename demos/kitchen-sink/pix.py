@@ -6,6 +6,7 @@ Standard library only. Every command prints plain numbers/words for the shell to
   pix.py cmp CAP.png FRAME.ppm OX OY [X0 Y0 X1 Y1]   number of pixels where CAP (shifted by OX,OY) differs from FRAME, in a FRAME rect
   pix.py cmpbox CAP.png FRAME.ppm OX OY [X0 Y0 X1 Y1]   like cmp, but prints "n x0 y0 x1 y1" (count and bounding box of the differing pixels)
   pix.py diff A.png B.png [X0 Y0 X1 Y1]          "n x0 y0 x1 y1": count and bounding box of pixels that differ between two captures
+  pix.py colruns A.png B.png X0 Y0 X1 Y1         "x0-x1 x0-x1 ...": runs of adjacent columns in which any pixel of the rect differs between two captures
   pix.py ink CAP.png X0 Y0 X1 Y1                 number of pixels in the rect that are not the rect's most common colour
   pix.py px CAP.png X Y                          "r g b"
   pix.py count CAP.png X0 Y0 X1 Y1 R G B TOL     pixels in the rect within TOL (max channel distance) of the colour
@@ -103,6 +104,13 @@ def main(a):
         for x, y, p in pixels(A, x0, y0, x1, y1):
             if B[y][3 * x:3 * x + 3] != p: xs.append(x); ys.append(y)
         print(len(xs), *((min(xs), min(ys), max(xs), max(ys)) if xs else (-1, -1, -1, -1)))
+    elif cmd == 'colruns':
+        w, h, A = read_png(a[1]); _, _, B = read_png(a[2]); x0, y0, x1, y1 = rect(a[3:], w, h)
+        cols = sorted({x for x, y, p in pixels(A, x0, y0, x1, y1) if B[y][3 * x:3 * x + 3] != p}); runs = []
+        for x in cols:
+            if runs and runs[-1][1] == x - 1: runs[-1][1] = x
+            else: runs.append([x, x])
+        print(*['%d-%d' % (s, e) for s, e in runs])
     elif cmd == 'ink':
         w, h, R = read_png(a[1]); x0, y0, x1, y1 = [int(v) for v in a[2:6]]
         cnt = {}

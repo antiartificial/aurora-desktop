@@ -137,6 +137,7 @@ struct SWindow {
 	Frame last;
 	bool haveLast = false;
 	bool quit = false;
+	int32 offscreenBitmap = -1;	// >= 0: this window draws into BBitmap `token` (AS_CREATE_OFFSCREEN_WINDOW), and is never shown
 	bigtime_t lastClickTime = 0; BPoint lastClickWhere{0, 0}; int32 clicks = 0;
 	int buttons = 0;		// mouse buttons held (B_PRIMARY_MOUSE_BUTTON ...)
 	BPoint ptrWhere{0, 0};		// last pointer position in window coordinates
@@ -1292,6 +1293,26 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 		case AS_VIEW_SET_PATTERN: link.Read<::pattern>(&v->st.pat); return;
 		case AS_VIEW_SET_DRAWING_MODE: { int8 m; link.Read<int8>(&m); v->st.mode = (drawing_mode)m; return; }
 		case AS_VIEW_SET_BLENDING_MODE: case AS_VIEW_SET_LINE_MODE: case AS_VIEW_SET_FILL_RULE: return;
+		case AS_VIEW_COPY_BITS:
+		{
+			BRect s, d; link.Read<BRect>(&s); if (link.Read<BRect>(&d) != B_OK) return;
+			SetupClip(w, v);
+			BRect ws = ToWindow(v, s), wd = ToWindow(v, d);
+			w->canvas.CopyBits(FRect{ws.left, ws.top, ws.right, ws.bottom}, FRect{wd.left, wd.top, wd.right, wd.bottom});
+			return;
+		}
+		case AS_VIEW_GET_CLIP_REGION:
+		{
+			// What the view may draw into, in view coordinates: its visible rect (ancestors' clipping included) cut by
+			// the user clip. Only a bounding rectangle is kept for either (SetupClip), so the region is one rectangle.
+			BRegion region;
+			BRect c = EffectivelyHidden(v) ? BRect() : VisibleRect(v);
+			BPoint o = WindowOffset(v);
+			if (c.IsValid() && v->st.hasClip) c = c & v->st.clip.OffsetByCopy(o);
+			if (c.IsValid()) region.Set(c.OffsetByCopy(-o.x, -o.y));
+			reply.StartMessage(B_OK); reply.AttachRegion(region); reply.Flush();
+			return;
+		}
 		case AS_VIEW_SET_CLIP_REGION:
 		{
 			bool has = false; link.Read<bool>(&has);
@@ -1541,6 +1562,18 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 	if (gTrace) fprintf(stderr, "appserver: window op %d not handled%s\n", (int)code, link.NeedsReply() ? " (reply sent: B_ERROR)" : "");
 }
 
+// An offscreen window's pixels into its bitmap (32-bit ARGB/xRGB: the canvas's own layout), row by row.
+void SyncOffscreen(SWindow* w)
+{
+	auto it = gBitmaps.find(w->offscreenBitmap);
+	if (it == gBitmaps.end()) return;
+	const SBitmap& bm = it->second;
+	if (bm.cs != B_RGB32 && bm.cs != B_RGBA32) return;
+	int rows = std::min(w->canvas.Height(), (int)bm.bounds.IntegerHeight() + 1), cols = std::min(w->canvas.Width(), (int)bm.bounds.IntegerWidth() + 1);
+	for (int y = 0; y < rows; y++)
+		memcpy(bm.base + (size_t)y * bm.bpr, w->canvas.Pixels() + (size_t)y * w->canvas.Width(), (size_t)cols * 4);
+}
+
 void WindowThread(SWindow* w)
 {
 	LinkReceiver& link = w->link.Receiver();
@@ -1561,6 +1594,7 @@ void WindowThread(SWindow* w)
 			continue;
 		}
 		WindowDispatch(w, code, link);
+		if (w->offscreenBitmap >= 0) SyncOffscreen(w);
 		// A real app_server draws to the screen at once. Ours presents at EndUpdate, so a view that draws outside an
 		// update (BTextView inverts its caret that way, on every blink) would only show up at the next repaint.
 		// Present when the client has nothing more queued.
@@ -1602,8 +1636,10 @@ namespace {
 
 // ------------------------------------------------------------------------------------------------ apps
 
-void CreateWindow(SApp* app, LinkReceiver& link, PortLink& reply)
+void CreateWindow(SApp* app, LinkReceiver& link, PortLink& reply, bool offscreen = false)
 {
+	int32 bitmapToken = -1;
+	if (offscreen) link.Read<int32>(&bitmapToken);
 	BRect frame; uint32 look, feel, flags, workspace; int32 token; port_id replyPort, looperPort; char* title = NULL;
 	link.Read<BRect>(&frame); link.Read<uint32>(&look); link.Read<uint32>(&feel); link.Read<uint32>(&flags);
 	link.Read<uint32>(&workspace); link.Read<int32>(&token);
@@ -1614,12 +1650,22 @@ void CreateWindow(SApp* app, LinkReceiver& link, PortLink& reply)
 	w->frame = frame; w->title = title ? title : ""; free(title); w->flags = flags; w->feel = feel;
 	w->port = create_port(100, "w<app_server_win");
 	w->link.SetTo(replyPort, w->port);
-	{
-		std::lock_guard<std::recursive_mutex> g(gMu);
-		w->index = (int)gWindows.size();
-		gWindows.push_back(w);
+	if (offscreen) {
+		// A BBitmap that accepts views: BColumnListView double-buffers into one. The window is not listed (it has no frame
+		// to capture or dump and is never presented); its canvas is the bitmap's size at scale 1, and WindowThread copies
+		// it into the bitmap's memory after every message, which is what BView::DrawBitmap then reads.
+		w->index = -1; w->offscreenBitmap = bitmapToken;
+		auto it = gBitmaps.find(bitmapToken);
+		if (it != gBitmaps.end()) { frame = it->second.bounds; w->frame = frame; }
+		w->canvas.Init((int)frame.IntegerWidth() + 1, (int)frame.IntegerHeight() + 1, 1.0);
+	} else {
+		{
+			std::lock_guard<std::recursive_mutex> g(gMu);
+			w->index = (int)gWindows.size();
+			gWindows.push_back(w);
+		}
+		w->canvas.Init((int)frame.IntegerWidth() + 1, (int)frame.IntegerHeight() + 1, gScale);
 	}
-	w->canvas.Init((int)frame.IntegerWidth() + 1, (int)frame.IntegerHeight() + 1, gScale);
 	std::thread(WindowThread, w).detach();
 
 	PortLink r(replyPort, -1);
@@ -1641,6 +1687,7 @@ void AppThread(SApp* app)
 		if (gTrace) fprintf(stderr, "appserver[app %s]: op %d\n", app->sig.c_str(), (int)code);
 		if (code == B_QUIT_REQUESTED || code == AS_QUIT_APP) break;
 		if (code == AS_CREATE_WINDOW) { CreateWindow(app, link, app->link); continue; }
+		if (code == AS_CREATE_OFFSCREEN_WINDOW) { CreateWindow(app, link, app->link, true); continue; }
 		bool handled;
 		HandleFontOp(app, code, link, app->link, &handled);
 		if (handled) continue;
