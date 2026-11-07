@@ -479,7 +479,14 @@ public:
     bool OnContext(float x, float y) override {
         (void)x;
         const int row = top_ + (int)((y - frame.y - head_h_ - 1) / row_h_);
-        if (row < 0 || row >= r_->Count()) return false;
+        if (row < 0 || row >= r_->Count()) {
+            // Worth tracing: a right-click below the last row is a legitimate miss, and it looks
+            // identical to a broken handler from the outside. It cost a run to tell apart.
+            if (getenv("AURORA_UI_TRACE"))
+                fprintf(stderr, "ui: context row=%d of %d -- past the end, no menu\n", row,
+                        r_->Count());
+            return false;
+        }
         ctx_row_ = row;
         if (sel_ && *sel_ < 0) select(row);
         if (on_ctx_) on_ctx_(row, x, y);
@@ -1357,16 +1364,18 @@ public:
         nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
         want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
         if (t_.motion == Motion::None) e_.snap();
-        return Size{nat_.w, nat_.h * e_.value()};
+        const float f = e_.value();
+        return t_.motion == Motion::RevealX ? Size{nat_.w * f, nat_.h} : Size{nat_.w, nat_.h * f};
     }
 
     void Place(Rect r) override {
         frame = r;
         c_->parent = this;
-        // The child keeps its natural height and is clipped, so revealing never reflows its
-        // contents. A child that re-laid-out every frame of the animation would be the
-        // expensive, janky version of this.
-        c_->Place(Rect{r.x, r.y, r.w, nat_.h});
+        // The child keeps its natural size on the revealed axis and is clipped, so revealing
+        // never reflows its contents. A child re-laid-out every frame of the animation would be
+        // the expensive, janky version of this.
+        c_->Place(t_.motion == Motion::RevealX ? Rect{r.x, r.y, nat_.w, r.h}
+                                               : Rect{r.x, r.y, r.w, nat_.h});
     }
 
     void Draw(au_surface* s, const Env& env) override {

@@ -369,7 +369,14 @@ Desc TextField(State<std::string>* text,
 // docs/aurora-ui.md section 1 for the four rules; the two this type enforces are that the curve
 // is ease-out (there is no ease-in: it reads as sluggish for anything the user initiated) and
 // that motion is something the system opts INTO when it can afford it.
-enum class Motion : uint8_t { None, Reveal };   // Reveal: height 0 <-> natural. Fade needs alpha.
+// Reveal: height 0 <-> natural, for a bar. RevealX: width, for a side pane.
+//
+// Two of them rather than one axis-agnostic Reveal because the axis is a property of the
+// TRANSITION, not of the parent: a bar that slides down inside a row would be wrong, and a
+// single Reveal used on the wrong axis is silently wrong rather than refused. I made exactly
+// that mistake -- a height Reveal in an HStack reserved its full natural WIDTH while invisible,
+// and the pane it was hiding swallowed the hit test.
+enum class Motion : uint8_t { None, Reveal, RevealX };
 enum class Curve : uint8_t { EaseOut, Linear };
 
 struct Transition {

@@ -13,6 +13,8 @@
 
 #include "../ui.h"
 
+#include <BusClient.h>
+
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -470,22 +472,116 @@ int main() {
         return true;
     });
 
+    // ---- the real plumber ----
+    //
+    // The menu's verbs come from registry.plumb@v1: the controller ranks what can be done with a
+    // selection and marks each with its effect class (decision 0009). Atlas does not decide what
+    // a file can have done to it, and that is the point -- the verbs are whatever apps have
+    // declared, the ranking is the plumber's, and the effect is the controller's word.
+    //
+    // When the bus is not reachable the menu still opens with the operations Atlas can do by
+    // itself, and says why the rest are missing. A menu that vanishes because a daemon is down
+    // is worse than one that is honest about being short.
+    BusClient bus;
+    const bool bus_up = bus.Connect() == B_OK;
+    if (!bus_up) fprintf(stderr, "atlas: no bus; the menu offers local actions only\n");
+
+    auto plumb = [&](const std::string& full) -> std::vector<MenuItem> {
+        std::vector<MenuItem> out;
+        if (!bus_up) return out;
+        BusEnvelope req;
+        req.kind = "request";
+        req.to = "registry";        // what controllerd registers as; not its app id
+        req.verb = "registry.plumb@v1";
+        Json sel = Json::MakeObject();
+        sel.set("kind", Json::MakeString("path"));
+        sel.set("value", Json::MakeString(full));
+        Json p = Json::MakeObject();
+        p.set("selection", sel);
+        req.payload = p;
+        BusEnvelope rep;
+        // 2 s: a menu must not wait. This runs on the event thread, so a long call stalls
+        // input -- which is survivable for a context menu and is why the budget is short.
+        const status_t rc = bus.Call(req, &rep, 2000000);
+        if (getenv("AURORA_UI_TRACE"))
+            fprintf(stderr, "atlas: plumb(%s) rc=%d payload=%s\n", full.c_str(), (int)rc,
+                    rep.payload.Dump().substr(0, 200).c_str());
+        if (rc != B_OK) return out;
+        // Why there are no app verbs, when there are none. The plumber always says; a menu that
+        // just stops after the local actions leaves the user guessing whether it is broken.
+        if ((!rep.payload.get("candidates") || rep.payload.get("candidates")->items().empty())) {
+            const std::string why = rep.payload.getString("reason", "");
+            const std::string mime =
+                rep.payload.get("selection")
+                    ? rep.payload.get("selection")->getString("mime", "")
+                    : std::string();
+            MenuItem m;
+            m.label = mime.empty() ? "No other actions" : ("No actions for " + mime);
+            m.note = why;
+            m.enabled = false;
+            out.push_back(std::move(m));
+            return out;
+        }
+        const Json* cands = rep.payload.get("candidates");
+        if (!cands || !cands->isArray()) return out;
+        for (const Json& c : cands->items()) {
+            const std::string verb = c.getString("verb", "");
+            if (verb.empty()) continue;
+            const std::string eff = c.getString("effect", "read");
+            MenuItem m;
+            m.label = c.getString("summary", verb);
+            m.note = verb;
+            m.effect = eff == "destructive" ? Effect::Destructive
+                       : eff == "external"  ? Effect::External
+                       : eff == "write"     ? Effect::Write
+                                            : Effect::Read;
+            const Json* def = c.get("default");
+            m.is_default = def && def->asBool();
+            m.enabled = true;
+            const std::string app = c.getString("app", "");
+            m.run = [&, app, verb, full] {
+                last_action.set(verb + " on " + full + " (" + app + ")");
+            };
+            out.push_back(m);
+        }
+        return out;
+    };
+
     OnListContext(list, [&](int row, float x, float y) {
         const std::string name = rows.Cell(row, 0).text;
         const bool is_dir = !name.empty() && name.back() == '/';
+        std::string leaf = name;
+        if (is_dir && !leaf.empty()) leaf.pop_back();
+        const std::string base = path.get() == "/" ? "" : path.get();
+        const std::string full = base + "/" + leaf;
+
+        // What Atlas can do itself, without asking anyone.
         std::vector<MenuItem> items;
-        items.push_back(MenuItem{is_dir ? "Open" : "Open with...", "Enter", Effect::Read, true,
-                                 true, false, [&, name] { last_action.set("open " + name); }});
+        items.push_back(MenuItem{is_dir ? "Open" : "Open", "Enter", Effect::Read, true, true,
+                                 false, [&, row] { w.Defer([&, row] { 
+                                     const std::string n2 = rows.Cell(row, 0).text;
+                                     if (!n2.empty() && n2.back() == '/') {
+                                         const std::string b2 = path.get() == "/" ? "" : path.get();
+                                         go(b2 + "/" + n2.substr(0, n2.size() - 1), true);
+                                     } else {
+                                         last_action.set("open " + n2);
+                                     }
+                                 }); }});
         items.push_back(MenuItem{"Copy path", "", Effect::Read, true, false, false,
-                                 [&, name] { last_action.set("copy " + name); }});
-        items.push_back(MenuItem{"Show provenance", "", Effect::Read, true, false, false,
-                                 [&, name] { last_action.set("prov " + name); }});
+                                 [&, full] { w.RequestCopy(full); last_action.set("copied path"); }});
         items.push_back(MenuItem{"Rename", "F2", Effect::Write, true, false, false,
                                  [&, row] { w.Defer([&, row] { BeginListRename(list, row); }); }});
-        items.push_back(MenuItem{"Upload", "", Effect::External, false, false, false, nullptr});
-        items.back().note = "no network grant";
-        items.push_back(MenuItem{"Move to Trash", "Del", Effect::Destructive, true, false, false,
-                                 [&, name] { last_action.set("trash " + name); }});
+
+        // And what the plumber offers. Appended, so a daemon being down shortens the menu
+        // rather than emptying it.
+        for (MenuItem& m : plumb(full)) items.push_back(std::move(m));
+        if (!bus_up) {
+            MenuItem m;
+            m.label = "More actions";
+            m.note = "no bus: controller unreachable";
+            m.enabled = false;
+            items.push_back(std::move(m));
+        }
         // Deferred, not called here: this runs on the event thread, which holds the display
         // mutex, and creating the popup's surface would deadlock against it.
         w.Defer([&w, x, y, items = std::move(items)]() mutable {
@@ -544,7 +640,10 @@ int main() {
                                             weight(named(TextView(&preview_text), "preview"), 1),
                                         }, 0.25f),
                                         0.5f),
-                                Transition{Motion::Reveal, 160, Curve::EaseOut}),
+                                // RevealX: a side pane reveals by WIDTH. A height reveal here
+                                // kept its full width while invisible and swallowed the list's
+                                // hit test, which is how the axis mistake announced itself.
+                                Transition{Motion::RevealX, 160, Curve::EaseOut}),
                          "previewpane"),
                }, 0),
                1),

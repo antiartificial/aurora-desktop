@@ -164,5 +164,9 @@ target_link_libraries(aurora_ui_spike PRIVATE aurora_ui)
 add_library(aurora_ui_tk STATIC ../aurora-ui/ui.cpp)
 target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 
-add_executable(atlas ../aurora-ui/demo/atlas.cpp)
+# Atlas links the bus client so its context menu can ask registry.plumb@v1 what can be done with
+# a file. aurora_ui_tk itself does NOT: a toolkit that needs a message bus to draw a button would
+# be the wrong shape, and the bus is the application's business.
+add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
+target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)
