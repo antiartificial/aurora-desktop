@@ -4,6 +4,24 @@
 #include <map>
 #include <string.h>
 
+// How long the loop sleeps in one receive before it re-tests fTerminating, and how long a
+// quit write waits for room in a full port before it tries again.
+static const bigtime_t kLoopPollInterval = 50000;
+
+// Wake the loop by delivering the quit code. Writing it with a zero timeout and discarding the
+// result loses it whenever the port is full -- plausible during a close, with pointer and redraw
+// traffic in flight -- and the loop then sleeps forever. So wait for room and check the result.
+// If the port stays full this long the loop has stopped reading, and fTerminating is what stops
+// it from then on.
+static void send_quit_code(port_id port)
+{
+	for (int tries = 0; tries < 20; tries++) {
+		status_t r = write_port_etc(port, kPortCodeQuit, NULL, 0,
+			B_RELATIVE_TIMEOUT, kLoopPollInterval);
+		if (r != B_TIMED_OUT && r != B_WOULD_BLOCK) return;   // delivered, or the port is gone
+	}
+}
+
 // Process-wide registry so BMessenger can tell a local target from a remote one.
 static pthread_mutex_t sRegLock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<port_id, BLooper *> sByPort;
@@ -39,7 +57,8 @@ void BLooper::Init(const char *portName, int32 priority, int32 portCapacity)
 BLooper::~BLooper()
 {
 	if (fRunCalled && fThread >= 0 && fThread != find_thread(NULL) && !fTerminating) {
-		write_port_etc(fPort, kPortCodeQuit, NULL, 0, B_RELATIVE_TIMEOUT, 0);
+		fTerminating = true;                      // the loop leaves on this if the code is lost
+		send_quit_code(fPort);
 		status_t rv; wait_for_thread(fThread, &rv);
 	}
 	pthread_mutex_lock(&sRegLock);
@@ -148,9 +167,9 @@ void BLooper::RunLoop()
 {
 	while (!fTerminating) {
 		BMessage msg; int32 token = -1; bool quit = false;
-		status_t r = wire_receive(fPort, B_INFINITE_TIMEOUT, &msg, &token, &quit);
+		status_t r = wire_receive(fPort, kLoopPollInterval, &msg, &token, &quit);
 		if (quit || r == B_BAD_PORT_ID) break;
-		if (r != B_OK) continue;                  // malformed message: drop it
+		if (r != B_OK) continue;                  // timed out, or malformed: re-test and read on
 		Lock();
 		BHandler *h = HandlerForToken(token);
 		fCurrent = &msg;
@@ -206,7 +225,7 @@ void BLooper::Quit()
 	}
 	while (IsLocked()) Unlock();                  // the loop must be able to proceed
 	fTerminating = true;
-	write_port_etc(fPort, kPortCodeQuit, NULL, 0, B_RELATIVE_TIMEOUT, 0);
+	send_quit_code(fPort);
 	status_t rv; wait_for_thread(fThread, &rv);
 	delete this;
 }

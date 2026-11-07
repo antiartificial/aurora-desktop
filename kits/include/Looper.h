@@ -5,6 +5,7 @@
 #ifndef _LOOPER_H
 #define _LOOPER_H
 #include <Handler.h>
+#include <atomic>
 #include <pthread.h>
 
 #define B_LOOPER_PORT_DEFAULT_CAPACITY 200
@@ -54,7 +55,8 @@ protected:
 	BLooper(const char *name, const char *portName, int32 priority, int32 portCapacity);
 	void RunLoop();            // the message loop on the calling thread
 	void FinishLoop();         // drain queue, answering waiting senders
-	bool fTerminating = false;
+	// Written by whoever asks the loop to stop, read by the loop thread between messages.
+	std::atomic<bool> fTerminating{false};
 	bool fRunCalled = false;
 	thread_id fThread = -1;
 
