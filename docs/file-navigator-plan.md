@@ -92,39 +92,96 @@ bug ("Files shows an empty home") when it was the sandbox working.
    navigator is the app a person opens and closes most, so this bug hits it
    hardest. It should be fixed before polish, not after.
 
-## Order, each stage shippable on its own
+## What it must feel like, and the measurements that decide it
 
-**Stage 1 — the grid and the path.** Replace the `BListView` with
-`BColumnListView`: name, size, modified, type, and a provenance column reading
-*unknown* where indexd has nothing. Sortable, reorderable. Add the breadcrumb
-path field. This is the largest visible gain for the least new machinery, because
-both pieces exist.
+The goal is a window that is **there**, immediately, and fills in. Not a
+progress bar, not a spinner over an empty pane. The toolkit record `0023` holds
+the performance contract; these are the measurements that shaped it.
 
-**Stage 2 — queries as windows.** A saved query opens as a navigator window whose
-contents are its results. Build, save and edit a `.query` from the UI, over the
-existing format and `Service.next` paging. Provenance predicates
-(`verb`, `app`, `derived-from`) get first-class UI, since they are what makes this
-ours. Still re-run rather than live, and the window should say so rather than
-imply freshness it does not have.
+| | 3,000-5,000 entries |
+| --- | --- |
+| `readdir`, names only | **0.9 - 1.8 ms** |
+| `+ lstat` on every entry | **13 - 43 ms** |
+| spawning the `aurora` CLI (floor, before it connects) | **1.7 ms** |
 
-**Stage 3 — the verb surface.** Right-click and Enter both go through
+Three conclusions, and they are the design:
+
+1. **`lstat` is about thirty times `readdir`.** Today's browser does both
+   synchronously before showing anything, so a large directory spends up to 43ms
+   -- nearly three frames -- on data that is not needed to draw the first screen.
+   Names are enough for the first frame and cost under 2ms.
+2. **Stat the visible rows, not the directory.** A screen holds tens of rows, not
+   thousands. The cost of a screenful of `lstat` is negligible; the cost of the
+   directory is not.
+3. **No per-row child process, ever.** At a 1.7ms floor, a provenance column
+   filled one process at a time would take seconds per screen. Today's browser
+   spawns one per *selection*, which is survivable; one per *row* is not.
+   Provenance for the visible range must be a single batched bus call.
+
+And the rule that separates progressive loading from a bad experience:
+**nothing reflows when data arrives.** Row heights and column widths are fixed
+from the first frame; a late value fills a space already reserved. A row that
+moves out from under the pointer is worse than a row that was never there.
+
+The window itself follows the same idea: it **opens opaque and settles into
+glass** once there is budget for the blur (`0023`). The cheapest frame is the
+first one, and the effect is something the system opts into once it knows it can
+afford it.
+
+## Order, by time-to-first-pixel
+
+Staged by what the person sees first, not by feature size. Each stage is
+shippable alone.
+
+**Stage 1 — the instant window.** The window, chrome and names appear in the
+first frame, from `readdir` alone, on an `AuroraListView` that only builds
+visible rows. `lstat` moves to a worker and fills size, date and type per row
+into reserved space. Navigate-away cancels outstanding work. This stage is
+almost entirely about *removing* synchronous work from the window thread, and it
+is the one that decides whether the thing feels 2026 or not.
+
+**Stage 2 — the grid and the path.** `BColumnListView` behind the virtualised
+view: sortable, reorderable columns, including a provenance column reading
+*unknown* where indexd has nothing. The editable breadcrumb path field. Both
+pieces exist; this is assembly.
+
+**Stage 3 — glass and the arrival.** `aurora_blur_v1` so the window has a real
+backdrop rather than a painted gradient, and the opaque-to-glass promotion,
+eased out. Needs the compositor protocol from `0023`.
+
+**Stage 4 — the verb surface.** Right-click and Enter both go through
 `registry.plumb@v1`: ranked, default marked, destructive and external flagged.
-Delete stops being a special case and becomes the destructive verb it already is.
+Delete stops being a special case and becomes the destructive verb it already
+is. Provenance for the visible range becomes one batched call.
 
-**Stage 4 — the column browser and type-ahead.** The two things that make it fast
-to drive from the keyboard.
+**Stage 5 — queries as windows.** A saved query opens as a navigator window
+whose contents are its results, built and edited from the UI over the existing
+`.query` format. Provenance predicates (`verb`, `app`, `derived-from`) get
+first-class UI, since they are what makes this ours. Still re-run rather than
+live, and the window says so rather than implying freshness it does not have.
 
-**Stage 5 — live queries.** indexd watches and pushes; query windows update. This
-is the stage that makes a query feel like an object, and the stage with the most
-new machinery, which is why it is last rather than first.
+**Stage 6 — the column browser and type-ahead.** The two things that make it
+fast to drive from the keyboard.
+
+**Stage 7 — live queries.** indexd watches and pushes; query windows update.
+The stage that makes a query feel like an object, and the one with the most new
+machinery, which is why it is last.
 
 **Not scheduled:** icon view and thumbnails, which wait on the icon system.
 
 ## Dependencies
 
-- Stages 1 to 4 need no new contract. Stage 5 needs a change to indexd's service
-  surface and probably a record.
-- Stage 1 is blocked on nothing. Stage 3 wants the file-drop-as-grant path from
-  0020, which is designed and unbuilt, and which is itself blocked on the
-  controller having no verb that mounts into a running domain.
-- The hang-on-close bug should be fixed first regardless of stage order.
+- Stage 1 needs `AuroraListView` from `0023` and nothing else. It is the stage
+  with the largest effect on how the thing feels and the smallest dependency.
+- Stage 3 needs `aurora_blur_v1`, a new compositor protocol (`0023`).
+- Stage 4 wants the file-drop-as-grant path from `0020`, which is designed and
+  unbuilt, and is itself blocked on the controller having no verb that mounts
+  into a running domain.
+- Stage 7 needs a change to indexd's service surface and probably its own record.
+- **The hang-on-close bug should be fixed first regardless of stage order**
+  (4 of 10 for `iface_controls`, present without domains). A navigator is the app
+  a person opens and closes most often, so it is where that bug does the most
+  damage to exactly the impression this plan is trying to make.
+- The app_server's global lock is being split; until it is, two windows drawing
+  at once take turns (measured: 8 windows take ~12.8x one window's time). A
+  navigator with a preview pane is a two-window workload.
