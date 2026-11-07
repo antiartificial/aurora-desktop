@@ -355,3 +355,37 @@ reasons it earns its place:
 - **`Shortcut` and `Effect` are named but not defined here**; they come from the
   kit and decision 0009 respectively, and the mapping between a Haiku modifier
   mask and a declared shortcut is unwritten.
+
+## 11. What is actually built, as of 2026-11-07
+
+This document is the design, written before the code. The sections above still
+describe the intent; this one records what `kits/aurora-ui/ui.h` currently
+declares, so the two can be told apart without reading the header.
+
+**Built.** `Label` / `Bold` / `styled` (per-node `TextStyle`: size multiplier,
+bold, italic, colour) · `Button` · `Spacer` · `VStack` / `HStack` with per-axis
+weight · `padding` · `named` · `ListView` over `Rows`, with columns, selection,
+type-ahead, inline rename on F2, and a context menu · `IconView` over the same
+`Rows`, with procedurally drawn icons · `Breadcrumb` · `TextField` (caret,
+selection, overflow scrolling, clipboard) · `TextView` (read-only multiline,
+wrapped and virtualised) · `Reveal` / `RevealX` / `Either` and the `Transition`
+vocabulary · `Menu` on its own surface, with the plumber's ordering · `HSplit` /
+`VSplit` with a draggable divider and double-click collapse · `TreeView` over a
+demand-driven `TreeSource`, flattened to what is visible · one `Scroller` shared
+by the list, the grid, the text view and the tree.
+
+`Atlas` (`demo/atlas.cpp`) is built from exactly these and nothing else.
+
+**Specified here and not built.** `ColumnView` (section 3). The `Selection`
+value as a struct — selection is still a single index per view (section 4).
+Sort-as-snapshot, including clicking a column header to sort (section 5). The
+three kinds of search (section 6). The command registry and its four surfaces
+(section 7). The shelf (section 8).
+
+**Known gaps that are not in this document.** Multiline *editing* — `TextView`
+is the display half; a caret as line and column, selection across lines, and
+up/down by visual rather than logical line are the other half. No input-method
+editor: composed text needs `text_input_v3`, which `present_wl` does not speak.
+No drag and drop (decision 0020 specifies it). No HVIF; icons are drawn from
+canvas primitives. `PlacesTree` reads directories synchronously, which the
+`TreeSource` contract is already shaped to fix without touching the widget.
