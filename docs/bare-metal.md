@@ -37,6 +37,14 @@ Verified (by running it):
 - `--drm` from inside a graphical session fails at once with an actionable
   message and exit status 1 (it never touches the display).
 
+What the first run should also now exercise, if more than one display is attached:
+
+- **Multi-monitor.** The connector loop drives up to four displays, laid out left to right, and
+  the compositor renders each separately. The per-output logic is tested headlessly (two
+  offscreen outputs: a window at global x=1400 draws on the second and NOT the first), so what
+  a real run adds is connector enumeration, per-CRTC modesetting and whether the layout the
+  kernel reports matches the one assumed.
+
 Not verified:
 
 - Any pixel on a connector; the modeset; buffer format and orientation
@@ -47,6 +55,8 @@ Not verified:
 - Hotplug of a monitor or the GPU (udev add/change/remove).
 - Whether glass effects and captures behave on a KMS-bound renderer.
 - The scale chosen from the connector's millimetre size on a real EDID.
+- Driving more than one connector: the cap was 1 until now, so no run has ever created a second
+  output on hardware.
 
 ## What it does
 

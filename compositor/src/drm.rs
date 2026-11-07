@@ -82,7 +82,14 @@ use crate::{Aurora, render};
 type Surface = GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>;
 
 /// How many outputs are driven. See the module comment.
-const MAX_OUTPUTS: usize = 1;
+/// How many connectors are driven at once.
+///
+/// It was 1 because nothing downstream could place a second output: every output was mapped at
+/// the origin, so a second monitor would have been stacked exactly on the first. The compositor
+/// renders per output now and the space lays them out left to right, so the cap is a sanity
+/// bound rather than a limitation -- four is more displays than this has ever been run with,
+/// and a machine reporting forty connected connectors is reporting a bug.
+const MAX_OUTPUTS: usize = 4;
 /// Cursor plane size. 64x64 is supported by every driver's cursor plane.
 const CURSOR: u32 = 64;
 const RETRY: Duration = Duration::from_millis(100);
@@ -502,10 +509,22 @@ fn add_output(gpu: &mut Gpu, state: &mut Aurora, info: &connector::Info, crtc: c
         },
     );
     let global = output.create_global::<Aurora>(&state.display_handle);
-    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    // Left to right, after everything already mapped. Mapping every output at the origin -- which
+    // is what this did while only one was driven -- would stack a second monitor exactly on the
+    // first: both would show the same region of the space and a window could never be moved
+    // "across" to the other one, because there would be no across.
+    let at_x: i32 = state
+        .space
+        .outputs()
+        .filter_map(|o| state.space.output_geometry(o))
+        .map(|g| g.loc.x + g.size.w)
+        .max()
+        .unwrap_or(0);
+    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((at_x, 0).into()));
     output.set_preferred(mode);
     state.set_host_scale(&output, scale);
-    state.space.map_output(&output, (0, 0));
+    state.space.map_output(&output, (at_x, 0));
+    tracing::info!("drm: {} mapped at x={at_x}, {}x{}", connector_name(info), size.w, size.h);
     state.update_capture_constraints(&output);
     let tracker = OutputDamageTracker::from_output(&output);
     gpu.surfaces.push((crtc, Surf { surface, output, global, tracker, size, connector: info.handle(), queued: false, cursor_set: false }));
@@ -683,5 +702,41 @@ mod tests {
         let a = |x: usize, y: usize| px[(y * 64 + x) * 4 + 3];
         assert_eq!(a(1, 2), 255);
         assert_eq!(a(60, 60), 0);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::MAX_OUTPUTS;
+
+    /// Where the Nth connector is placed: immediately right of everything before it.
+    ///
+    /// The placement itself is three lines inside `add_output` and cannot be called without a
+    /// GPU, so the RULE is factored here and checked. It is worth checking because the previous
+    /// rule -- every output at the origin -- was invisible while only one output was driven and
+    /// would have stacked a second monitor exactly on the first.
+    fn place(widths: &[i32]) -> Vec<i32> {
+        let mut xs = vec![];
+        let mut at = 0;
+        for w in widths {
+            xs.push(at);
+            at += w;
+        }
+        xs
+    }
+
+    #[test]
+    fn connectors_are_laid_out_left_to_right_without_overlapping() {
+        assert_eq!(place(&[1920, 2560, 1280]), vec![0, 1920, 4480]);
+        // Mixed widths still abut: a gap would be dead space a pointer could get stuck in, and
+        // an overlap would be two displays claiming the same coordinates.
+        assert_eq!(place(&[1280]), vec![0], "one display still starts at the origin");
+        assert!(place(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_output_cap_allows_more_than_one_display() {
+        // It was 1, which made the loop over connectors decorative.
+        assert!(MAX_OUTPUTS > 1);
     }
 }
