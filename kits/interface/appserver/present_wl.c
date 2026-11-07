@@ -7,6 +7,7 @@
 #include "present.h"
 #include "xdg-shell-client-protocol.h"
 
+#include <errno.h>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <pthread.h>
@@ -52,6 +53,7 @@ struct au_wl {
 	int clip_text;			/* the offer above advertised a text flavour */
 	char* own;			/* text WE put on the clipboard, served back on request */
 	int running;
+	int lost;			/* the compositor went away: see event_thread */
 	struct au_wl_win* focus;
 	int nwins;
 };
@@ -474,19 +476,55 @@ int au_clipboard_set_text(au_wl* g, const char* utf8)
 static void reg_remove(void* d, struct wl_registry* r, uint32_t n) { (void)d; (void)r; (void)n; }
 static const struct wl_registry_listener reg_listener = { reg_global, reg_remove };
 
+/* The compositor is gone. A Wayland client cannot do anything without one -- it cannot draw,
+ * it will never be told anything again, and nothing it does can reach a screen.
+ *
+ * This is not a tidy-up detail. Before it existed the loop below only ever looked at POLLIN, so
+ * a hangup made poll() return immediately with POLLHUP forever and the client span at 50 ms for
+ * the rest of the session. The processes stayed alive holding ports in the 128-slot table in
+ * /dev/shm, and once that filled, EVERY new app died at startup with
+ * "BApplication: GUI init failed (-23)" -- B_NO_MORE_PORTS, which is -ENFILE, and which says
+ * nothing about ports to whoever reads it. Eighteen orphans had accumulated in one session.
+ *
+ * So the client leaves, which is what Qt and GTK do on the same event, and which lets the port
+ * table reclaim its slots by the only means it has: the owning process actually dying. */
+static void connection_lost(au_wl* g)
+{
+	if (g->lost) return;
+	g->lost = 1;
+	g->running = 0;
+	fprintf(stderr, "aurora: the compositor closed the connection; exiting\n");
+	if (g->wake >= 0) { uint64_t one = 1; ssize_t n = write(g->wake, &one, sizeof one); (void)n; }
+	/* _exit, not exit: atexit handlers here would run on the event thread while the main thread
+	 * is mid-draw against a display that is already gone. */
+	_exit(0);
+}
+
 static void* event_thread(void* arg)
 {
 	au_wl* g = arg;
 	while (g->running) {
 		pthread_mutex_lock(&g->mu);
-		while (wl_display_prepare_read(g->dpy) != 0) wl_display_dispatch_pending(g->dpy);
-		wl_display_flush(g->dpy);
+		while (wl_display_prepare_read(g->dpy) != 0) {
+			if (wl_display_dispatch_pending(g->dpy) < 0) { pthread_mutex_unlock(&g->mu); connection_lost(g); return NULL; }
+		}
+		if (wl_display_flush(g->dpy) < 0 && errno != EAGAIN) { pthread_mutex_unlock(&g->mu); wl_display_cancel_read(g->dpy); connection_lost(g); return NULL; }
 		pthread_mutex_unlock(&g->mu);
 		struct pollfd pfd = { wl_display_get_fd(g->dpy), POLLIN, 0 };
 		int r = poll(&pfd, 1, g->rep_key ? 5 : 50);
+		/* POLLHUP and POLLERR are the hangup itself. Looking only at POLLIN is what made this
+		 * loop spin instead of stopping. */
+		if (r > 0 && (pfd.revents & (POLLHUP | POLLERR))) {
+			pthread_mutex_lock(&g->mu); wl_display_cancel_read(g->dpy); pthread_mutex_unlock(&g->mu);
+			connection_lost(g);
+			return NULL;
+		}
 		pthread_mutex_lock(&g->mu);
-		if (r > 0 && (pfd.revents & POLLIN)) wl_display_read_events(g->dpy); else wl_display_cancel_read(g->dpy);
-		wl_display_dispatch_pending(g->dpy);
+		int bad = 0;
+		if (r > 0 && (pfd.revents & POLLIN)) bad = wl_display_read_events(g->dpy) < 0;
+		else wl_display_cancel_read(g->dpy);
+		if (!bad) bad = wl_display_dispatch_pending(g->dpy) < 0;
+		if (bad) { pthread_mutex_unlock(&g->mu); connection_lost(g); return NULL; }
 		repeat_tick(g);
 		pthread_mutex_unlock(&g->mu);
 		/* Wake a main loop sleeping in au_wl_wait. Done outside the lock: the waiter may
