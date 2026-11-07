@@ -1,0 +1,29 @@
+# Fixture app for decision 0017 (the accessibility tree). It declares ui:read but only
+# peek@v1 lists it; plain@v1 asks for nothing.
+[app]
+id = "org.aurora.uiprobe"
+name = "UI probe"
+version = "0.0.1"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+[capabilities]
+ui = ["read"]
+
+[types]
+opens = ["image/png"]
+creates = ["image/png"]
+
+[[verb]]
+name = "plain@v1"
+summary = "Does nothing that needs a window's text"
+effect = "write"
+accepts = ["image/png"]
+output = { image = "image/png" }
+
+[[verb]]
+name = "peek@v1"
+summary = "As plain@v1, with ui:read (the right to read this app's own accessibility tree)"
+effect = "write"
+accepts = ["image/png"]
+capabilities = ["ui:read"]
+output = { image = "image/png" }

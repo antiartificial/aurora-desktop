@@ -102,6 +102,10 @@ struct SView {
 	std::vector<SView*> children;
 	DrawState st;
 	std::vector<DrawState> stack;
+	// ---- accessibility tree (decision 0017): what this view drew, kept so a reader can be told. Nothing is published.
+	struct Run { std::string text; BPoint at; float width; float size; BRect win; };	// win: bounding box in window coordinates when it was drawn: where the pixels are, and what a repaint of that place erases
+	std::vector<Run> runs; size_t runBytes = 0;
+	struct { int strings = 0, ellipses = 0, roundrects = 0, gradients = 0, rects = 0, lines = 0, bitmaps = 0, shapes = 0; } ev;
 };
 
 struct SBitmap {
@@ -228,6 +232,87 @@ void ReplyFontNames(PortLink& l, text::FontKey k)
 	TB()->StyleName(k.family, k.style, &s, NULL);
 	l.AttachString(f.c_str());
 	l.AttachString(s.c_str());
+}
+
+// ------------------------------------------------------------------------------------------------ accessibility tree
+
+// What a view has drawn, by kind: the only evidence the server has about what a view IS.
+void NoteDraw(SView* v, int32 code)
+{
+	switch (code) {
+		case AS_DRAW_STRING: case AS_DRAW_STRING_WITH_DELTA: v->ev.strings++; break;
+		case AS_STROKE_ELLIPSE: case AS_FILL_ELLIPSE: v->ev.ellipses++; break;
+		case AS_STROKE_ROUNDRECT: case AS_FILL_ROUNDRECT: v->ev.roundrects++; break;
+		case AS_FILL_RECT_GRADIENT: case AS_FILL_ROUNDRECT_GRADIENT: case AS_FILL_ELLIPSE_GRADIENT: v->ev.gradients++; break;
+		case AS_STROKE_RECT: case AS_FILL_RECT: v->ev.rects++; break;
+		case AS_STROKE_LINE: case AS_STROKE_LINEARRAY: v->ev.lines++; break;
+		case AS_VIEW_DRAW_BITMAP: v->ev.bitmaps++; break;
+		case AS_STROKE_SHAPE: case AS_FILL_SHAPE: case AS_FILL_TRIANGLE: case AS_STROKE_TRIANGLE: v->ev.shapes++; break;
+		default: break;
+	}
+}
+
+// A view repainted over `win` (window coordinates): the runs it had there are being redrawn, or are gone.
+void DropRuns(SView* v, const BRect& win)
+{
+	if (v->runs.empty()) return;
+	size_t keep = 0;
+	for (size_t i = 0; i < v->runs.size(); i++) {
+		if (v->runs[i].win.Intersects(win)) { v->runBytes -= v->runs[i].text.size(); continue; }
+		if (keep != i) v->runs[keep] = std::move(v->runs[i]);
+		keep++;
+	}
+	v->runs.resize(keep);
+}
+
+const size_t kMaxRuns = 512, kMaxRunBytes = 64 * 1024;	// per view: a reader does not get to make the server grow without bound
+
+void RecordRun(SView* v, const char* s, BPoint at, BPoint startWin, BPoint endWin)
+{
+	if (EffectivelyHidden(v)) return;	// a hidden page draws nothing, and has no text to read
+	text::Metrics m;
+	float asc = 0, desc = 0;
+	if (TB()->GetMetrics(v->st.font, v->st.fontSize, &m)) { asc = m.ascent * v->st.scale; desc = m.descent * v->st.scale; }
+	BRect loc(startWin.x, startWin.y - asc, std::max(endWin.x, startWin.x + 1), startWin.y + desc);
+	// The same text drawn again at the same place (a repaint that did not go through an update) replaces the old run.
+	for (size_t i = 0; i < v->runs.size(); i++)
+		if (v->runs[i].at == at && v->runs[i].size == v->st.fontSize) { v->runBytes -= v->runs[i].text.size(); v->runs.erase(v->runs.begin() + i); break; }
+	if (v->runs.size() >= kMaxRuns || v->runBytes + strlen(s) > kMaxRunBytes) return;
+	SView::Run r{s, at, (float)((endWin.x - startWin.x) / (v->st.scale ? v->st.scale : 1)), v->st.fontSize, loc};
+	v->runBytes += r.text.size();
+	v->runs.push_back(std::move(r));
+}
+
+// Role, from what the protocol carries and nothing else. The server never sees a C++ type; it sees a view's name, its
+// flags, its children and what it drew. Rules, strongest first; each states its basis so a reader can discount it.
+void DeriveRole(const SView* v, UiNode* n)
+{
+	bool nav = (v->flags & B_NAVIGABLE) != 0;
+	if (!v->parent) { n->role = "window-root"; n->basis = "AS_VIEW_CREATE_ROOT"; n->confidence = "protocol"; return; }
+	if (v->name == "_VSB_" || v->name == "_HSB_") {
+		n->role = "scrollbar"; n->confidence = "convention";
+		n->basis = "its name is the one Haiku's BScrollBar gives itself; any application can name a view the same";
+		return;
+	}
+	if (nav) {
+		n->role = "control"; n->confidence = "inferred";
+		n->basis = "B_NAVIGABLE is set: the view takes keyboard focus (BControl, BTextView and BListView do; BStringView, BBox and BView do not). Which control it is, the server cannot tell";
+		return;
+	}
+	if (!v->children.empty() && v->ev.strings == 0) {
+		n->role = "group"; n->confidence = "structural";
+		n->basis = "it has child views and drew no text of its own";
+		return;
+	}
+	const auto& e = v->ev;
+	bool onlyText = e.strings > 0 && !e.ellipses && !e.roundrects && !e.gradients && !e.rects && !e.lines && !e.bitmaps && !e.shapes;
+	if (onlyText && v->children.empty()) {
+		n->role = "text"; n->confidence = "inferred";
+		n->basis = "it drew text and nothing else (no bevel, line, box or bitmap), has no children and does not take focus: a BStringView, or a label a larger widget drew";
+		return;
+	}
+	n->role = "unknown"; n->confidence = "none";
+	n->basis = v->children.empty() ? "it has no children and drew no text" : "it has children and drew text itself";
 }
 
 bool ResolveFont(const char* family, const char* style, uint16 familyID, uint16 styleID, uint16 face,
@@ -691,6 +776,7 @@ void BeginUpdate(SWindow* w)
 		}
 		if (gTrace) fprintf(stderr, "appserver[%s]: update view '%s' rect %.0f,%.0f,%.0f,%.0f (dirty rects %d)\n", w->title.c_str(), v->name.c_str(), fr.left, fr.top, fr.right, fr.bottom, (int)part.CountRects());
 		w->updRect[v->token] = fr;
+		DropRuns(v, fr);
 		items.push_back(Item{v, fr});
 	}
 	w->dirty.MakeEmpty();
@@ -1200,6 +1286,7 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 	SView* v = w->cur;
 	if (!v) { if (gTrace) fprintf(stderr, "appserver: op %d with no current view\n", (int)code); gUnhandled++; return; }
 
+	NoteDraw(v, code);
 	switch (code) {
 		case AS_VIEW_SET_STATE: HandleViewState(w, v, link); return;
 		case AS_VIEW_SET_FONT_STATE: HandleFontState(v, link); return;
@@ -1550,6 +1637,7 @@ void WindowDispatch(SWindow* w, int32 code, LinkReceiver& link)
 			if (gTrace) fprintf(stderr, "appserver: draw string \"%s\" font=%d/%d size=%.2f at %.1f,%.1f\n", s.data(), (int)v->st.font.family, (int)v->st.font.style, v->st.fontSize, i.location.x, i.location.y);
 			BPoint start = ToWindow(v, i.location);
 			BPoint end = DrawText(w, v->st, s.data(), i.stringLength, start, code == AS_DRAW_STRING_WITH_DELTA ? &i.delta : NULL);
+			RecordRun(v, s.data(), i.location, start, end);
 			BPoint o = WindowOffset(v);
 			v->st.pen = BPoint((end.x - o.x) / v->st.scale - v->st.origin.x, (end.y - o.y) / v->st.scale - v->st.origin.y);
 			return;
@@ -1772,6 +1860,50 @@ int unhandled_opcodes(int* withReply)
 	std::lock_guard<std::recursive_mutex> g(gMu);
 	if (withReply) *withReply = gUnhandledReply;
 	return gUnhandled;
+}
+
+static void Snap(const SView* v, UiWindow* uw)
+{
+	UiNode n;
+	n.token = v->token; n.parent = v->parent ? v->parent->token : -1; n.name = v->name;
+	n.l = v->frame.left; n.t = v->frame.top; n.r = v->frame.right; n.b = v->frame.bottom;
+	BPoint po = v->parent ? WindowOffset(v->parent) : BPoint(0, 0);
+	BRect abs = v->parent ? v->frame.OffsetByCopy(po) : v->frame.OffsetToCopy(0, 0);
+	n.al = abs.left; n.at = abs.top; n.ar = abs.right; n.ab = abs.bottom;
+	BRect vis = VisibleRect(v);
+	n.clipped = !vis.IsValid();
+	if (!n.clipped) { n.vl = vis.left; n.vt = vis.top; n.vr = vis.right; n.vb = vis.bottom; }
+	n.hidden = v->hidden; n.effectively_hidden = EffectivelyHidden(v);
+	n.flags = v->flags; n.navigable = (v->flags & B_NAVIGABLE) != 0;
+	DeriveRole(v, &n);
+	n.drew["strings"] = v->ev.strings; n.drew["ellipses"] = v->ev.ellipses; n.drew["roundrects"] = v->ev.roundrects;
+	n.drew["gradients"] = v->ev.gradients; n.drew["rects"] = v->ev.rects; n.drew["lines"] = v->ev.lines;
+	n.drew["bitmaps"] = v->ev.bitmaps; n.drew["shapes"] = v->ev.shapes;
+	for (const SView::Run& r : v->runs) {
+		UiText t; t.text = r.text; t.x = r.at.x; t.y = r.at.y; t.width = r.width; t.size = r.size;
+		t.wl = r.win.left; t.wt = r.win.top; t.wr = r.win.right; t.wb = r.win.bottom;
+		n.text.push_back(std::move(t));
+	}
+	for (const SView* c : v->children) n.children.push_back(c->token);
+	uw->nodes.push_back(std::move(n));
+	for (const SView* c : v->children) Snap(c, uw);
+}
+
+std::vector<UiWindow> ui_snapshot()
+{
+	std::lock_guard<std::recursive_mutex> g(gMu);
+	std::vector<UiWindow> out;
+	for (SWindow* w : gWindows) {
+		if (w->quit || !w->top) continue;
+		UiWindow uw;
+		uw.index = w->index; uw.app = w->app ? w->app->sig : ""; uw.title = w->title;
+		uw.kind = IsMenu(w) ? "menu" : IsModal(w) ? "modal" : "window";
+		uw.width = (int)w->frame.IntegerWidth() + 1; uw.height = (int)w->frame.IntegerHeight() + 1;
+		uw.visible = w->visible; uw.active = w->active;
+		Snap(w->top, &uw);
+		out.push_back(std::move(uw));
+	}
+	return out;
 }
 
 double output_scale() { return gScale; }

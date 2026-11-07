@@ -96,6 +96,11 @@ type Grant struct {
 	Source string `json:"source"`
 	// Device is the device class ("gpu", "wayland") when this grant is a device grant.
 	Device string `json:"device,omitempty"`
+	// UI is the accessibility class ("read") when this grant is a ui grant (decision 0017), and UIFor is the domain
+	// identity that holds it. The handle is minted for "ui:<class>:<identity>", which is what the application's tree
+	// service looks for in the bus's own table.
+	UI    string `json:"ui,omitempty"`
+	UIFor string `json:"ui_for,omitempty"`
 	// Cap is the id (cap:...) of the daemon-minted handle that named this
 	// grant for this invoke; empty when none was issued (see Record.CapNote).
 	Cap string `json:"cap,omitempty"`

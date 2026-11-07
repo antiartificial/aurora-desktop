@@ -39,6 +39,11 @@ func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv 
 	}()
 	for _, g := range grants {
 		g := g
+		if g.UI != "" {
+			// Nothing to put in the domain's namespace: the grant is the bus handle minted for it (mintCaps), which the
+			// application's tree service reads from the bus's table. It is revoked with the rest, in cs.release.
+			continue
+		}
 		if g.Device != "" {
 			if err := iv.Runner.GrantDevice(name, g.Device); err != nil {
 				return domain.Result{}, false, fail("domain_error", "grant device %s to %s failed", err.Error(), g.Device, name)

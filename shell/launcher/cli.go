@@ -59,6 +59,13 @@ Usage:
                                 matches live. NOT filtered by capability, and it only knows
                                 files whose provenance.created event indexd saw
   aurora query show FILE        one file's indexed writes, provenance and derived-from edges
+  aurora ui tree APP [--window N] [--root TOKEN] [--depth N] [--no-text] [--json]
+                                the accessibility tree of a running application: its windows, views
+                                (name, role, frame, state) and the text each drew. APP is the service it
+                                was launched to serve ("kitchensink" for ui.kitchensink). The application
+                                decides, from the identity busd stamped on you, whether you may read it
+  aurora ui node APP WINDOW TOKEN [--json]     one view
+  aurora ui text APP WINDOW TOKEN [--deep]     the text one view drew (--deep: and its descendants)
   --yes (open, chain, watch, approvals) allows every request WITHOUT asking.
                                 A test affordance that defeats the point.
 
@@ -134,6 +141,8 @@ func Run(env *Env, args []string) int {
 		return cmdActivity(env, rest)
 	case "query":
 		return cmdQuery(env, rest)
+	case "ui":
+		return cmdUI(env, rest)
 	}
 	fmt.Fprintf(env.Err, "aurora: unknown command %q\n\n%s", cmd, usage)
 	return 2

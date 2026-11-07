@@ -56,6 +56,9 @@ func (g Grant) Resource() string {
 	if g.Device != "" {
 		return "device:" + g.Device
 	}
+	if g.UI != "" {
+		return "ui:" + g.UI + ":" + g.UIFor
+	}
 	return Resource(g.Path, g.Mode)
 }
 

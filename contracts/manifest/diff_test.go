@@ -29,6 +29,7 @@ func TestConsentAddCapability(t *testing.T) {
 		"new network host": variant(t, [][2]string{{`["api.example.com"]`, `["api.example.com", "other.example.org"]`}}, ""),
 		"new path":         variant(t, nil, "\n[[capabilities.paths]]\npath = \"~/Documents\"\naccess = \"read\"\n"),
 		"new device":       variant(t, [][2]string{{"[capabilities]", "[capabilities]\ndevices = [\"camera\"]"}}, ""),
+		"new ui class":     variant(t, [][2]string{{"[capabilities]", "[capabilities]\nui = [\"read\"]"}}, ""),
 		"path read->write": variant(t, [][2]string{{`access = "read"`, `access = "write"`}}, ""),
 	}
 	for name, nw := range cases {

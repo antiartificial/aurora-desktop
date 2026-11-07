@@ -83,6 +83,8 @@ func TestCapabilityForms(t *testing.T) {
 		mustLoad(t, strings.Replace(baseTOML, `"api.example.com"`, `"`+h+`"`, 1))
 	}
 	wantErr(t, strings.Replace(baseTOML, "[capabilities]", "[capabilities]\ndevices = [\"GPU!\"]", 1), "devices[0]")
+	wantErr(t, strings.Replace(baseTOML, "[capabilities]", "[capabilities]\nui = [\"write\"]", 1), "ui[0]")
+	mustLoad(t, strings.Replace(baseTOML, "[capabilities]", "[capabilities]\nui = [\"read\"]", 1))
 }
 
 func TestMIMEValidation(t *testing.T) {
