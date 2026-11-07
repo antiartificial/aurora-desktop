@@ -44,6 +44,7 @@ use settings::{Built, Page};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
+#[derive(Clone)]
 pub struct Item {
     pub id: String,
     pub label: String,
@@ -145,6 +146,10 @@ pub struct Shell {
     /// Dock items that are still arriving, keyed by item id. A dock that pops a new app into
     /// existence at full size is the single most noticeable place a desktop feels cheap.
     item_appear: std::collections::HashMap<String, motion::Appear>,
+    /// Items the registry no longer lists, kept in `items` until they have shrunk away.
+    item_leaving: std::collections::HashMap<String, motion::Appear>,
+    /// What `items` held after the previous rebuild, including anything already leaving.
+    items_prev: Vec<Item>,
     decos: deco::DecoStore,
     pub registry: apps::Registry,
     items: Vec<Item>,
@@ -202,6 +207,8 @@ impl Shell {
             deco: Decoration::default(),
             appearing: Default::default(),
             item_appear: Default::default(),
+            item_leaving: Default::default(),
+            items_prev: Vec::new(),
             decos: Default::default(),
             registry: apps::Registry::new(None),
             items: vec![],
@@ -290,6 +297,10 @@ impl Shell {
             .iter()
             .map(|a| Item { id: a.id.clone(), label: a.name.clone(), clickable: true, problem: a.problem.clone() })
             .collect();
+        // What the dock showed a moment ago, so anything the registry has dropped can be put
+        // back for as long as it takes to shrink away. `prev` already contains items that were
+        // leaving when this ran, which is how a departure survives several rebuilds.
+        let prev: Vec<Item> = std::mem::take(&mut self.items_prev);
         if self.items.is_empty() {
             let msg = match &self.registry.status {
                 Status::NoBus => "no registry (no --bus-socket)",
@@ -299,6 +310,47 @@ impl Shell {
             };
             self.items.push(Item { id: String::new(), label: msg.into(), clickable: false, problem: String::new() });
         }
+        // `known` is what the REGISTRY says, taken before anything leaving is spliced back in,
+        // so an app that goes and returns arrives again rather than being treated as present
+        // throughout.
+        self.known = self.items.iter().map(|i| i.id.clone()).collect();
+
+        // Anything that has gone LEAVES: it stays in the list with a shrinking width, so the
+        // items beside it slide in to close the gap instead of teleporting. This is the mirror
+        // of the arrival below, and the reason it is done by keeping the item rather than by
+        // drawing a ghost at a remembered rectangle is that the layout and the draw then need
+        // no special case at all.
+        let out_ms = motion::DOCK_ITEM_OUT_MS as f32;
+        let here: std::collections::HashSet<String> = self.items.iter().map(|i| i.id.clone()).collect();
+        for (i, old) in prev.iter().enumerate() {
+            if old.id.is_empty() || here.contains(&old.id) {
+                continue;
+            }
+            // Whether this is a NEW departure or one already in flight has to be decided before
+            // anything is inserted. Retiring finished entries first and then using an
+            // entry().or_insert_with() here recreated the one just retired, so the item left,
+            // was dropped, and left again on the next rebuild: the dock oscillated between 7 and
+            // 8 items for as long as it ran. Found by watching it, not by reading it.
+            match self.item_leaving.get(&old.id) {
+                Some(a) if a.elapsed_ms() >= out_ms => continue,   // done: let it go
+                Some(_) => {}                                      // still on its way out
+                None => {
+                    self.item_leaving.insert(old.id.clone(), motion::Appear::new(motion::DOCK_ITEM_OUT_MS));
+                }
+            }
+            let at = i.min(self.items.len());
+            self.items.insert(at, old.clone());
+        }
+        // Keep a record only for what is actually still shown, so an app that goes, finishes
+        // leaving, and comes back ARRIVES rather than being remembered as half-gone.
+        let shown: std::collections::HashSet<String> = self.items.iter().map(|i| i.id.clone()).collect();
+        self.item_leaving.retain(|k, _| shown.contains(k));
+        // A placeholder ("no apps installed") and a leaving item must not both be shown: the
+        // dock is either empty or it is not.
+        if self.items.iter().any(|i| !i.id.is_empty()) {
+            self.items.retain(|i| !i.id.is_empty());
+        }
+
         let spec = FontSpec::new(self.font.size);
         let scale = self.scale;
         self.widths = self.items.iter().map(|i| (self.text.string_width(&i.label, &spec, scale) as f64 * scale).ceil() as i32 + 2).collect();
@@ -320,7 +372,7 @@ impl Shell {
                 }
             }
         }
-        self.known = self.items.iter().map(|i| i.id.clone()).collect();
+        self.items_prev = self.items.clone();
         self.hover = None;
     }
 
@@ -350,7 +402,7 @@ impl Shell {
     /// it slide over to make room. The alternative -- full width from frame one, fading in -- is
     /// what a dock does when nobody thought about it: the neighbours teleport.
     fn anim_widths(&self) -> Vec<i32> {
-        if self.item_appear.is_empty() {
+        if self.item_appear.is_empty() && self.item_leaving.is_empty() {
             return self.widths.clone();
         }
         self.widths
@@ -358,6 +410,9 @@ impl Shell {
             .enumerate()
             .map(|(i, &w)| {
                 let Some(it) = self.items.get(i) else { return w };
+                if let Some(t) = self.item_departure(&it.id) {
+                    return ((w as f32) * (1.0 - t)).round() as i32;
+                }
                 match self.item_arrival(&it.id) {
                     Some(t) => ((w as f32) * t).round() as i32,
                     None => w,
@@ -372,6 +427,17 @@ impl Shell {
     /// once for the layout and once per draw -- and a read that retired would give different
     /// answers within one frame, which is how an item ends up laid out at one width and drawn at
     /// another. `tick` retires them.
+    /// How far through leaving `id` is, 0.0 to 1.0, or None if it is not going anywhere.
+    /// Eased the same way an arrival is, so the two read as one motion reversed.
+    pub fn item_departure(&self, id: &str) -> Option<f32> {
+        let a = self.item_leaving.get(id)?;
+        let e = a.elapsed_ms();
+        if e >= motion::DOCK_ITEM_OUT_MS as f32 {
+            return None;
+        }
+        Some(motion::ease_out_cubic(e / motion::DOCK_ITEM_OUT_MS as f32))
+    }
+
     pub fn item_arrival(&self, id: &str) -> Option<f32> {
         let a = self.item_appear.get(id)?;
         let e = a.elapsed_ms();
@@ -422,6 +488,11 @@ impl Shell {
         if !self.item_appear.is_empty() {
             let ms = motion::DOCK_ITEM_MS as f32;
             self.item_appear.retain(|_, a| a.elapsed_ms() < ms);
+        }
+        // A finished departure has to reach `rebuild`, or the item stays spliced into `items`
+        // at zero width forever: nothing else would ask, because the registry has not changed.
+        if self.item_leaving.values().any(|a| a.elapsed_ms() >= motion::DOCK_ITEM_OUT_MS as f32) {
+            self.rebuild_items();
         }
         self.registry.tick();
     }
@@ -700,7 +771,14 @@ impl Shell {
         let arriving: String = self
             .items
             .iter()
-            .filter_map(|i| self.item_arrival(&i.id).map(|t| format!("{}:{:.2}", i.id, t)))
+            .filter_map(|i| {
+                // Departures belong in the key for exactly the reason arrivals do: without it
+                // the cached texture is reused for every frame of the animation and the item
+                // sits there at full size until it vanishes.
+                self.item_departure(&i.id)
+                    .map(|t| format!("{}:-{:.2}", i.id, t))
+                    .or_else(|| self.item_arrival(&i.id).map(|t| format!("{}:{:.2}", i.id, t)))
+            })
             .collect::<Vec<_>>()
             .join(",");
         let key = format!("{}x{}|{:?}|{}|{}|{}|{}", l.panel.w, l.panel.h, self.hover, self.rev, self.glass_on, self.scale, arriving);
@@ -738,7 +816,10 @@ impl Shell {
             let (lx, ly) = (r.x - l.panel.x, r.y - l.panel.y);
             // An arriving item's pill is still growing, so its contents fade in rather than
             // being drawn full-strength into a slot too narrow to hold them.
-            let t = self.item_arrival(&item.id).unwrap_or(1.0);
+            let t = match self.item_departure(&item.id) {
+                Some(d) => 1.0 - d,
+                None => self.item_arrival(&item.id).unwrap_or(1.0),
+            };
             let fade = |a: u8| ((a as f32) * t) as u8;
             let dim = !item.clickable || !item.problem.is_empty();
             if self.hover == Some(i) && !dim {

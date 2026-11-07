@@ -28,6 +28,11 @@ pub const DOCK_ITEM_MS: u64 = 150;
 
 /// A window closing. Shorter than opening, and deliberately so: an arrival is worth watching and
 /// a departure is in the way. Past about 150 ms, closing a window feels like waiting for it.
+/// A dock item leaving. Shorter than its arrival for the same reason a window's close is
+/// shorter than its open: you have already decided it should go, and a departure in the way is
+/// the one animation that reads as lag.
+pub const DOCK_ITEM_OUT_MS: u64 = 120;
+
 pub const CLOSE_MS: u64 = 130;
 
 /// How far a closing window shrinks before it is gone. It does not go to zero -- the last frames
@@ -254,5 +259,34 @@ mod arrival_tests {
         // arrival. Chrome is small and can afford the bigger move.
         assert!(WINDOW_START_SCALE > START_SCALE);
         assert!(WINDOW_START_SCALE < 1.0);
+    }
+}
+
+#[cfg(test)]
+mod dock_departure_tests {
+    use super::*;
+
+    #[test]
+    fn a_dock_item_leaves_faster_than_it_arrives() {
+        // The same reason a window's close is quicker than its open: you have already decided
+        // it should go, so anything in the way reads as lag rather than as motion.
+        assert!(DOCK_ITEM_OUT_MS < DOCK_ITEM_MS);
+        // And not so fast that it is a blink, which is the thing it replaces.
+        assert!(DOCK_ITEM_OUT_MS >= 90, "{DOCK_ITEM_OUT_MS}ms is a flicker, not a departure");
+    }
+
+    #[test]
+    fn the_departure_curve_runs_the_whole_way_and_stops() {
+        // Width is scaled by 1 - t, so t must reach ~1 or the item is left as a visible sliver.
+        let at = |frac: f32| ease_out_cubic(frac);
+        assert!(at(0.0) <= 0.01, "starts full width");
+        assert!(at(1.0) >= 0.99, "ends at nothing: {}", at(1.0));
+        // Monotone, so it never grows back part-way through.
+        let mut last = -1.0;
+        for i in 0..=20 {
+            let v = at(i as f32 / 20.0);
+            assert!(v >= last, "curve went backwards at {i}");
+            last = v;
+        }
     }
 }
