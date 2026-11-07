@@ -282,6 +282,9 @@ Desc Label(std::string text);
 Desc Label(State<std::string>* bound);
 Desc Bold(std::string text);
 Desc Button(std::string label, std::function<void()> on_click);
+// A button that can be switched off by a State. Off, it draws dim, ignores a click and the
+// activation keys, and stays in the tree: a disabled action is shown with its absence, not hidden.
+Desc Button(std::string label, std::function<void()> on_click, State<bool>* enabled);
 Desc Spacer();                                       // takes all the leftover space
 
 // ---- the small controls -------------------------------------------------------------------------
@@ -408,6 +411,10 @@ void OnIconsDragPaths(const Desc& icons, std::function<std::vector<std::string>(
 // multi-selects pays nothing.
 void OnListSelectionChanged(const Desc& list, std::function<void(const std::vector<int>&)> f);
 std::vector<int> ListSelection(const Desc& list);
+// Make a list refuse multi-selection: Ctrl-click, Shift-click, Shift+arrows and Ctrl+A all behave
+// as the plain gesture, so highlighted rows and the cursor are always the same single row. For a
+// picker, where what is highlighted is exactly what will be granted.
+void ListSingleSelect(const Desc& list);
 
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);
 

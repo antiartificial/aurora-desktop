@@ -828,6 +828,93 @@ int main() {
         eq("and the band is over once released", IconsSelection(grid).size() < many);
     }
 
+    // ---- a button that can be switched off ------------------------------------------------------
+    // A picker's Grant is the one control whose being disabled is the whole safety property.
+    {
+        int fired = 0;
+        State<bool> on(false);
+        Desc b = Button("Grant", [&] { fired++; }, &on);
+
+        b->OnPress();
+        b->OnRelease(true);
+        eq("a disabled button ignores a click", fired == 0);
+        au_key space = pressing(' ');
+        space.utf8[0] = ' ';
+        eq("a disabled button declines Space", !b->OnKey(space) && fired == 0);
+        au_key enter = pressing('\r');
+        enter.utf8[0] = '\r';
+        eq("a disabled button declines Enter", !b->OnKey(enter) && fired == 0);
+
+        on.set(true);
+        b->OnPress();
+        b->OnRelease(true);
+        eq("the same button fires once enabled", fired == 1);
+        eq("and takes Space once enabled", b->OnKey(space) && fired == 2);
+
+        // The two-argument form is unchanged: no State means always on.
+        int plain = 0;
+        Desc p = Button("Go", [&] { plain++; });
+        p->OnPress();
+        p->OnRelease(true);
+        eq("a button with no enabled State is always on", plain == 1);
+    }
+
+    // ---- a single-select list stays single ------------------------------------------------------
+    // The plain list multi-selects from the keyboard; the same keys on a single-select one must
+    // leave exactly one row, or what is highlighted would not be what a picker grants.
+    {
+        ManyRows src(10);
+        int multi_sel = -1, single_sel = -1;
+        Desc multi = ListView(&src, &multi_sel);
+        Desc single = ListView(&src, &single_sel);
+        ListSingleSelect(single);
+        for (Desc l : {multi, single}) {
+            lay(l, e, Rect{0, 0, 400, 600});
+            l->Draw(nullptr, e);
+        }
+
+        au_key shift_down = pressing(0x1f);
+        shift_down.mods = AU_MOD_SHIFT;
+        au_key ctrl_a = pressing('a');
+        ctrl_a.mods = AU_MOD_CTRL;
+
+        // A plain Down first: it puts the cursor and the anchor on row 0, the way a click would.
+        multi->OnKey(pressing(0x1f));
+        single->OnKey(pressing(0x1f));
+        multi->OnKey(shift_down);
+        multi->OnKey(shift_down);
+        eq("a plain list extends with Shift+Down", ListSelection(multi).size() == 3);
+        multi->OnKey(ctrl_a);
+        eq("a plain list takes everything on Ctrl+A", ListSelection(multi).size() == 10);
+
+        single->OnKey(shift_down);
+        single->OnKey(shift_down);
+        eq("a single-select list moves on Shift+Down", single_sel == 2);
+        eq("and keeps one row selected", ListSelection(single) == std::vector<int>{2});
+        single->OnKey(ctrl_a);
+        eq("Ctrl+A selects nothing more", ListSelection(single) == std::vector<int>{2});
+    }
+
+    // ---- the app clears the selection by writing -1 ---------------------------------------------
+    // Atlas does it on every directory it opens, and the picker does it on every folder. The rows that were
+    // highlighted must not stay highlighted in a listing they were never chosen from.
+    {
+        ManyRows src(10);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+        list->OnKey(pressing(0x1f));
+        list->OnKey(pressing(0x1f));
+        eq("a row is selected", selected == 1 && ListSelection(list) == std::vector<int>{1});
+
+        selected = -1;                       // the app opens another directory
+        list->Draw(nullptr, e);
+        eq("the highlight goes with it", ListSelection(list).empty());
+        list->OnKey(pressing(0x1f));
+        eq("and the next selection starts clean", selected == 0 && ListSelection(list) == std::vector<int>{0});
+    }
+
     if (fails == 0) printf("tk_layout: ok\n");
     return fails ? 1 : 0;
 }

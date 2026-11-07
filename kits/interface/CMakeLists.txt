@@ -176,3 +176,23 @@ add_test(NAME tk_layout COMMAND tk_layout)
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)
+
+# aurora-chooser: the graphical file picker the capability model asks for (argv in, one JSON line out; see
+# chooser_model.h for the contract). A shipped binary, so it lives here and not in aurora-ui/demo. It shares
+# DirRows and PlacesTree with Atlas through aurora-ui/filebrowse.h and links no bus client: a picker that spoke to
+# the bus could be asked to say more than the one line.
+add_executable(aurora-chooser chooser.cpp)
+target_link_libraries(aurora-chooser PRIVATE aurora_ui_tk)
+
+# Everything about the chooser that needs no surface: the argv, the verdict for each kind, the words, and the exact
+# stdout line. Json.cpp is only here as an independent reader of that line.
+add_executable(test_chooser_model tests/test_chooser_model.cpp ../src/bus/Json.cpp)
+target_include_directories(test_chooser_model PRIVATE ../include/bus)
+add_test(NAME chooser_model COMMAND test_chooser_model)
+# The binary's own behaviour with no display: what it prints, and the exit code a caller branches on.
+add_test(NAME chooser_cli COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/chooser_cli.sh $<TARGET_FILE:aurora-chooser>)
+# The real window, on the headless compositor, driven by keys. It needs the Rust compositor to have been built and
+# reports itself skipped (exit 77) when it has not, so a build without it is not mistaken for a pass.
+add_test(NAME chooser_ui COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/chooser_ui.sh $<TARGET_FILE:aurora-chooser>)
+set_tests_properties(chooser_model chooser_cli PROPERTIES TIMEOUT 30)
+set_tests_properties(chooser_ui PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)

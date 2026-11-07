@@ -205,7 +205,10 @@ private:
 
 class ButtonNode : public Node {
 public:
-    ButtonNode(std::string l, std::function<void()> f) : l_(std::move(l)), f_(std::move(f)) {}
+    ButtonNode(std::string l, std::function<void()> f, State<bool>* enabled = nullptr)
+        : l_(std::move(l)), f_(std::move(f)), enabled_(enabled) {
+        if (enabled_) enabled_->attach(this);
+    }
 
     Size Measure(const Env& e, Constraints) override {
         const float w = au_text_width(e.face(st_), e.sized(st_), l_.c_str(), -1);
@@ -213,27 +216,31 @@ public:
     }
     void SetStyle(const TextStyle& st) override { st_ = st; }
     void Draw(au_surface* s, const Env& e) override {
-        const au_color bg = down_ ? e.accent : (over_ ? e.surface_hi : e.surface);
+        // Switched off: the resting fill and dim text, whatever the pointer is doing. It stays
+        // visible, as a disabled menu item does, because a button that vanished would hide that
+        // the action exists and what is missing before it can happen.
+        const bool on = enabled();
+        const au_color bg = !on ? e.surface : (down_ ? e.accent : (over_ ? e.surface_hi : e.surface));
         au_fill_round_rect(s, frame.box(), 7, 7, bg);
         // A visible focus ring, always. Hiding where focus is makes a keyboard user guess.
         if (focused_) au_stroke_rect(s, frame.box(), e.accent, 2);
         const float tw = au_text_width(e.face(st_), e.sized(st_), l_.c_str(), -1);
         au_text_draw(s, e.face(st_), e.sized(st_), l_.c_str(), -1, frame.x + (frame.w - tw) / 2,
-                     baseline_in(e, frame, st_), down_ ? e.surface : e.ink(st_));
+                     baseline_in(e, frame, st_), !on ? e.dim : (down_ ? e.surface : e.ink(st_)));
     }
     void OnEnter() override { over_ = true; }
     void OnLeave() override { over_ = false; down_ = false; }
     void OnPress() override { down_ = true; }
     void OnRelease(bool inside) override {
         down_ = false;
-        if (inside && f_) f_();
+        if (inside && enabled() && f_) f_();
     }
     bool CanFocus() const override { return true; }
     void OnFocus(bool g) override { focused_ = g; }
     bool OnKey(const au_key& k) override {
         // Space and Enter activate, which is what every toolkit since the 1980s does and what a
         // keyboard-only user reaches for first.
-        if (!k.pressed) return false;
+        if (!k.pressed || !enabled()) return false;
         if (k.utf8[0] == ' ' || k.utf8[0] == '\r' || k.utf8[0] == '\n') {
             if (f_) f_();
             return true;
@@ -242,8 +249,11 @@ public:
     }
 
 private:
+    bool enabled() const { return !enabled_ || enabled_->get(); }
+
     std::string l_;
     std::function<void()> f_;
+    State<bool>* enabled_ = nullptr;
     TextStyle st_;
     bool over_ = false, down_ = false, focused_ = false;
 
@@ -580,6 +590,14 @@ public:
         // their column, not to the list, so a list placed at zero width went on painting its
         // header and rows across whatever was beside it.
         if (frame.w <= 0 || frame.h <= 0) return;
+        // The app clears the selection by writing -1 into the int it gave us, as Atlas does when it opens a directory.
+        // The list's own set of highlighted rows has to follow, or the old row NUMBERS stay lit in the new listing
+        // while nothing is selected: the screen would show a choice that the app does not hold. The list itself never
+        // leaves the cursor at -1 with rows highlighted (set_only(-1) clears both), so this state is only ever the app's.
+        if (sel_ && *sel_ < 0 && !multi_.empty()) {
+            multi_.clear();
+            anchor_ = -1;
+        }
         au_fill_rect(s, frame.box(), au_color{30, 32, 42, 255});
 
         // Column widths come from the Rows source and have nothing to do with how much room the
@@ -712,7 +730,9 @@ public:
         if (clicks_ >= 2 && on_act_ && !(m & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
     }
 
-    uint32_t mods_now() const { return win_ ? win_->mods() : 0u; }
+    // A single-select list reads no modifiers, so Ctrl-click and Shift-click are plain clicks.
+    uint32_t mods_now() const { return win_ && !single_ ? win_->mods() : 0u; }
+    void SetSingleSelect() { single_ = true; }
     void OnPressAt(float x, float y, int clicks) override {
         click_y_ = y;
         clicks_ = clicks;
@@ -984,7 +1004,7 @@ public:
         // arrows because 'a' is also a type-ahead character.
         // raw_char, not utf8: utf8 carries the modifiers, so Ctrl+A types 0x01 and never
         // compares equal to 'a'. raw_char is the layout's level-0 symbol, which is the letter.
-        if ((k.mods & AU_MOD_CTRL) && (k.raw_char | 0x20) == 'a') {
+        if (!single_ && (k.mods & AU_MOD_CTRL) && (k.raw_char | 0x20) == 'a') {
             select_all();
             return true;
         }
@@ -992,7 +1012,7 @@ public:
             const int before_top = top_;
             // Shift+arrow sweeps from the anchor instead of moving a single selection, which is
             // how a keyboard user selects a run of files without touching the mouse.
-            if (k.mods & AU_MOD_SHIFT) extend_to(next);
+            if (!single_ && (k.mods & AU_MOD_SHIFT)) extend_to(next);
             else select(next);
             Reveal(next);
             ahead_.clear();
@@ -1078,6 +1098,7 @@ private:
     Scroller sb_;
     bool on_bar_ = false;
     std::set<int> multi_;
+    bool single_ = false;
     int anchor_ = -1;
     std::function<void(const std::vector<int>&)> on_multi_;
     std::function<std::vector<std::string>(int)> drag_paths_;
@@ -2812,6 +2833,9 @@ Desc Bold(std::string t) { return std::make_shared<TextNode>(std::move(t), true)
 Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));
 }
+Desc Button(std::string l, std::function<void()> f, State<bool>* enabled) {
+    return std::make_shared<ButtonNode>(std::move(l), std::move(f), enabled);
+}
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
 
 Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> f) {
@@ -2887,6 +2911,10 @@ void OnIconsSelect(const Desc& d, std::function<void(int)> f) {
 
 void OnListSelectionChanged(const Desc& list, std::function<void(const std::vector<int>&)> f) {
     if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetMultiHandler(std::move(f));
+}
+
+void ListSingleSelect(const Desc& list) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetSingleSelect();
 }
 
 std::vector<int> ListSelection(const Desc& list) {
