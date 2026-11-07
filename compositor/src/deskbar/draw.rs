@@ -18,6 +18,15 @@ use crate::{
     trusted::draw::{Canvas, Elide, fit},
 };
 
+/// How much width the header's system figures may use, once the label has its own space and a
+/// gap between them. Never negative; zero means there is no room and they are dropped rather
+/// than drawn over the label.
+fn meta_room(box_w: f32, pad: f32, label_w: f32) -> f32 {
+    /// A readable gap, so the two halves do not merely touch.
+    const GAP: f32 = 12.0;
+    (box_w - pad - (pad + label_w) - GAP).max(0.0)
+}
+
 const PAD: f32 = 6.0;
 const HEADER_H: f32 = 32.0;
 const APP_H: f32 = 46.0;
@@ -269,9 +278,22 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
                 t.draw(&mut c, pad_x, mid(y, h, &mb), &label, &bold, text, st.scale);
                 let sys = if st.cfg.system { model::system_text(&v.sys).join(" \u{b7} ") } else { String::new() };
                 if !sys.is_empty() {
-                    let sw = t.string_width(&sys, &small, st.scale);
-                    t.draw(&mut c, w - pad_x - sw, mid(y, h, &ms), &sys, &small, dim, st.scale);
-                    meta_text = sys;
+                    // The two halves of this row used to be drawn without either knowing the
+                    // other was there: the label left-aligned at pad_x with no limit, the figures
+                    // right-aligned at their own width. As soon as both together were wider than
+                    // the box they overlapped, which they did at three windows, so the row read
+                    // "1 app . 3 windowswired . cpu 35%".
+                    //
+                    // The label answers the question the box is for, so it keeps its space and
+                    // the figures take what is left. Cut from the TAIL, because the first figure
+                    // is the network and losing "mem 42%" costs less than losing "wired".
+                    let room = meta_room(w, pad_x, t.string_width(&label, &bold, st.scale));
+                    let shown = if room > 0.0 { fit(t, &sys, &small, st.scale, room, Elide::Head) } else { String::new() };
+                    if !shown.is_empty() {
+                        let sw = t.string_width(&shown, &small, st.scale);
+                        t.draw(&mut c, w - pad_x - sw, mid(y, h, &ms), &shown, &small, dim, st.scale);
+                        meta_text = shown;
+                    }
                 }
                 // a hairline under the header, so the first app does not read as part of it
                 c.over_rect(d(pad_x), bot - 1.max(d(0.5)), cw - 2 * d(pad_x), 1.max(d(0.5)), [dim[0], dim[1], dim[2], 50]);
@@ -386,11 +408,11 @@ mod tests {
     use super::*;
     use model::{Win, Dom};
 
-    fn grp(key: &str, label: &str, dom: Dom, wins: &[(&str, &str, bool)]) -> Group {
+    pub(super) fn grp(key: &str, label: &str, dom: Dom, wins: &[(&str, &str, bool)]) -> Group {
         Group { key: key.into(), label: label.into(), dom, wins: wins.iter().map(|(i, t, f)| Win { id: (*i).into(), title: (*t).into(), focused: *f }).collect() }
     }
 
-    fn st(cfg: &theme::Deskbar, max_h: f32) -> Style<'_> {
+    pub(super) fn st(cfg: &theme::Deskbar, max_h: f32) -> Style<'_> {
         Style { cfg, scale: 1.0, font: 14.0, glass_on: true, radius: 12.0, max_h }
     }
 
@@ -437,6 +459,11 @@ mod tests {
     #[test]
     fn the_header_shows_machine_figures_only_when_read_and_only_when_asked_for() {
         let mut cfg = theme::Deskbar::default();
+        // Wide enough that the figures are not cut, because what this test is about is WHICH
+        // figures appear and in what order, not how they fit. The bitmap font the test harness
+        // falls back to is far wider than the real one, so at the default 288 even a short set
+        // is elided. The row's fit is asserted in header_room_tests instead.
+        cfg.width = 900.0;
         let mut t = TextSystem::new("", "");
         let g = vec![grp("a", "A", Dom::None, &[("1", "w", false)])];
         let (figs, net) = (HashMap::new(), Net::default());
@@ -553,5 +580,93 @@ mod tests {
         assert_eq!(nets, [("evil.example", "refused"), ("busy.example", "allowed 500")]);
         let app = r.rows.iter().find(|r| r.kind.tag() == "app").unwrap();
         assert_eq!(app.meta, "in a domain / net 2 hosts \u{b7} 1 refused");
+    }
+}
+
+#[cfg(test)]
+mod header_room_tests {
+    use super::*;
+
+    // The header draws a bold label on the left and the machine figures on the right. They used
+    // to be positioned independently, so once both were wider than the box they overlapped and
+    // the row read "1 app . 3 windowswired . cpu 35% . mem 42%". Whatever the figures get, there
+    // must be a gap after the label.
+    #[test]
+    fn the_figures_never_reach_the_label() {
+        let (box_w, pad) = (288.0, PAD);
+        for label_w in [0.0, 40.0, 120.0, 200.0, 260.0, 400.0] {
+            let room = meta_room(box_w, pad, label_w);
+            assert!(room >= 0.0, "negative room for a label of {label_w}");
+            // Right-aligned figures of exactly `room` start here.
+            let figures_start = box_w - pad - room;
+            let label_end = pad + label_w;
+            if room > 0.0 {
+                assert!(figures_start > label_end, "figures start at {figures_start}, label ends at {label_end}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_that_fills_the_box_leaves_no_room_rather_than_negative_room() {
+        // Dropping the figures is the right answer here. Drawing them at a negative width is
+        // how the overlap happened in the first place.
+        assert_eq!(meta_room(288.0, PAD, 400.0), 0.0);
+        assert_eq!(meta_room(288.0, PAD, 288.0), 0.0);
+    }
+
+    #[test]
+    fn a_short_label_leaves_most_of_the_box() {
+        let room = meta_room(288.0, PAD, 60.0);
+        assert!(room > 150.0 && room < 288.0, "room {room}");
+    }
+}
+
+#[cfg(test)]
+mod header_fit_tests {
+    use super::*;
+    use super::tests::*;
+
+    // At the real width the figures are CUT rather than drawn over the label. The bug this
+    // guards was visible rather than logged: the row read "1 app . 3 windowswired . cpu 35%",
+    // because the label and the figures were positioned without either knowing the other
+    // existed. Asserting the meta text alone cannot catch that, so this asserts the widths.
+    #[test]
+    fn at_the_real_width_the_figures_are_cut_rather_than_overlapped() {
+        let cfg = theme::Deskbar::default();
+        assert_eq!(cfg.width, 288.0, "the fixture assumes the shipped width");
+        let mut t = TextSystem::new("", "");
+        // The fixture has to be able to overflow, or it proves nothing. Four apps and the full
+        // set of figures is an ordinary laptop with a few things open, and at 288 the two halves
+        // together are far wider than the box.
+        let g = vec![
+            grp("a", "A", Dom::None, &[("1", "w", false), ("2", "x", false)]),
+            grp("b", "B", Dom::None, &[("3", "w", false), ("4", "x", false)]),
+            grp("c", "C", Dom::None, &[("5", "w", false), ("6", "x", false)]),
+            grp("d", "D", Dom::None, &[("7", "w", false), ("8", "x", false)]),
+        ];
+        let (figs, net) = (HashMap::new(), Net::default());
+        let sys = SysFigures {
+            cpu: Some(35.0),
+            mem: Some(42.0),
+            link: Some(crate::deskbar::sysinfo::Link::Wired),
+            battery: Some(crate::deskbar::sysinfo::Battery { percent: 97, charging: false }),
+            audio: None,
+        };
+        let v = View { groups: &g, expand: &[0.0], figures: &figs, net: &net, net_watching: false, sys, hover: None };
+        let meta = build(&v, &st(&cfg, 900.0), &mut t).rows[0].meta.clone();
+
+        let label = "4 apps \u{b7} 8 windows";
+        let bold = FontSpec::new(14.0).bold();
+        let small = FontSpec::new(14.0 - 2.0);
+        let lw = t.string_width(label, &bold, 1.0);
+        let mw = t.string_width(&meta, &small, 1.0);
+        println!("label {lw:.1} + meta {mw:.1} in {}", cfg.width);
+        assert!(!meta.is_empty(), "the figures vanished entirely");
+        assert!(meta.starts_with("wired"), "the leading figure was cut instead of the trailing one: {meta:?}");
+        assert!(
+            PAD + lw + mw + PAD <= cfg.width,
+            "label {lw:.1} and figures {mw:.1} do not fit in {}: they overlap",
+            cfg.width
+        );
     }
 }

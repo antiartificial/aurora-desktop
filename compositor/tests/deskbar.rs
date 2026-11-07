@@ -287,7 +287,11 @@ fn a_window_that_is_not_in_a_domain_gets_no_figure_and_says_so() {
 
 #[test]
 fn the_header_shows_machine_figures_labelled_as_such_and_only_ones_it_read() {
-    let (_t, mut c) = themed("1", "", &[]);
+    // A wide deskbar, because this test is about how the figures are LABELLED and not about
+    // how they fit. At the shipped 288 the header cuts the figures to leave the label its room
+    // (deskbar::draw::meta_room), and a cut ends in an ellipsis that is not a figure. The fit
+    // itself is asserted in draw.rs's header_fit_tests.
+    let (_t, mut c) = themed("1", "width = 900.0\n", &[]);
     c.client_args(&["--size", "200x150", "--app-id", "org.test.alpha", "--title", "a"]);
     wait_for("a header figure", || bar(&c).is_some_and(|b| b.rows[0].meta.contains("cpu") || b.rows[0].meta.contains("mem")));
     std::thread::sleep(Duration::from_millis(2500));
