@@ -146,6 +146,8 @@ svc_healthy() { "$BIN/auroractl" status --json 2>/dev/null | grep -q "\"name\":\
 svc_diag() { "$BIN/auroractl" status 2>&1; tail -5 "$RUN/$1.log" 2>/dev/null; }
 
 APPS=$ROOT/apps; [ $FIXTURES = 1 ] && APPS=$APPS,$ROOT/controller/testdata/apps
+# AURORA_APPS_EXTRA: more app directories (comma-separated), for a demo that needs an app of its own
+[ -n "${AURORA_APPS_EXTRA:-}" ] && APPS=$APPS,$AURORA_APPS_EXTRA
 COMPFLAGS=()
 if [ $COMPOSITOR = 1 ]; then COMPFLAGS=(--compositor-socket "$AURORA_TRUSTED_SOCK"); else COMPFLAGS=(--no-compositor-approval); fi
 {

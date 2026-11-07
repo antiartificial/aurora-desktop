@@ -147,15 +147,21 @@ func (iv *Invoker) Launch(ctx context.Context, req LaunchRequest) (*LaunchResult
 	return res, e
 }
 
+// oneLine is the last line of s that says something about the app: the domain
+// tooling's own "domain: warning:" lines are not the reason an app died.
 func oneLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
-		s = strings.TrimSpace(s[i+1:])
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	pick := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "domain: warning:") {
+			pick = l
+			break
+		}
 	}
-	if len(s) > 120 {
-		s = s[:117] + "..."
+	if len(pick) > 120 {
+		pick = pick[:117] + "..."
 	}
-	return s
+	return pick
 }
 
 // launchGrants lists a window's grants: the display, which is what makes it a
