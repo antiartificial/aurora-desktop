@@ -178,6 +178,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("aurora-compositor: socket {}", state.socket_name.to_string_lossy());
 
+    // Publish the socket name where the controller looks for it, so a domain granted
+    // device:wayland gets the real socket bind-mounted in.
+    //
+    // The controller reads AURORA_WAYLAND, else $XDG_RUNTIME_DIR/aurora/display
+    // (adapter/linux/internal/dom.WaylandSocket). Until now only `aurora-up` wrote that
+    // file, so anything that started the compositor another way -- `make desktop` does,
+    // because winit needs the HOST's XDG_RUNTIME_DIR to open a window -- left it absent.
+    // Every dock launch then succeeded, the app ran, found no socket, mapped no window,
+    // and the only symptom was a window that never appeared.
+    //
+    // The socket name is chosen here, at runtime, by new_auto(). So this is the one place
+    // that can state it without a launcher having to remember to, which is what made the
+    // same mistake twice: the approval keys had it too (see the Makefile's comment).
+    if let Some(p) = &args.display_file {
+        // The ABSOLUTE path, not the bare socket name. The first version of this wrote the
+        // name, which is what `aurora-up` writes -- and that only works because aurora-up's
+        // compositor and controller share one XDG_RUNTIME_DIR. Here they deliberately do
+        // not: the compositor needs the HOST's so winit can open a window, while the
+        // controller runs under $RUN/xdg. The controller resolved "wayland-1" against its
+        // own runtime dir, looked for $RUN/xdg/wayland-1, and found nothing -- the same
+        // silent no-window failure, one layer in. A bare socket name means nothing between
+        // two processes that disagree about where runtime files live.
+        let abs = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|d| std::path::PathBuf::from(d).join(&state.socket_name))
+            .unwrap_or_else(|| std::path::PathBuf::from(&state.socket_name));
+        let r = std::fs::create_dir_all(p.parent().unwrap_or(std::path::Path::new("/")))
+            .and_then(|_| std::fs::write(p, format!("{}\n", abs.display())));
+        match r {
+            Ok(()) => println!("aurora-compositor: display file {} -> {}", p.display(), abs.display()),
+            // Not fatal: the desktop is still usable, only domain apps cannot reach it.
+            Err(e) => eprintln!("aurora-compositor: WARNING: --display-file {}: {e}; a domain granted device:wayland will find no socket and its windows will never appear", p.display()),
+        }
+    }
+
     if args.xwayland {
         match state.start_xwayland(event_loop.handle()) {
             Ok(n) => println!("aurora-compositor: xwayland DISPLAY=:{n}"),
@@ -266,6 +300,7 @@ struct Args {
     xwayland: bool,
     /// `--state-file PATH`: remember where windows were and put them back after a restart.
     state_file: Option<std::path::PathBuf>,
+    display_file: Option<std::path::PathBuf>,
     /// `--no-host-clipboard`: do not bridge copy/paste to the host.
     no_host_clipboard: bool,
     /// `--host-clipboard-display NAME`: bridge to this host socket instead of `WAYLAND_DISPLAY` (test affordance: a second Aurora can stand in for the host).
@@ -291,7 +326,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -317,6 +352,7 @@ fn parse_args() -> Args {
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
             "--aurora" => args.aurora_bin = it.next(),
             "--state-file" => args.state_file = it.next().map(Into::into),
+            "--display-file" => args.display_file = it.next().map(Into::into),
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),
             "--drm" => args.drm = Some(None),
             s if s.starts_with("--drm=") => args.drm = Some(Some(s["--drm=".len()..].into())),

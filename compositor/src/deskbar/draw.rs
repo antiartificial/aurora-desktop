@@ -259,7 +259,13 @@ pub fn build(v: &View, st: &Style, t: &mut TextSystem) -> Raster {
         let mut meta_text = String::new();
         match &r.body {
             Body::Header => {
-                label = format!("{} \u{b7} {}", model::plural(apps, "app", "apps"), model::plural(wins, "window", "windows"));
+                // With nothing running, say so in words. "0 apps - 0 windows" is accurate and reads
+                // like a failed lookup; the box is answering a question, so it should answer it.
+                label = if apps == 0 {
+                    "No windows open".to_string()
+                } else {
+                    format!("{} \u{b7} {}", model::plural(apps, "app", "apps"), model::plural(wins, "window", "windows"))
+                };
                 t.draw(&mut c, pad_x, mid(y, h, &mb), &label, &bold, text, st.scale);
                 let sys = if st.cfg.system { model::system_text(&v.sys).join(" \u{b7} ") } else { String::new() };
                 if !sys.is_empty() {

@@ -33,6 +33,13 @@ build: ## build everything: the Go modules, the compositor, the Haiku kits
 # aurora-up with XDG_RUNTIME_DIR=$(RUN)/xdg -- so the two would derive
 # DIFFERENT default key paths and every compositor-routed approval would fail
 # its signature check. Naming them settles it. Decision 0011.
+#
+# --display-file is the same problem in the other direction. The controller finds
+# the compositor's socket at $XDG_RUNTIME_DIR/aurora/display, which only aurora-up
+# used to write -- and here aurora-up runs with --no-compositor, so it never does.
+# Without it every dock launch "succeeded", the app ran, found no socket, and mapped
+# no window. The compositor writes the file itself now, because the socket name is
+# chosen at runtime and it is the only thing that knows it.
 desktop: build ## open the desktop in a window on this host, with the stack behind it
 	@set -u; \
 	if [ -f '$(RUN)/ready' ] && [ -S '$(RUN)/bus.sock' ]; then \
@@ -64,6 +71,7 @@ desktop: build ## open the desktop in a window on this host, with the stack behi
 	  --trusted-socket '$(RUN)/xdg/aurora-trusted.sock' \
 	  --theme '$(RUN)/theme' \
 	  --state-file '$(RUN)/compositor-state.json' \
+	  --display-file '$(RUN)/xdg/aurora/display' \
 	  --aurora '$(CURDIR)/build/bin/aurora'
 
 up: ## run the stack in the foreground, headless, with no host window (Ctrl-C stops it)

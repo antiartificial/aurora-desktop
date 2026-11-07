@@ -132,10 +132,16 @@ impl Aurora {
         let cfg = self.fx.theme.deskbar.clone();
         let on = cfg.enabled && !self.shell.legacy_scene;
         let (seen, fullscreen) = if on { self.deskbar_seen() } else { (vec![], false) };
-        // Nothing to list, or something fullscreen that the box would float over: not drawn at all.
-        // An empty box is clutter, and the dock does not hide for a fullscreen window only because it
-        // reserves its own strip, which this does not.
-        if !on || seen.is_empty() || fullscreen {
+        // Hidden only when switched off, or behind something fullscreen that the box would float over.
+        //
+        // It is NOT hidden for having no windows, which it used to be, on the reasoning that an empty
+        // box is clutter. That was wrong twice over. The Deskbar is the thing you look at to see what
+        // is running, so "nothing is running" is an answer it should give rather than a reason to
+        // vanish -- and it still carries the machine's own CPU and memory, which do not depend on a
+        // window existing. Worse, the desktop menu's Show entry could not override it: toggling with
+        // no windows open changed nothing visible, which is indistinguishable from the feature being
+        // broken. That is how it was first reported.
+        if !on || fullscreen {
             self.deskbar.shown = false;
             self.deskbar.placed.clear();
             self.deskbar.key.clear();
