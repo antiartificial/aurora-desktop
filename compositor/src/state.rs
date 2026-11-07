@@ -58,6 +58,9 @@ pub struct Aurora {
     /// winit's `wl_display`, when the host is Wayland: where the drag bridge listens.
     pub host_display: Option<crate::dnd::ForeignDisplay>,
     pub popups: PopupManager,
+    /// The surface of the client popup currently holding a pointer grab, if any. Kept so that
+    /// the grab can be dropped once the popup is gone: see `Aurora::refocus_after_popup`.
+    pub popup_grab_surface: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, once `--xwayland` started it.
     pub x: Option<crate::xwayland::XState>,
@@ -194,6 +197,7 @@ impl Aurora {
             host_dnd: None,
             host_display: None,
             popups,
+            popup_grab_surface: None,
             xwayland_shell_state,
             x: None,
             text_input_state,

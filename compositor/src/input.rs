@@ -6,7 +6,7 @@ use smithay::{
     input::{
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER},
 };
 
@@ -61,6 +61,37 @@ impl Aurora {
     /// it is highlighted. The dock is laid out in device pixels, so the
     /// position is converted for the hit-test. Shared by the winit backend and
     /// the headless test input.
+    /// Re-assert pointer focus after a client popup's grab has ended.
+    ///
+    /// Smithay's popup pointer grab tears itself down on the first event it receives after its
+    /// popup is gone, and that event is consumed doing so: it never reaches the surface now
+    /// under the pointer. The client therefore keeps the position it last saw, which is wherever
+    /// the menu was opened from, and its NEXT CLICK acts there -- right-click a file, dismiss the
+    /// menu, click something else, and the something else is not what gets clicked.
+    ///
+    /// Synthesising one motion at the pointer's current location puts that right. It is sent only
+    /// on the transition out of a popup grab, so an ordinary frame costs a bool test.
+    pub fn refocus_after_popup(&mut self) {
+        // Still a live popup holding the grab: leave it alone.
+        match &self.popup_grab_surface {
+            None => return,
+            Some(s) if s.is_alive() => return,
+            Some(_) => {}
+        }
+        self.popup_grab_surface = None;
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        // The grab is dropped HERE rather than waited out. Smithay's popup grab unsets itself on
+        // the first event it receives after its popup dies, which means `is_grabbed` stays true
+        // until something arrives and that something is then swallowed doing the teardown --
+        // so waiting for it is waiting for the very event this is trying to save.
+        let t = InputTime::now();
+        if pointer.is_grabbed() {
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), t);
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        self.pointer_moved(pointer.current_location(), t);
+    }
+
     pub fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: InputTime) {
         let l = self.dock_layout();
         let dp = self.to_physical_point(pos);

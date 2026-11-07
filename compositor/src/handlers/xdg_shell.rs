@@ -165,6 +165,8 @@ impl XdgShellHandler for Aurora {
         let Some(seat) = Seat::<Aurora>::from_resource(&seat) else { return };
         let kind = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&kind) else { return };
+        // Kept before the move: the surface is how we notice later that this popup has gone.
+        let grabbed_surface = kind.wl_surface().clone();
         let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else { return };
 
         if let Some(keyboard) = seat.get_keyboard() {
@@ -191,6 +193,7 @@ impl XdgShellHandler for Aurora {
             // leave/enter pair the client did not ask for and would reset its hover.
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
+        self.popup_grab_surface = Some(grabbed_surface);
         tracing::info!("xdg_popup: grab granted to a client popup");
     }
 }

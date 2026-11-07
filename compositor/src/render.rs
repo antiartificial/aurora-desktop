@@ -168,5 +168,6 @@ pub fn after_frame(state: &mut Aurora, output: &Output) {
     state.deskbar_tick();
     state.persist_tick();
     state.popups.cleanup();
+    state.refocus_after_popup();
     let _ = state.display_handle.flush_clients();
 }
