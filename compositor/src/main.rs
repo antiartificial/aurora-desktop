@@ -4,6 +4,7 @@ mod handlers;
 
 mod capture;
 mod clipboard;
+mod deskbar;
 mod dnd;
 mod drm;
 mod fx;
@@ -66,6 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(p) = &args.bus_socket {
         indicator::bus::spawn(&event_loop.handle(), p.clone());
         state.indicator.watching = true;
+        deskbar::feed::spawn(&event_loop.handle(), p.clone());
+        state.deskbar.watching = true;
     }
     match &args.bus_socket {
         Some(p) => eprintln!("aurora-compositor: domain claims are checked against busd at {}", p.display()),

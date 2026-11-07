@@ -98,8 +98,26 @@ pub struct ChromeDraw<'a> {
     pub alpha: f32,
 }
 
+/// The Deskbar's slot in the shell: the raster `Aurora::deskbar_frame` made (waiting for upload), its
+/// texture, and where it sits. The CPU side lives in `crate::deskbar` because it needs the `Space`; only
+/// the GL upload and the placement (which depends on the clock and the dock) are the shell's.
+#[derive(Default)]
+pub struct DeskbarSlot {
+    pub show: bool,
+    pub edge: crate::fx::theme::DeskbarEdge,
+    pub margin: f32,
+    pub pending: Option<crate::deskbar::draw::Raster>,
+    tex: Option<(String, GlesTexture)>,
+    rect: Option<Rect>,
+    /// What `prepare_deskbar` last logged, so a settled layout is logged once.
+    logged: String,
+    desc: String,
+    settled: bool,
+}
+
 pub struct Shell {
     pub text: TextSystem,
+    pub deskbar: DeskbarSlot,
     pub scale: f64,
     start: Instant,
     dock: Dock,
@@ -145,6 +163,7 @@ impl Shell {
         let text = TextSystem::new(&font.family, &font.file);
         Shell {
             text,
+            deskbar: DeskbarSlot::default(),
             scale: 1.0,
             start: Instant::now(),
             dock: Dock::default(),
@@ -389,7 +408,69 @@ impl Shell {
         self.prepare_clock(r, size)?;
         self.prepare_dock(r, size)?;
         self.prepare_decos(r)?;
+        self.prepare_deskbar(r, size)?;
         self.prepare_chrome(r, size)
+    }
+
+    pub fn font_size(&self) -> f32 {
+        self.font.size
+    }
+
+    pub fn glass_enabled(&self) -> bool {
+        self.glass_on
+    }
+
+    pub fn glass_radius(&self) -> f32 {
+        self.glass_radius
+    }
+
+    /// Where the Deskbar was last placed, device pixels.
+    pub fn deskbar_rect(&self) -> Option<Rect> {
+        self.deskbar.rect
+    }
+
+    /// Upload the Deskbar's raster when it changed and place it: on its edge of the usable area (so a dock
+    /// on that side is cleared), and on the right below the clock, which owns the top-right corner.
+    fn prepare_deskbar(&mut self, r: &mut GlesRenderer, size: Size<i32, Physical>) -> Res<()> {
+        let slot = &mut self.deskbar;
+        if !slot.show {
+            slot.tex = None;
+            slot.rect = None;
+            slot.pending = None;
+            slot.logged.clear();
+            return Ok(());
+        }
+        if let Some(rs) = slot.pending.take() {
+            let tex = r.import_memory(&rs.canvas.rgba, Fourcc::Abgr8888, Size::<i32, BufferCoords>::from((rs.canvas.w as i32, rs.canvas.h as i32)), false)?;
+            slot.desc = crate::deskbar::draw::describe(&rs.rows);
+            slot.settled = rs.settled;
+            slot.tex = Some((rs.key, tex));
+            slot.rect = slot.rect.map(|b| Rect { w: rs.canvas.w as i32, h: rs.canvas.h as i32, ..b });
+            slot.rect.get_or_insert(Rect { x: 0, y: 0, w: rs.canvas.w as i32, h: rs.canvas.h as i32 });
+        }
+        let Some(mut b) = slot.rect else { return Ok(()) };
+        let (edge, margin) = (slot.edge, self.dev(self.deskbar.margin));
+        let usable = self.usable(size.w, size.h);
+        b.x = match edge {
+            crate::fx::theme::DeskbarEdge::Right => usable.x + usable.w - b.w - margin,
+            crate::fx::theme::DeskbarEdge::Left => usable.x + margin,
+        };
+        b.y = usable.y + margin;
+        if edge == crate::fx::theme::DeskbarEdge::Right {
+            if let Some((_, _, clock)) = &self.clock_tex {
+                b.y = b.y.max(clock.y + clock.h + self.dev(8.0));
+            }
+        }
+        b.y = b.y.min((size.h - b.h - margin).max(0));
+        let slot = &mut self.deskbar;
+        slot.rect = Some(b);
+        // One line per settled layout, not per animation frame: tests read geometry and words off it.
+        let line = format!("scale={} box={},{},{},{} rows=[{}]", self.scale, b.x, b.y, b.w, b.h, slot.desc);
+        if slot.settled && slot.logged != line {
+            tracing::info!("deskbar: layout {line}");
+            slot.logged = line;
+        }
+        Ok(())
     }
 
     fn bg_mode(&self) -> (BgMode, Option<[u8; 3]>) {
@@ -648,7 +729,7 @@ pub fn cover(img: &image::RgbaImage, w: usize, h: usize) -> image::RgbaImage {
     crop_imm(&scaled, x, y, w as u32, h as u32).to_image()
 }
 
-fn tile_colour(id: &str) -> [u8; 3] {
+pub(crate) fn tile_colour(id: &str) -> [u8; 3] {
     let h = id.bytes().fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619));
     let hue = (h % 360) as f32 * std::f32::consts::PI / 180.0;
     oklab_to_u8([0.62, 0.11 * hue.cos(), 0.11 * hue.sin()])

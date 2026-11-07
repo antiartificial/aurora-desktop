@@ -7,7 +7,8 @@ mod common;
 use common::*;
 use std::{process::{Child, Command, Stdio}, time::Duration};
 
-const BASE: &str = "[background]\nmode = \"gradient\"\ntop = [0.34, 0.0, 0.0]\nbottom = [0.18, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n";
+// [deskbar] off: these tests diff whole frames, and the Deskbar (a glass box that appears with the first window) has tests of its own.
+const BASE: &str = "[background]\nmode = \"gradient\"\ntop = [0.34, 0.0, 0.0]\nbottom = [0.18, 0.0, 0.0]\n[desktop]\nclock = false\nhostname = false\n[deskbar]\nenabled = false\n";
 const SCALES: [&str; 2] = ["1", "1.45"];
 /// The client's solid colour (`testclient`'s default).
 const CLIENT_RGB: [u8; 3] = CLIENT;

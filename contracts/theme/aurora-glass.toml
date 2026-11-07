@@ -273,3 +273,33 @@ dot_oklab = [0.72, 0.17, 0.14]
 text_oklab = [0.97, 0.0, 0.0]
 text_dim_oklab = [0.84, 0.0, 0.0]
 panel_oklab = [0.22, 0.0, 0.0]
+
+[deskbar]
+# The Deskbar (decision 0021): a glass box the compositor draws, listing every application that has a window
+# and, when an application is opened, its windows (the BeOS expando). A click on a window raises and focuses it.
+# It is the compositor's, not a client's, because it must show the windows of sandboxed apps too, and nothing
+# should hold a "see every window" capability for that: a client would be more dangerous than the box.
+# Hidden while a window is fullscreen, when there are no windows, and under --legacy-scene.
+enabled = true
+# left | right. It hangs from that edge of the usable area; on the right it sits below the clock.
+edge = "right"
+# Logical pixels, from that edge and from the top.
+margin = 10.0
+width = 288.0
+# An application row opening or closing: ease-out (cubic, like the menus). 0 = instant.
+ease_ms = 140
+# Machine-wide CPU and memory in the header: the whole machine's, labelled so, never an application's.
+# A per-application figure appears only for an app inside a domain (its cgroup is the source), and a figure
+# that cannot be read is left out, never shown as 0.
+system = true
+# Text sits on chrome glass, whose luminance ceiling bounds the worst-case backdrop at Y = 0.1127, so a text
+# luminance Y has a floor of (Y + 0.05) / 0.1627 (asserted in src/fx/theme.rs):
+#   text L 0.97 -> 6.0:1     dim L 0.90 -> 4.8:1     warn L 0.93 -> 5.2:1
+text_oklab = [0.97, 0.0, 0.0]
+text_dim_oklab = [0.90, 0.0, 0.0]
+# The focused window's stripe: Haiku's tab yellow, as on the window bar.
+accent_oklab = [0.86, 0.0, 0.16]
+# A refused connection. Always accompanied by the word "refused".
+warn_oklab = [0.93, 0.045, 0.02]
+hover_oklab = [0.95, 0.0, 0.0]
+hover_strength = 0.16

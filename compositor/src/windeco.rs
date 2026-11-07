@@ -124,7 +124,7 @@ impl Aurora {
         !pinned && !self.is_maximized(w)
     }
 
-    fn is_focused(&self, w: &Window) -> bool {
+    pub(crate) fn is_focused(&self, w: &Window) -> bool {
         let Some(mine) = w.wl_surface() else { return false };
         self.seat.get_keyboard().and_then(|k| k.current_focus()).is_some_and(|f| root_of(&f) == *mine)
     }

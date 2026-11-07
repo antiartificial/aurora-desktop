@@ -41,6 +41,17 @@ def main(a):
         if (w, h) != (w2, h2): print(-1); return
         print(sum(1 for y in range(h) for x in range(w)
                   if r1[y][x * bpp:x * bpp + 3] != r2[y][x * bpp2:x * bpp2 + 3]))
+    elif cmd == "diffbox":
+        # diffbox A B X Y W H -> "inside outside": differing pixels inside / outside that rectangle (the Deskbar demo)
+        w, h, bpp, r1 = load(a[1]); w2, h2, bpp2, r2 = load(a[2]); x0, y0, bw, bh = (int(v) for v in a[3:7])
+        if (w, h) != (w2, h2): print("-1 -1"); return
+        i = o = 0
+        for y in range(h):
+            for x in range(w):
+                if r1[y][x * bpp:x * bpp + 3] != r2[y][x * bpp2:x * bpp2 + 3]:
+                    if x0 <= x < x0 + bw and y0 <= y < y0 + bh: i += 1
+                    else: o += 1
+        print(i, o)
     elif cmd == "count":
         w, h, bpp, rows = load(a[1]); want = bytes(int(v) for v in a[2:5])
         print(sum(1 for r in rows for x in range(w) if bytes(r[x * bpp:x * bpp + 3]) == want))

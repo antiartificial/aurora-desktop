@@ -77,6 +77,8 @@ pub struct Aurora {
     pub trusted: crate::trusted::Trusted,
     /// The capability-in-use indicator (decision 0016).
     pub indicator: crate::indicator::Indicator,
+    /// The Deskbar (decision 0021).
+    pub deskbar: crate::deskbar::Deskbar,
     pub fx: crate::fx::Fx,
     pub shell: crate::shell::Shell,
     /// Title-bar input and window placement state (see `windeco`).
@@ -204,6 +206,7 @@ impl Aurora {
             seat,
             trusted: Default::default(),
             indicator: Default::default(),
+            deskbar: Default::default(),
             fx: crate::fx::Fx::new(None),
             shell: crate::shell::Shell::new(),
             deco: Default::default(),

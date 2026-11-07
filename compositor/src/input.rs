@@ -69,7 +69,9 @@ impl Aurora {
         let on_indicator = self.indicator_hover((dp.x, dp.y));
         let on_chrome = self.shell.chrome_contains((dp.x, dp.y), (out.w, out.h)) || self.shell.chrome_grabbing();
         self.shell.chrome_motion((dp.x, dp.y), (out.w, out.h));
-        let on_dock = l.panel.contains(dp.x, dp.y) || on_chrome || on_indicator;
+        // The Deskbar is under a menu or settings panel, so a pointer on one of those is not on the box.
+        let on_deskbar = if on_chrome { self.deskbar.hover = None; false } else { self.deskbar_hover((dp.x, dp.y)) };
+        let on_dock = l.panel.contains(dp.x, dp.y) || on_chrome || on_indicator || on_deskbar;
         let hover = if on_dock && !on_chrome { l.item_at(dp.x, dp.y).filter(|&i| self.shell.item(i).is_some_and(|it| it.clickable)) } else { None };
         self.shell.hover = hover;
         let pointer = self.seat.get_pointer().unwrap();
@@ -104,6 +106,12 @@ impl Aurora {
             let out = self.output_physical();
             let at = (dp.x, dp.y);
             let o = (out.w, out.h);
+            // The Deskbar takes a press that lands on it (any button), unless a menu is open (its next click
+            // dismisses it, below) or the point is under a popup that is above the box.
+            if self.shell.menu.is_none() && !self.shell.chrome_contains(at, o) && self.deskbar_press(at, button == BTN_LEFT) {
+                self.chrome_buttons.insert(button);
+                return;
+            }
             if button == BTN_LEFT {
                 match self.shell.chrome_press(at, o) {
                     Press::Pass => {}
@@ -119,7 +127,7 @@ impl Aurora {
                 }
             } else if button == BTN_RIGHT && !self.shell.chrome_contains(at, o) {
                 // Right-click on the bare desktop (no window, not the dock) opens the menu; elsewhere it closes it.
-                let bare = self.space.element_under(loc).is_none() && !l.panel.contains(dp.x, dp.y);
+                let bare = self.space.element_under(loc).is_none() && !l.panel.contains(dp.x, dp.y) && !self.shell.deskbar_rect().is_some_and(|r| r.contains(dp.x, dp.y));
                 self.shell.menu = None;
                 self.chrome_buttons.insert(button);
                 if bare {

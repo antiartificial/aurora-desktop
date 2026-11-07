@@ -222,9 +222,51 @@ impl Default for Indicator {
     }
 }
 
+/// Which side of the output the Deskbar hangs from.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeskbarEdge { Left, #[default] Right }
+
+/// The Deskbar (decision 0021): the compositor-drawn box that lists applications and, under each, its
+/// windows, with what can honestly be said about each application's CPU, memory and network. Sizes
+/// are LOGICAL pixels; colours are Oklab tokens. It sits on chrome glass, so `[glass.chrome]` decides
+/// the material and the text colours below only have to clear its luminance ceiling.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Deskbar {
+    pub enabled: bool,
+    pub edge: DeskbarEdge,
+    /// Distance from that edge of the usable area, and from the top.
+    pub margin: f32,
+    pub width: f32,
+    /// Ease-out duration of an application row opening or closing. 0 = instant.
+    pub ease_ms: u64,
+    /// Machine-wide CPU and memory in the header. These are the whole machine's, never an application's.
+    pub system: bool,
+    pub text_oklab: [f32; 3],
+    pub text_dim_oklab: [f32; 3],
+    /// The focused window's stripe in an expanded row.
+    pub accent_oklab: [f32; 3],
+    /// A refused connection. Text, never colour alone: the word "refused" is always there too.
+    pub warn_oklab: [f32; 3],
+    /// Wash behind the row under the pointer.
+    pub hover_oklab: [f32; 3],
+    pub hover_strength: f32,
+}
+impl Default for Deskbar {
+    fn default() -> Self {
+        Deskbar {
+            enabled: true, edge: DeskbarEdge::Right, margin: 10.0, width: 288.0, ease_ms: 140, system: true,
+            text_oklab: [0.97, 0.0, 0.0], text_dim_oklab: [0.90, 0.0, 0.0], accent_oklab: [0.86, 0.0, 0.16],
+            warn_oklab: [0.93, 0.045, 0.02], hover_oklab: [0.95, 0.0, 0.0], hover_strength: 0.16,
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Theme {
+    pub deskbar: Deskbar,
     pub indicator: Indicator,
     pub decoration: Decoration,
     pub glass: Glass,
@@ -292,6 +334,14 @@ impl Theme {
         for v in [i.margin].into_iter().chain(i.dot_oklab).chain(i.text_oklab).chain(i.text_dim_oklab).chain(i.panel_oklab) {
             if !v.is_finite() { return Err("non-finite number in theme".into()); }
         }
+        let k = &mut t.deskbar;
+        for v in [k.margin, k.width, k.hover_strength].into_iter().chain(k.text_oklab).chain(k.text_dim_oklab).chain(k.accent_oklab).chain(k.warn_oklab).chain(k.hover_oklab) {
+            if !v.is_finite() { return Err("non-finite number in theme".into()); }
+        }
+        k.margin = k.margin.clamp(0.0, 128.0);
+        k.width = k.width.clamp(200.0, 640.0);
+        k.ease_ms = k.ease_ms.clamp(0, 1000);
+        k.hover_strength = k.hover_strength.clamp(0.0, 1.0);
         i.margin = i.margin.clamp(0.0, 64.0);
         i.ease_ms = i.ease_ms.clamp(0, 1000);
         i.classes.truncate(64);
@@ -418,6 +468,31 @@ mod tests {
         assert_eq!((t.style, t.height, t.grip, t.double_click_ms), (DecoStyle::Tab, 64.0, 2.0, 100));
         assert!(t.corner >= t.grip, "a corner reaches at least as far as the edge it joins");
         assert!(Theme::parse("[decoration]\nstyle = \"pillow\"\n").is_err());
+    }
+    /// The harness strips `[deskbar]` from its copy of the reference theme (tests append their own), so the
+    /// file must spell out exactly the parser's defaults, and numbers a person can mistype are clamped.
+    #[test]
+    fn the_reference_deskbar_table_is_the_default_and_its_numbers_are_kept_sane() {
+        let (r, d) = (Theme::parse(BUILTIN_THEME).unwrap().deskbar, Deskbar::default());
+        assert_eq!(r, d);
+        assert!(BUILTIN_THEME.contains("\n[deskbar]\n"), "the reference theme documents the deskbar table");
+        let t = Theme::parse("[deskbar]\nedge = \"left\"\nwidth = 5.0\nmargin = 9000.0\nease_ms = 99999\n").unwrap().deskbar;
+        assert_eq!((t.edge, t.width, t.margin, t.ease_ms), (DeskbarEdge::Left, 200.0, 128.0, 1000));
+        assert!(Theme::parse("[deskbar]\nedge = \"top\"\n").is_err());
+    }
+    /// Text on chrome glass keeps its contrast floor over ANY backdrop because the glass's luminance is
+    /// bounded (aurora-glass.toml, [glass.chrome]): worst case Y = 0.1127. The Deskbar's three text colours
+    /// are checked against that bound, so a re-tint cannot silently make the refused host unreadable.
+    #[test]
+    fn deskbar_text_clears_the_chrome_glass_contrast_floor() {
+        let y = |o: [f32; 3]| { let l = oklab_to_linear(o); 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2] };
+        let k = Deskbar::default();
+        let g = Chrome::default();
+        let y_glass = g.luminance_max * (1.0 - g.tint.strength) + 0.055 * g.tint.strength;
+        for (name, c) in [("text", k.text_oklab), ("dim", k.text_dim_oklab), ("warn", k.warn_oklab)] {
+            let floor = (y(c) + 0.05) / (y_glass + 0.05);
+            assert!(floor >= 4.5, "{name} text has a worst-case contrast of {floor:.2}:1 over chrome glass");
+        }
     }
     #[test]
     fn linear_and_encoded_tokens_agree() {

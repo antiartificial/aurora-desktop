@@ -534,6 +534,10 @@ impl Shell {
             };
             ChromeDraw { tex, dst, alpha }
         };
+        // The Deskbar is under the menu and the settings panel (a popup is above the box it opened from), over windows.
+        if let (Some((_, tex)), Some(r)) = (&self.deskbar.tex, self.deskbar.rect) {
+            v.push(ChromeDraw { tex, dst: r, alpha: 1.0 });
+        }
         if let (Some((_, tex)), Some(r), Some(st)) = (&self.settings_tex, self.settings_rect((size.w, size.h)), &self.settings) {
             let centre = (r.x as f64 + r.w as f64 / 2.0, r.y as f64 + r.h as f64 / 2.0);
             v.push(grow(r, centre, st.appear.frame(), tex));
