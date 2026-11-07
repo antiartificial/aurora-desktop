@@ -70,13 +70,21 @@ shot c0
 ok "captured a frame: $($PIX size "$W/c0.png") from the compositor"
 sed 's/^/   | /' "$W/app.out" | grep -E 'WINDOW|CTL (tab|bar|tabs)' | head -8
 
-# box NAME -> sets L T R B CX CY (window coordinates; the compositor places the window at 0,0, checked below)
+# box NAME -> sets L T R B CX CY (WINDOW coordinates: pix.py crops captures to the window and ti.py shifts the pointer, see below)
 box() { local l; l=$(grep "^CTL $1 " "$W/app.out" | head -1 | cut -d' ' -f3); [ -n "$l" ] || { bad "no frame reported for $1"; return 1; }
   IFS=, read -r L T R B <<<"$l"; CX=$(( (L + R) / 2 )); CY=$(( (T + B) / 2 )); }
 
 step "the window is on the compositor, and it is the window the reference process drew"
 pos=$($PIX find "$W/c0.png" "$W/live/window-0.ppm")
-check "the app's own last frame appears verbatim in the capture (at $pos)" eq "$pos" "0 0"
+check "the app's own last frame appears verbatim in the capture (at $pos)" bash -c "[ '$pos' != none ]"
+OX=${pos% *}; OY=${pos#* }
+# The compositor decorates a window that did not draw its own: a title bar hangs above it, and the window is placed
+# (cascaded), not put at the origin. From here on every coordinate in this script is a window coordinate: captures are
+# cropped to the window and pointer moves are shifted by its place.
+check "the window is below the top of the screen, with room above it for its title bar (at $pos)" bash -c "[ $OY -ge 30 ] && [ $OX -ge 0 ]"
+check "a title bar is drawn in the 30 px above it: ink in $OX,$((OY-30)) .. $((OX+WW-1)),$((OY-1)) = $($PIX ink "$W/c0.png" $OX $((OY-30)) $((OX+WW-1)) $((OY-1)))" ge "$($PIX ink "$W/c0.png" $OX $((OY-30)) $((OX+WW-1)) $((OY-1)))" 300
+check "the compositor logged a title bar for it ($(grep -c 'deco: layout' "$W/comp.log") layout line(s))" bash -c "grep -q 'deco: layout.*text=' '$W/comp.log'"
+export PIX_WINDOW="$OX,$OY,$WW,$WH" TI_OFFSET="$OX,$OY"
 check "capture of tab 0 equals the headless reference of tab 0, pixel for pixel" eq "$($PIX cmp "$W/c0.png" "$W/ref0/window-0.ppm" 0 0)" 0
 check "the menu bar and the tab strip are in the capture (ink: $($PIX ink "$W/c0.png" 0 0 $((WW-1)) 56))" ge "$($PIX ink "$W/c0.png" 0 0 $((WW-1)) 56)" 500
 
@@ -313,13 +321,18 @@ check "the alert opened (EV alert 1)" eq "$(ev 'alert 1')" 1
 ALW=$(grep '^ALERT size' "$W/app.out" | cut -d' ' -f3); ALF=
 for f in "$W"/live/window-*.ppm; do
   case $f in */window-0.ppm) continue;; esac
-  p=$($PIX find "$W/a1.png" "$f"); if [ "$p" != none ]; then ALF=$f; AX=${p% *}; AY=${p#* }; fi
+  p=$($PIX find "$W/a1.png" "$f"); if [ "$p" != none ]; then ALF=$f; AX=$((${p% *} - OX)); AY=$((${p#* } - OY)); fi   # find reports screen coordinates; the rest of this script speaks window coordinates
 done
 [ -n "$ALF" ] && ok "the alert's own frame ($(sed -n 2p "$ALF"), $(basename "$ALF")) appears verbatim in the capture at $AX,$AY" || bad "no alert window found in the capture"
 sed 's/^/   | /' <(grep '^ALERT' "$W/app.out")
 if [ -n "$ALF" ]; then
   d=$($PIX diff "$W/a0.png" "$W/a1.png" "$AX" "$AY" $((AX+${ALW%x*}-1)) $((AY+${ALW#*x}-1)) | cut -d' ' -f1)
   check "the alert is a separate surface with its own pixels ($d differ from the desktop behind it)" ge "$d" 1000
+  # A BAlert is a modal window: the app server makes it a dialog of the main window (xdg_toplevel.set_parent) and the
+  # compositor centres it there, instead of cascading it like a new document or leaving it on top of its parent at 0,0.
+  AW=${ALW%x*}; AH=${ALW#*x}
+  check "the alert is centred on the window that opened it (alert centre $((AX*2+AW)),$((AY*2+AH)) vs window centre $WW,$WH, in doubled units)" \
+    bash -c "[ $((AX*2+AW - WW)) -ge -2 ] && [ $((AX*2+AW - WW)) -le 2 ] && [ $((AY*2+AH - WH)) -ge -2 ] && [ $((AY*2+AH - WH)) -le 2 ]"
   OKB=$(grep '^ALERT button1' "$W/app.out" | cut -d' ' -f3); IFS=, read -r OL OT OR OB <<<"$OKB"
   ink=$($PIX ink "$W/a1.png" $((AX+OL)) $((AY+OT)) $((AX+OR)) $((AY+OB)))
   check "the OK button has ink (its label and bevel: $ink px)" ge "$ink" 60
@@ -339,6 +352,21 @@ check "a second EV alert line arrived" eq "$(grep -c '^EV alert 1$' "$W/app.out"
 ti "key Escape"; sleep 0.6
 check "Escape answered it as Cancel (EV alert-which 0)" eq "$(ev 'alert-which 0')" 1
 
+# The close button of the bar the compositor draws, in SCREEN pixels (scale 1): the last layout line for a window titled $1.
+close_of() { grep 'deco: layout' "$W/comp.log" | sed 's/\x1b\[[0-9;]*m//g' | grep "text=$1\$" | tail -1 | sed 's/.* close=\([0-9,]*\) .*/\1/'; }
+click_close() { local c; c=$(close_of "$1"); [ -n "$c" ] || return 1; IFS=, read -r CLX CLY CLW CLH <<<"$c"; TI_OFFSET= ti "pointer $((CLX+CLW/2)) $((CLY+CLH/2))" click; }
+
+step "the alert's own title bar: its close button is xdg_toplevel.close, which BWindow turns into B_QUIT_REQUESTED"
+click 300 330
+ti "down alt" "key a" "up alt"; sleep 0.8
+shot z0
+check "the alert is up again (EV alert 1, third time)" eq "$(grep -c '^EV alert 1$' "$W/app.out")" 3
+check "its title bar is in the compositor's layout log ($(close_of Alert))" bash -c "[ -n '$(close_of Alert)' ]"
+click_close Alert; sleep 0.8; shot z1
+check "the alert window is gone from the capture" eq "$($PIX find "$W/z1.png" "$ALF")" none
+check "the compositor logged the close press on the alert" grep -q 'deco: close pressed on "Alert"' "$W/comp.log"
+check "the application is still running (a closed dialog is not a quit)" kill -0 "$APP_PID"
+
 step "File > Quit: the application leaves, and the server says how many opcodes it did not serve"
 shot q0
 menu_pick $((FMX+14)) $((BARBOT + 62))
@@ -349,6 +377,25 @@ unh=$(grep '^UNHANDLED' "$W/app.out" | tail -1)
 echo "   | $unh"
 check "aurora::unhandled_opcodes() == 0 for everything this app used: all four pages, three menus, the option popup, the alerts ($unh)" bash -c "case '$unh' in 'UNHANDLED 0 '*) true;; *) false;; esac"
 check "the app wrote nothing to stderr that looks like a failure" bash -c "! grep -qiE 'segfault|abort|assert|not handled|FAIL' '$W/app.err'"
+
+step "the main window's title bar: close -> xdg_toplevel.close -> present_wl -> AU_EV_CLOSE -> B_QUIT_REQUESTED -> BWindow::QuitRequested -> the application quits"
+mkdir -p "$W/live2"
+env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$SOCK" AURORA_APPSERVER_DUMP="$W/live2" KS_REPORT=1 HELLO_QUIT_AFTER_MS=300000 \
+    "$BUILD/iface_kitchensink" >"$W/app2.out" 2>"$W/app2.err" & APP2=$!; PIDS+=($APP2)
+for _ in $(seq 150); do grep -q '^REPORT done' "$W/app2.out" && break; sleep 0.1; done
+sleep 0.5; shot k0
+check "a second instance is up and on screen ($($PIX find "$W/k0.png" "$W/live2/window-0.ppm"))" bash -c "[ '$($PIX find "$W/k0.png" "$W/live2/window-0.ppm")' != none ]"
+check "its title bar has a close button ($(close_of 'Aurora Kitchen Sink'))" bash -c "[ -n '$(close_of 'Aurora Kitchen Sink')' ]"
+click_close 'Aurora Kitchen Sink'
+# Not `kill -0`: the shell never reaps APP2, so an exited process lingers as a
+# zombie and `kill -0` on a zombie SUCCEEDS. Read the process state instead --
+# gone, or Z for exited-not-reaped, both mean it ended.
+gone2() { local st; st=$(awk '{print $3}' "/proc/$APP2/stat" 2>/dev/null); [ -z "$st" ] || [ "$st" = Z ]; }
+for _ in $(seq 60); do gone2 && break; sleep 0.1; done
+if gone2; then ok "the process ended after the close button was clicked"; else bad "the close button did not end the application"; kill "$APP2" 2>/dev/null; fi
+wait "$APP2" 2>/dev/null; shot k1
+check "its window is gone from the capture" eq "$($PIX find "$W/k1.png" "$W/live2/window-0.ppm")" none
+check "the app wrote nothing to stderr that looks like a failure" bash -c "! grep -qiE 'segfault|abort|assert|not handled|FAIL' '$W/app2.err'"
 
 step "headless unit tests"
 for t in test_controls test_widgets; do

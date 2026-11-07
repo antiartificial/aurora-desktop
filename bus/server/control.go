@@ -136,11 +136,15 @@ func (s *Server) ctlLog(raw json.RawMessage) (any, error) {
 
 // InspectClient, InspectService and InspectSub are the bus.inspect@v1 reply.
 type InspectClient struct {
-	ID            int64     `json:"id"`
-	Domain        string    `json:"domain"`
-	PID           int32     `json:"pid"`
-	UID           uint32    `json:"uid"`
-	Connected     time.Time `json:"connected"`
+	ID        int64     `json:"id"`
+	Domain    string    `json:"domain"`
+	PID       int32     `json:"pid"`
+	UID       uint32    `json:"uid"`
+	Connected time.Time `json:"connected"`
+	// LastRecv is when a frame was last read from this client. Zero means
+	// nothing since it connected. A watchdog can use this instead of sending
+	// a liveness request: see the note on conn.lastRecvNS.
+	LastRecv      time.Time `json:"last_recv"`
 	Services      []string  `json:"services"`
 	Subscriptions []string  `json:"subscriptions"`
 	// Outbox is the per-class backlog, indexed by QoS rank (0 user-interactive
@@ -190,6 +194,7 @@ func (s *Server) inspect() InspectReply {
 			Outbox: cs, Dropped: dropped,
 			Segments: SegmentStats{oq, ob, sent, c.segsIn, c.segBytesIn},
 			ID:       c.id, Domain: c.domain, PID: c.cred.PID, UID: c.cred.UID, Connected: c.since,
+			LastRecv: lastRecv(c),
 			Services: append([]string{}, c.services...), Subscriptions: append([]string{}, c.subs...),
 		})
 		for _, t := range c.subs {
@@ -233,4 +238,14 @@ func (s *Server) ctlDomain(c *conn, verb string, raw json.RawMessage) (any, erro
 		}
 	}
 	return map[string]string{"added": p.Identity}, err
+}
+
+// lastRecv is conn.lastRecvNS as a time, zero when nothing has been read from
+// the client since it connected.
+func lastRecv(c *conn) time.Time {
+	ns := c.lastRecvNS.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }

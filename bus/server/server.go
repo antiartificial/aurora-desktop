@@ -60,6 +60,18 @@ type conn struct {
 	services  []string     // guarded by Server.mu
 
 	segsIn, segBytesIn int64 // accepted from this client; guarded by Server.mu
+
+	// lastRecvNS is when a frame was last read FROM this client, as Unix
+	// nanoseconds, accessed atomically because the read loop writes it on
+	// every frame and inspect reads it from another goroutine.
+	//
+	// It is what lets a watchdog stop manufacturing liveness traffic. A
+	// service whose request loop is wedged sends nothing, so recent activity
+	// is proof the loop ran -- proof the system produced for free, by working.
+	// Without this the supervisor had to invent a request every few seconds,
+	// and requests are written to the append-only log: 1463 of 2642 records
+	// on a running desktop were those pings.
+	lastRecvNS atomic.Int64
 }
 
 type pendingReq struct {
@@ -202,6 +214,7 @@ func (s *Server) readLoop(c *conn) {
 		var e proto.Envelope
 		var perr error
 		_, files, err := rd.Next(func(line []byte) (int, error) {
+			c.lastRecvNS.Store(time.Now().UnixNano())
 			if perr = json.Unmarshal(line, &e); perr != nil {
 				return 0, perr
 			}

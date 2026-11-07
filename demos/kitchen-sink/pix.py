@@ -14,11 +14,16 @@ Standard library only. Every command prints plain numbers/words for the shell to
   pix.py darkx CAP.png Y X0 X1 LIMIT             x of every pixel on row Y whose brightest channel is below LIMIT
   pix.py size CAP.png                            "w h"
   pix.py distinct CAP.png                        number of distinct colours
+
+PIX_WINDOW="x,y,w,h" (set once the window has been located): every PNG is cropped to that rectangle when read, so
+all coordinates below are WINDOW coordinates, as they were when the compositor put the window at the origin. It is
+there because the compositor now draws a title bar above a window and places it (cascade, centred on a parent):
+the window is no longer at 0,0. `find` and `size` always see the whole capture.
 """
-import re, struct, sys, zlib
+import os, re, struct, sys, zlib
 
 
-def read_png(path):
+def read_png(path, crop=True):
     d = open(path, 'rb').read()
     assert d[:8] == b'\x89PNG\r\n\x1a\n', 'not a PNG'
     pos, idat, w, h, bd, ct = 8, b'', 0, 0, 0, 0
@@ -45,6 +50,11 @@ def read_png(path):
         rows.append(bytes(line)); prev = line
     if bpp == 4:
         rows = [bytes(b for k, b in enumerate(r) if k % 4 != 3) for r in rows]
+    win = os.environ.get('PIX_WINDOW') if crop else None
+    if win:
+        x, y, cw, ch = [int(v) for v in win.split(',')]
+        rows = [r[3 * x:3 * (x + cw)] for r in rows[y:y + ch]]
+        w, h = cw, ch
     return w, h, rows
 
 
@@ -69,7 +79,7 @@ def rect(args, w, h):
 def main(a):
     cmd = a[0]
     if cmd == 'find':
-        _, _, crow = read_png(a[1]); _, _, frow = read_ppm(a[2]); fh = len(frow)
+        _, _, crow = read_png(a[1], crop=False); _, _, frow = read_ppm(a[2]); fh = len(frow)
         only = (int(a[3]), int(a[4])) if len(a) == 5 else None
         for y in ([only[1]] if only else range(len(crow) - fh + 1)):
             x = crow[y].find(frow[0])
@@ -113,7 +123,7 @@ def main(a):
         w, h, R = read_png(a[1]); y = int(a[2]); x0, x1, lim = int(a[3]), int(a[4]), int(a[5])
         print(*[x for x in range(x0, x1 + 1) if max(R[y][3 * x:3 * x + 3]) < lim])
     elif cmd == 'size':
-        w, h, _ = read_png(a[1]); print(w, h)
+        w, h, _ = read_png(a[1], crop=False); print(w, h)
     elif cmd == 'distinct':
         w, h, R = read_png(a[1]); print(len({R[y][3 * x:3 * x + 3] for y in range(h) for x in range(w)}))
     else:

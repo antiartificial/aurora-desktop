@@ -32,6 +32,8 @@ au_wl_win* au_wl_win_create(au_wl*, const char* title, int logical_w, int logica
 /* argb is px_w*px_h; buffer_scale tells the compositor how many device px make one logical px */
 int au_wl_win_present(au_wl_win*, const uint32_t* argb, int px_w, int px_h, int buffer_scale);
 au_wl_win* au_wl_popup_create(au_wl*, au_wl_win* parent, int x, int y, int logical_w, int logical_h, au_event_fn fn, void* user);
+/* Make `child` a dialog of `parent` (xdg_toplevel.set_parent): the compositor centres it on its parent. */
+void au_wl_win_set_parent(au_wl_win* child, au_wl_win* parent);
 void au_wl_win_set_key_fn(au_wl_win*, au_key_fn fn);
 void au_wl_win_destroy(au_wl_win*);
 

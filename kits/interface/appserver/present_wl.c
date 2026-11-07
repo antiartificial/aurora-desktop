@@ -345,6 +345,15 @@ au_wl* au_wl_connect(void)
 	return g;
 }
 
+void au_wl_win_set_parent(au_wl_win* child, au_wl_win* parent)
+{
+	if (!child || !parent || !child->top || !parent->top) return;
+	pthread_mutex_lock(&child->g->mu);
+	xdg_toplevel_set_parent(child->top, parent->top);
+	wl_display_flush(child->g->dpy);
+	pthread_mutex_unlock(&child->g->mu);
+}
+
 int au_wl_output_scale(au_wl* g) { return g->scale; }
 int au_wl_output_size(au_wl* g, int* w, int* h) { if (g->mode_w <= 0) return 0; *w = g->mode_w / g->scale; *h = g->mode_h / g->scale; return 1; }
 

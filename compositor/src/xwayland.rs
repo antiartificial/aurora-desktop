@@ -162,6 +162,10 @@ impl Aurora {
                     let _ = x.set_activated(false);
                 }
             }
+            // xdg windows learn whether they are the active one (their own focus styling follows it).
+            if o.toplevel().is_some() {
+                o.set_activated(o == w);
+            }
             send_pending(o);
         }
     }
@@ -197,9 +201,17 @@ impl XwmHandler for Aurora {
             return;
         }
         let w = Window::new_x11_window(window.clone());
-        let origin = self.usable_area().loc;
+        let mut origin = self.usable_area().loc;
         self.space.map_element(w.clone(), origin, false);
         let bbox = self.space.element_bbox(&w).unwrap_or_default();
+        if !self.shell.legacy_scene {
+            // Same placement as a Wayland window: a dialog centred on the window it is transient for,
+            // anything else cascaded, below the bar when there is one.
+            let size = if bbox.size.w > 0 { bbox.size } else { window.geometry().size };
+            let parent = window.is_transient_for().and_then(|id| self.space.elements().find(|e| e.x11_surface().is_some_and(|x| x.window_id() == id)).cloned());
+            origin = self.placement(&w, size, parent.as_ref());
+            self.space.map_element(w.clone(), origin, false);
+        }
         let _ = window.configure(Rectangle::new(origin, bbox.size));
         tracing::info!("xwayland: mapped {:?} ({}) at {:?} size {:?}", window.title(), window.class(), origin, bbox.size);
         if !self.overlay_up() && w.wl_surface().is_some() {

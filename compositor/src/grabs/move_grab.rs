@@ -35,8 +35,9 @@ impl PointerGrab<Aurora> for MoveSurfaceGrab {
 
         let delta = event.location - self.start_data.location;
         let new_location = self.initial_window_location.to_f64() + delta;
-        data.space
-            .map_element(self.window.clone(), new_location.to_i32_round(), true);
+        // A window dropped with its bar above the usable area could not be dragged back.
+        let at = data.constrain(&self.window, new_location.to_i32_round(), self.window.geometry().size);
+        data.space.map_element(self.window.clone(), at, true);
     }
 
     fn relative_motion(

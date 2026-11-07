@@ -1,4 +1,5 @@
 mod compositor;
+mod decoration;
 mod xdg_shell;
 
 use crate::Aurora;

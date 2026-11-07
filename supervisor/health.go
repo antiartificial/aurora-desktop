@@ -151,9 +151,10 @@ func probeService(p probeInput, cli *client.Client, ins *server.InspectReply, pi
 		return verdict{false, fmt.Sprintf("not registered on the bus as %q", Clean(name))}
 	}
 	regPID := int32(-1)
+	var lastHeard time.Time
 	for _, c := range ins.Clients {
 		if c.ID == cid {
-			regPID = c.PID
+			regPID, lastHeard = c.PID, c.LastRecv
 		}
 	}
 	if int(regPID) != p.pid {
@@ -166,6 +167,19 @@ func probeService(p probeInput, cli *client.Client, ins *server.InspectReply, pi
 	}
 	if ps.ok && time.Since(ps.last) < pingInterval(ps.streak) {
 		return verdict{true, "registered by the supervised pid; last answered a request " + time.Since(ps.last).Truncate(time.Second).String() + " ago"}
+	}
+	// A service that has been handling real traffic has already proved its
+	// request loop is not wedged -- that is the only thing the ping exists to
+	// show. So observe first and manufacture nothing: a working system never
+	// pings at all, and only silence produces a synthetic request.
+	//
+	// The evidence is the broker's own record of when it last read a frame
+	// from the service (conn.lastRecvNS), fetched over bus.inspect@v1, which
+	// is control traffic and is NOT written to the append-only log. A wedged
+	// loop sends nothing, so recent activity cannot be forged by being stuck.
+	if !lastHeard.IsZero() && time.Since(lastHeard) < pingEvery {
+		ps.ok, ps.last = true, lastHeard
+		return verdict{true, "registered by the supervised pid; the bus saw it send " + time.Since(lastHeard).Truncate(time.Second).String() + " ago (observed, not probed)"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()

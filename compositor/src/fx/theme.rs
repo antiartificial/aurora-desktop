@@ -154,9 +154,49 @@ pub struct OutputCfg {
 }
 impl Default for OutputCfg { fn default() -> Self { OutputCfg { scale: 0.0 } } }
 
+/// How a window's title bar is shaped. `Bar` spans the window's width; `Tab` is a tab hung from the
+/// window's top-left corner, just wide enough for its title (BeOS's tab, in glass).
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DecoStyle { Bar, Tab }
+/// Window decorations: the title bar the compositor draws above a window that did not draw its own.
+/// Sizes are LOGICAL pixels. Colours are Oklab tokens, like everything else here.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Decoration {
+    pub enabled: bool,
+    pub style: DecoStyle,
+    /// Height of the title bar.
+    pub height: f32,
+    /// Resize hit tolerance: how far OUTSIDE the window's frame a press still grabs its edge.
+    pub grip: f32,
+    /// How far along each edge, from a corner, a press grabs the corner rather than the edge.
+    pub corner: f32,
+    /// Two presses on the bar within this many milliseconds toggle maximise.
+    pub double_click_ms: u64,
+    /// Ease-out duration of the focus and hover transitions.
+    pub ease_ms: u64,
+    /// Title text of the focused window and of the others. Both must keep a 4.5:1 contrast over chrome glass.
+    pub text_oklab: [f32; 3],
+    pub text_dim_oklab: [f32; 3],
+    /// The focused window's stripe, and its close button's glyph.
+    pub accent_oklab: [f32; 3],
+    /// The close button's fill under the pointer.
+    pub close_oklab: [f32; 3],
+}
+impl Default for Decoration {
+    fn default() -> Self {
+        Decoration {
+            enabled: true, style: DecoStyle::Bar, height: 30.0, grip: 8.0, corner: 20.0, double_click_ms: 400, ease_ms: 140,
+            text_oklab: [0.98, 0.0, 0.0], text_dim_oklab: [0.90, 0.0, 0.0], accent_oklab: [0.86, 0.0, 0.16], close_oklab: [0.62, 0.20, 0.10],
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Theme {
+    pub decoration: Decoration,
     pub glass: Glass,
     pub switcher: SwitcherParams,
     pub background: Background,
@@ -214,6 +254,15 @@ impl Theme {
         {
             if !v.is_finite() { return Err("non-finite number in theme".into()); }
         }
+        let c = &mut t.decoration;
+        for v in [c.height, c.grip, c.corner].into_iter().chain(c.text_oklab).chain(c.text_dim_oklab).chain(c.accent_oklab).chain(c.close_oklab) {
+            if !v.is_finite() { return Err("non-finite number in theme".into()); }
+        }
+        c.height = c.height.clamp(16.0, 64.0).round();
+        c.grip = c.grip.clamp(2.0, 32.0);
+        c.corner = c.corner.clamp(c.grip, 64.0);
+        c.double_click_ms = c.double_click_ms.clamp(100, 2000);
+        c.ease_ms = c.ease_ms.clamp(0, 1000);
         if !t.output.scale.is_finite() { return Err("non-finite output scale".into()); }
         t.output.scale = if t.output.scale <= 0.0 { 0.0 } else { t.output.scale.clamp(0.5, 8.0) };
         b.speed = b.speed.clamp(0.0, 20.0);
@@ -309,6 +358,18 @@ mod tests {
         assert_eq!((r.chrome.tint.oklab, r.chrome.tint.strength, r.chrome.luminance_max, r.chrome.blur_radius), (d.chrome.tint.oklab, d.chrome.tint.strength, d.chrome.luminance_max, d.chrome.blur_radius));
         assert_eq!((r.blur_radius, r.blur_passes, r.corner_radius, r.tint.strength, r.linear_blur, r.precision, r.share_prepass), (d.blur_radius, d.blur_passes, d.corner_radius, d.tint.strength, d.linear_blur, d.precision, d.share_prepass));
         assert!(BUILTIN_THEME.contains("[glass.chrome]"), "the reference theme documents chrome glass");
+    }
+    /// The harness strips `[decoration]` from its copy of the reference theme too (tests append their own), so the
+    /// same holds: the file must spell out exactly the parser's defaults, and a bad value must be clamped, not trusted.
+    #[test]
+    fn the_reference_decoration_table_is_the_default_and_its_numbers_are_kept_sane() {
+        let (r, d) = (Theme::parse(BUILTIN_THEME).unwrap().decoration, Decoration::default());
+        assert_eq!(r, d);
+        assert!(BUILTIN_THEME.contains("\n[decoration]\n"), "the reference theme documents the decoration table");
+        let t = Theme::parse("[decoration]\nstyle = \"tab\"\nheight = 900.0\ngrip = 0.0\ncorner = 1.0\ndouble_click_ms = 1\n").unwrap().decoration;
+        assert_eq!((t.style, t.height, t.grip, t.double_click_ms), (DecoStyle::Tab, 64.0, 2.0, 100));
+        assert!(t.corner >= t.grip, "a corner reaches at least as far as the edge it joins");
+        assert!(Theme::parse("[decoration]\nstyle = \"pillow\"\n").is_err());
     }
     #[test]
     fn linear_and_encoded_tokens_agree() {

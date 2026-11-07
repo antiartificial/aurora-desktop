@@ -11,7 +11,7 @@ use smithay::{
             protocol::{wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Rectangle, Serial},
+    utils::Serial,
     wayland::{
         compositor::with_states,
         shell::xdg::{
@@ -23,7 +23,7 @@ use smithay::{
 
 use crate::{
     Aurora,
-    grabs::{MoveSurfaceGrab, ResizeSurfaceGrab},
+    grabs::MoveSurfaceGrab,
 };
 
 impl XdgShellHandler for Aurora {
@@ -34,8 +34,14 @@ impl XdgShellHandler for Aurora {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let wl = surface.wl_surface().clone();
         let window = Window::new_wayland_window(surface);
-        // New windows start inside the usable area, never under the dock.
-        let origin = self.usable_area().loc;
+        // New windows start inside the usable area, never under the dock or with their bar off the top.
+        // Where they really go is decided at their first commit, when their size is known
+        // (`place_on_first_commit`).
+        let mut origin = self.usable_area().loc;
+        if self.shell.deco_on() {
+            origin.y += self.shell.deco_height();
+        }
+        self.deco.unplaced.insert(wl.id().to_string());
         self.space.map_element(window, origin, false);
         // A new window takes keyboard focus, except while the trusted overlay
         // is up: then it must not receive keys until the overlay is gone.
@@ -97,58 +103,30 @@ impl XdgShellHandler for Aurora {
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
-            let pointer = seat.get_pointer().unwrap();
-
             let window = self
                 .space
                 .elements()
                 .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == wl_surface))
                 .unwrap()
                 .clone();
-            let initial_window_location = self.space.element_location(&window).unwrap();
-            let initial_window_size = window.geometry().size;
-
-            surface.with_pending_state(|state| {
-                state.states.set(xdg_toplevel::State::Resizing);
-            });
-
-            surface.send_pending_configure();
-
-            let grab = ResizeSurfaceGrab::start(
-                start_data,
-                window,
-                edges.into(),
-                Rectangle::new(initial_window_location, initial_window_size),
-            );
-
-            pointer.set_grab(self, grab, serial, Focus::Clear);
+            self.start_resize(window, edges.into(), start_data, serial);
         }
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        // Maximise to the usable area: the output minus the dock's reserved strip.
-        let area = self.usable_area();
-        surface.with_pending_state(|s| {
-            s.states.set(xdg_toplevel::State::Maximized);
-            s.size = Some(area.size);
-        });
+        // Maximise to the usable area: the output minus the dock's reserved strip (and the bar's height).
         let wl = surface.wl_surface().clone();
         let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)).cloned();
         if let Some(w) = win {
-            self.space.relocate_element(&w, area.loc);
-        }
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+            self.set_maximized(&w, true);
         }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        surface.with_pending_state(|s| {
-            s.states.unset(xdg_toplevel::State::Maximized);
-            s.size = None;
-        });
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+        let wl = surface.wl_surface().clone();
+        let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)).cloned();
+        if let Some(w) = win {
+            self.set_maximized(&w, false);
         }
     }
 
