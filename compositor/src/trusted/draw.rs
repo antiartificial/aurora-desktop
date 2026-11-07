@@ -74,10 +74,59 @@ impl Canvas {
     }
 }
 
-/// Printable ASCII only: anything else, including every control character
-/// and every non-ASCII code point, becomes '?'. The font cannot draw more,
-/// and a request cannot smuggle layout in through text.
+/// Make `s` safe to draw without making different strings look the same.
+///
+/// A request cannot smuggle layout in through text, so every control character
+/// and every invisible formatting or bidi control is replaced. It is replaced by
+/// a VISIBLE escape naming the code point, not by '?', because the point of this
+/// line may be a path and the user's decision rests on telling two paths apart.
+///
+/// Everything else is kept, Unicode included. This used to reduce to printable
+/// ASCII on the grounds that "the font cannot draw more", which was true of the
+/// 8x16 bitmap font and has not been true since the text stack became
+/// cosmic-text with fontdb fallback (`text.rs`). The cost of keeping it was that
+/// every non-ASCII code point became '?', so `~/Музыка/трек.mp3` and
+/// `~/Деньги/ключ.mp3` drew as the same line, and a user whose folders are named
+/// in their own language could not read the dialog that grants access to them.
+/// `to_ascii` is still there for the bitmap fallback, which really cannot draw
+/// more.
+///
+/// Homoglyphs remain possible (`café` against a combining-accent spelling). That
+/// is strictly better than the collapse it replaces: distinct names now differ
+/// on screen, where before every one of them was identical.
 pub fn clean(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() || is_invisible_format(c) {
+            out.push_str(&format!("<U+{:04X}>", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Format and bidi controls that `char::is_control` does not cover: they are not
+/// Cc, they draw as nothing, and several of them reorder what follows. A path is
+/// the one string here whose exact spelling is the security decision, so none of
+/// them may be invisible.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD                  // soft hyphen
+        | 0x061C                // Arabic letter mark
+        | 0x180E                // Mongolian vowel separator
+        | 0x200B..=0x200F       // zero width space/non-joiner/joiner, LRM, RLM
+        | 0x202A..=0x202E       // LRE, RLE, PDF, LRO, RLO
+        | 0x2060..=0x2064       // word joiner, invisible operators
+        | 0x2066..=0x2069       // LRI, RLI, FSI, PDI
+        | 0xFEFF                // zero width no-break space / BOM
+        | 0xFFF9..=0xFFFB       // interlinear annotation
+    )
+}
+
+/// Printable ASCII only. The built-in 8x16 bitmap font has no other glyphs, so
+/// this is what `text.rs` reduces to when no system font was found at all.
+pub fn to_ascii(s: &str) -> String {
     s.chars().map(|c| if (' '..='~').contains(&c) { c } else { '?' }).collect()
 }
 
@@ -353,5 +402,100 @@ mod elide_tests {
         for x in [&h, &tl, &m] {
             assert!(t.string_width(x, &body, 1.0) <= 200.0, "{x} overflows");
         }
+    }
+}
+
+#[cfg(test)]
+mod clean_tests {
+    use super::*;
+
+    #[test]
+    fn two_paths_in_the_users_own_language_do_not_draw_as_one_line() {
+        // Both are plausible folders in one home directory. Reduced to ASCII they
+        // were the identical string, so the dialog that grants access to a file
+        // could not tell them apart.
+        let a = clean("ro /home/arti/Музыка/трек.mp3 (powerbox)");
+        let b = clean("ro /home/arti/Деньги/ключ.mp3 (powerbox)");
+        assert_ne!(a, b, "two different paths produced one line");
+        assert!(a.contains("Музыка"), "{a}");
+        assert!(b.contains("ключ"), "{b}");
+        // The control: this is what they used to be, and why it was wrong.
+        assert_eq!(
+            to_ascii("ro /home/arti/Музыка/трек.mp3 (powerbox)"),
+            to_ascii("ro /home/arti/Деньги/ключ.mp3 (powerbox)"),
+            "to_ascii is supposed to collapse these; if it stopped, this test proves nothing"
+        );
+    }
+
+    #[test]
+    fn an_invisible_character_is_drawn_as_something() {
+        // A right-to-left override reorders everything after it, so a name can be
+        // made to read as a different name. It must not be invisible, and it must
+        // not collapse into the same escape as a different control.
+        let rlo = clean("a\u{202E}b.pdf");
+        let zwsp = clean("a\u{200B}b.pdf");
+        assert_eq!(rlo, "a<U+202E>b.pdf");
+        assert_eq!(zwsp, "a<U+200B>b.pdf");
+        assert_ne!(rlo, zwsp);
+        // A newline cannot be used to forge a row.
+        assert_eq!(clean("App: x\nEffect: safe"), "App: x<U+000A>Effect: safe");
+        assert_eq!(clean("a\tb"), "a<U+0009>b");
+    }
+
+    #[test]
+    fn ordinary_text_is_untouched() {
+        let s = "rw /home/arti/Documents/café résumé.pdf (powerbox)";
+        assert_eq!(clean(s), s);
+    }
+
+    #[test]
+    fn the_bitmap_fallback_still_reduces_to_ascii() {
+        assert_eq!(to_ascii("café"), "caf?");
+        for c in to_ascii("Музыка\n\t").chars() {
+            assert!((' '..='~').contains(&c), "{c:?} is not printable ASCII");
+        }
+    }
+}
+
+#[cfg(test)]
+mod font_reach_probe {
+    use super::*;
+    use crate::text::TextSystem;
+
+    // Keeping Unicode is only an improvement if the text stack can actually draw
+    // it. If no glyph is found the user gets tofu, which is at least distinct per
+    // code point, but a width equal to the fallback box for every character would
+    // mean this change bought less than it looks.
+    #[test]
+    fn the_text_stack_reaches_beyond_ascii() {
+        let mut t = TextSystem::new("", "");
+        println!("font: {}", t.description);
+        let body = FontSpec::new(14.0);
+        for s in ["Documents", "Музыка", "文件", "café"] {
+            let w = t.string_width(s, &body, 1.0);
+            println!("  {s:?} chars={} width={w:.1}", s.chars().count());
+            assert!(w > 0.0, "{s:?} measured zero width");
+        }
+        // Two different words of the same length must not measure identically,
+        // which is what happens when every character falls back to one box glyph.
+        // Asserted for Latin and Cyrillic, which the default font set covers.
+        // Different LETTERS, not an accented letter against its base: é and e
+        // share an advance width in most faces by design, so that pair proves
+        // nothing either way.
+        let (wa, wb) = (t.string_width("Музыка", &body, 1.0), t.string_width("Деньги", &body, 1.0));
+        println!("  Музыка={wa:.1} Деньги={wb:.1}");
+        assert_ne!(wa, wb, "every Cyrillic word measures the same: no real glyphs");
+        // And an accented name is not silently the width of the '?' it used to be.
+        assert_ne!(
+            t.string_width("café", &body, 1.0),
+            t.string_width(&to_ascii("café"), &body, 1.0),
+            "café measures as its ASCII collapse"
+        );
+        // NOT asserted for CJK, and the reason is a packaging gap rather than a
+        // code one: this machine has no CJK font at all (`fc-match :lang=zh`
+        // answers Roboto), so 文件 draws as two identical boxes and two Chinese
+        // paths can still read alike. Keeping Unicode is what makes installing a
+        // font fix that; while everything became '?' no font could have.
+        println!("  CJK not asserted: depends on an installed CJK face");
     }
 }

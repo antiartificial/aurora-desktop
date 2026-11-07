@@ -276,6 +276,6 @@ mod tests {
     #[test]
     fn unknown_classes_are_named_by_their_cleaned_resource() {
         assert_eq!(labels("device:wayland").1, "Display access");
-        assert_eq!(labels("device:x\u{1b}[2J").0, "device:x?[2J");
+        assert_eq!(labels("device:x\u{1b}[2J").0, "device:x<U+001B>[2J");
     }
 }

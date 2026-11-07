@@ -319,7 +319,14 @@ mod tests {
     #[test]
     fn display_text_is_made_printable() {
         let (r, _) = parse(br#"{"op":"approve","app":"a\u001b[2Jb\n\u00e9","verb":"v","effect":"destructive","args":{"x":1}}"#).unwrap();
-        assert_eq!(r.app, "a?[2Jb??");
+        // The escape and the newline are neutralised, so a request can neither
+        // drive the terminal nor forge a row. They are now NAMED rather than both
+        // becoming '?', because two different invisible characters that print the
+        // same are what let two different paths read alike. The accented letter is
+        // ordinary text and is kept: see draw::clean.
+        assert_eq!(r.app, "a<U+001B>[2Jb<U+000A>\u{e9}");
+        assert!(!r.app.contains('\u{1b}'), "a raw escape reached the drawn string");
+        assert!(!r.app.contains('\n'), "a raw newline reached the drawn string");
         assert_eq!(r.args, r#"{"x":1}"#);
     }
 }

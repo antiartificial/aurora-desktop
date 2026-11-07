@@ -179,7 +179,7 @@ impl TextSystem {
         let (xd, yd) = ((x as f64 * scale).round() as i32, (y as f64 * scale).round() as i32);
         if self.bitmap {
             let k = bitmap_k(spec.size, scale);
-            let end = canvas.text(xd.max(0) as usize, yd.max(0) as usize, &crate::trusted::draw::clean(&s), k, [colour[0], colour[1], colour[2], 255]);
+            let end = canvas.text(xd.max(0) as usize, yd.max(0) as usize, &crate::trusted::draw::to_ascii(&s), k, [colour[0], colour[1], colour[2], 255]);
             return end as f32 / scale as f32;
         }
         self.shape(spec, &s, scale);
