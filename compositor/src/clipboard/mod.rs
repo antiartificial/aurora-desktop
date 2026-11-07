@@ -245,8 +245,7 @@ pub fn guest_pastes(state: &mut Aurora, t: SelectionTarget, mime: String, fd: Ow
 /// instead of one per bind.
 ///
 /// Fail-closed: credentials or cgroup unreadable means no.
-pub fn peer_may_read_clipboard(stream: &std::os::unix::net::UnixStream) -> bool {
-    let allow = crate::trusted::socket::Allowlist::default();
+pub fn peer_may_read_clipboard(stream: &std::os::unix::net::UnixStream, allow: &crate::trusted::socket::Allowlist) -> bool {
     // SO_PEERCRED, the same read the trusted socket does; std's peer_cred() is
     // still unstable.
     let Ok((uid, pid)) = crate::trusted::socket::peer_cred(stream) else {

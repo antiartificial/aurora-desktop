@@ -95,6 +95,15 @@ pub fn init_winit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
     let win_size = backend.window_size();
+    // winit's wl_display, for the drag-and-drop bridge (src/dnd). Absent on an X11 host.
+    {
+        use smithay::reexports::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+        if let Ok(h) = backend.window().display_handle() {
+            if let RawDisplayHandle::Wayland(w) = h.as_raw() {
+                state.host_display = Some(crate::dnd::ForeignDisplay(w.display.as_ptr()));
+            }
+        }
+    }
     // TEST AFFORDANCE: AURORA_TEST_NO_SHARED_EGL=1 behaves as if context B could
     // not be created, so the direct fallback below can be exercised. Loud, and
     // only ever makes the compositor LESS capable (no effects, no capture).
@@ -148,6 +157,7 @@ pub fn init_winit(
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
+                crate::dnd::tick(state);
                 let size = backend.window_size();
                 if size.w <= 0 || size.h <= 0 {
                     backend.window().request_redraw();

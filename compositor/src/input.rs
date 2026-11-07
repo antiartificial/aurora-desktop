@@ -43,7 +43,7 @@ impl Aurora {
     }
 
     /// The dock's layout, in device pixels (the unit `shell::layout` works in).
-    fn dock_layout(&self) -> crate::shell::layout::Layout {
+    pub(crate) fn dock_layout(&self) -> crate::shell::layout::Layout {
         let p = self.output_physical();
         self.shell.layout(p.w, p.h)
     }

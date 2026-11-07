@@ -51,6 +51,10 @@ pub struct Aurora {
     pub data_control_state: DataControlState,
     /// The bridge to the host's clipboard, when there is one (see `crate::clipboard`).
     pub host_clip: Option<crate::clipboard::HostClipboard>,
+    /// The bridge for drags entering Aurora's host window (see `crate::dnd`).
+    pub host_dnd: Option<crate::dnd::HostDnd>,
+    /// winit's `wl_display`, when the host is Wayland: where the drag bridge listens.
+    pub host_display: Option<crate::dnd::ForeignDisplay>,
     pub popups: PopupManager,
     pub xwayland_shell_state: XWaylandShellState,
     /// Xwayland, once `--xwayland` started it.
@@ -177,6 +181,8 @@ impl Aurora {
             primary_selection_state,
             data_control_state,
             host_clip: None,
+            host_dnd: None,
+            host_display: None,
             popups,
             xwayland_shell_state,
             x: None,
@@ -221,7 +227,7 @@ impl Aurora {
                 // credentials, not later from inside the global filter:
                 // `Client::get_credentials` there re-enters a lock the backend
                 // already holds and deadlocks every connecting client.
-                let clip = crate::clipboard::peer_may_read_clipboard(&client_stream);
+                let clip = crate::clipboard::peer_may_read_clipboard(&client_stream, &state.trusted.allow);
                 state
                     .display_handle
                     .insert_client(client_stream, Arc::new(ClientState::new(clip)))
