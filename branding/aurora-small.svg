@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Aurora desktop icon, simplified for 16-32px: no blur, no hairlines, no nodes. Strokes are
+       at least 1px at 16px (16 units at 256 scale). Same geometry and palette as aurora.svg. -->
+  <defs>
+    <linearGradient id="field" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#163f80"/><stop offset="1" stop-color="#140a33"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7cc0ff"/><stop offset="0.55" stop-color="#c29aff"/><stop offset="1" stop-color="#ffa6dc"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="4" y="4" width="248" height="248" rx="56"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="256" height="256" fill="url(#field)"/>
+    <path d="M-10 160 C 50 140, 90 56, 150 54 S 230 76, 270 28" fill="none" stroke="url(#ribbon)" stroke-width="46" stroke-linecap="round"/>
+    <rect x="48" y="112" width="160" height="124" rx="26" fill="#0f0a2e" fill-opacity="0.45" stroke="#ffffff" stroke-width="16"/>
+    <path d="M48 160 H208" stroke="#ffffff" stroke-width="14"/>
+  </g>
+</svg>

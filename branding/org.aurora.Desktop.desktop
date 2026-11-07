@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Aurora
+GenericName=Desktop
+Comment=The Aurora desktop, in a window
+Exec=make desktop
+Path=@REPO@
+Icon=org.aurora.Desktop
+Terminal=false
+Categories=System;
+StartupWMClass=org.aurora.Desktop
+StartupNotify=false

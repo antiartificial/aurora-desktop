@@ -89,11 +89,28 @@ pub fn present_texture(
     Ok(())
 }
 
+/// The host window's Wayland `app_id` and the basename of its `.desktop` file.
+pub const APP_ID: &str = "org.aurora.Desktop";
+
 pub fn init_winit(
     event_loop: &mut EventLoop<Aurora>,
     state: &mut Aurora,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    // Same size and visibility as Smithay's `winit::init`, plus the two things a launcher keys on:
+    // the title and the Wayland `app_id` (`WindowAttributesWayland::with_name`; its second argument
+    // is a no-op). Plasma resolves `APP_ID` against `org.aurora.Desktop.desktop`, whose `Icon=` is the
+    // one installed by `make icon` from branding/. Keep the three in step.
+    use smithay::reexports::winit::{
+        dpi::LogicalSize, platform::wayland::WindowAttributesWayland, window::WindowAttributes,
+    };
+    let attributes = WindowAttributes::default()
+        .with_surface_size(LogicalSize::new(1280.0, 800.0))
+        .with_title("Aurora")
+        .with_visible(true)
+        .with_platform_attributes(Box::new(
+            WindowAttributesWayland::default().with_name(APP_ID, APP_ID),
+        ));
+    let (mut backend, winit) = winit::init_from_attributes::<GlesRenderer>(attributes)?;
     let win_size = backend.window_size();
     // winit's wl_display, for the drag-and-drop bridge (src/dnd). Absent on an X11 host.
     {

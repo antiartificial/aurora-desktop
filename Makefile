@@ -13,7 +13,7 @@ SIZE  ?= 1600x1000
 XWAYLAND ?= --xwayland
 
 .DEFAULT_GOAL := help
-.PHONY: help build desktop up env stop status test demos clean
+.PHONY: help build desktop icon up env stop status test demos clean
 
 help:
 	@printf '\nAurora\n\n'
@@ -26,6 +26,9 @@ help:
 
 build: ## build everything: the Go modules, the compositor, the Haiku kits
 	./aurora-up --build-only
+
+icon: ## install the launcher icon and .desktop entry for this user (Plasma taskbar)
+	@branding/install.sh
 
 # The keys are generated and passed explicitly rather than left to each side's
 # default. The compositor runs with the HOST's XDG_RUNTIME_DIR (winit needs it
