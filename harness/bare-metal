@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# bare-metal: pre-flight and launch Aurora on a real display (--drm).
+#
+# Run this FROM A TEXT VT, not from inside a graphical session:
+#
+#     Ctrl-Alt-F3, log in, then:  cd ~/projects/aurora && harness/bare-metal
+#
+# Why it exists. `aurora-compositor --drm` has been written, compiled and unit-tested, and has
+# never run on a display, because taking DRM master needs a seat the desktop session is holding.
+# Everything below the "Verified" line in docs/bare-metal.md is therefore unproven: every pixel,
+# the modeset, the hardware cursor, real keyboard and mouse, VT switching, hotplug.
+#
+# The first attempt is the expensive one -- it costs a trip out of your desktop -- so this checks
+# everything checkable BEFORE launching, says precisely what is wrong when something is, and
+# leaves one log file worth pasting back.
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="$ROOT/harness/bare-metal-out"
+COMP="$ROOT/compositor/target/release/aurora-compositor"
+mkdir -p "$OUT"
+LOG="$OUT/drm.log"
+
+say()  { printf '  %-28s %s\n' "$1" "$2"; }
+fail=0
+note() { echo; echo "  ->  $*"; fail=1; }
+
+echo "aurora bare-metal pre-flight"
+echo
+
+# ---- the binary ---------------------------------------------------------------------------------
+if [ -x "$COMP" ]; then
+  say "compositor" "$COMP"
+else
+  say "compositor" "MISSING"
+  note "Build it first:  cd $ROOT/compositor && cargo build --release"
+fi
+
+# ---- where we are -------------------------------------------------------------------------------
+# `tty` prints "not a tty" on stdout AND fails, so both have to be handled or the name comes
+# out as two lines of nonsense.
+TTY_NAME="$(tty 2>/dev/null)" || TTY_NAME=""
+case "$TTY_NAME" in "" | "not a tty") TTY_NAME="(not a terminal)" ;; esac
+say "tty" "$TTY_NAME"
+if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+  say "graphical session" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} DISPLAY=${DISPLAY:-}"
+  note "You are inside a graphical session. It holds the seat, and only one process can."
+  note "Switch to a text VT (Ctrl-Alt-F3), log in there, and run this again."
+fi
+case "$TTY_NAME" in
+  /dev/tty[0-9]*) : ;;
+  *) note "This is not a kernel VT ($TTY_NAME). ssh and terminal emulators cannot take DRM master." ;;
+esac
+
+# ---- the seat manager ---------------------------------------------------------------------------
+if command -v loginctl >/dev/null 2>&1; then
+  SID="$(loginctl show-user "$USER" -p Sessions --value 2>/dev/null | tr ' ' '\n' | head -1)"
+  if [ -n "$SID" ]; then
+    say "logind session" "$SID type=$(loginctl show-session "$SID" -p Type --value 2>/dev/null) seat=$(loginctl show-session "$SID" -p Seat --value 2>/dev/null) active=$(loginctl show-session "$SID" -p Active --value 2>/dev/null)"
+  else
+    say "logind session" "none for $USER"
+  fi
+fi
+if pgrep -x seatd >/dev/null 2>&1; then
+  say "seatd" "running"
+elif command -v loginctl >/dev/null 2>&1; then
+  say "seatd" "not running (logind should serve instead)"
+else
+  say "seatd" "not running, and no loginctl"
+  note "Start one:  sudo systemctl enable --now seatd && sudo usermod -aG seat \$USER  (then log in again)"
+fi
+
+# ---- the hardware -------------------------------------------------------------------------------
+CARDS="$(ls /dev/dri/card* 2>/dev/null | tr '\n' ' ')"
+if [ -n "$CARDS" ]; then
+  say "drm devices" "$CARDS"
+else
+  say "drm devices" "NONE at /dev/dri"
+  note "No DRM device. A GPU driver has not loaded, or this is a container without /dev/dri."
+fi
+say "groups" "$(id -nG)"
+id -nG | tr ' ' '\n' | grep -qx video || note "You are not in the 'video' group. Some setups need it for /dev/dri."
+INPUTS="$(ls /dev/input/event* 2>/dev/null | wc -l)"
+say "input devices" "$INPUTS at /dev/input/event*"
+[ "$INPUTS" -gt 0 ] || note "No evdev devices: libinput will find no keyboard or mouse."
+
+# ---- anything already holding the display -------------------------------------------------------
+HOLDERS="$(pgrep -ax 'kwin_wayland|gnome-shell|sway|Xorg|weston|hyprland' 2>/dev/null | head -3)"
+if [ -n "$HOLDERS" ]; then
+  say "display held by" "$(echo "$HOLDERS" | head -1)"
+  note "A compositor is still running. Stop it, or use a VT it is not on."
+fi
+
+echo
+if [ "$fail" != 0 ]; then
+  echo "Pre-flight found problems above. Fix those first; nothing was launched."
+  exit 1
+fi
+
+cat <<INFO
+Pre-flight is clean. Launching --drm.
+
+  What to expect: the screen switches to Aurora's desktop (background, dock, clock).
+  Alt-Tab is Flip 3D. Ctrl-Alt-Backspace quits. Ctrl-Alt-F<n> switches VT.
+
+  If the screen goes black and stays black, wait ten seconds, then Ctrl-Alt-Backspace,
+  then Ctrl-Alt-F<n> back to your desktop. The log is kept either way.
+
+  Log: $LOG
+INFO
+sleep 3
+
+RUST_BACKTRACE=1 "$COMP" --drm >"$LOG" 2>&1
+rc=$?
+
+echo
+echo "aurora-compositor exited with $rc. The log is at:"
+echo "  $LOG"
+echo
+echo "Worth pasting back: the last 40 lines, plus anything mentioning connector, mode, libinput or cursor."
+echo "---- tail ----"
+tail -40 "$LOG"

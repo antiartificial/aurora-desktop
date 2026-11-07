@@ -4,6 +4,25 @@
 keyboard and mouse through libinput, on a text VT, with no other compositor.
 Code: `compositor/src/drm.rs`.
 
+## How to actually run it
+
+    Ctrl-Alt-F3, log in, then:
+
+        cd ~/projects/aurora && harness/bare-metal
+
+`harness/bare-metal` checks everything checkable before it launches anything, because the first
+attempt is the expensive one: it costs a trip out of the desktop. It reports the tty, the logind
+session and seat, whether seatd is running, the DRM devices, group membership, the evdev count,
+and whether another compositor still holds the display -- and refuses to launch while any of
+those is wrong, naming the fix.
+
+Run from inside a graphical session on 2026-11-07 it correctly refused, and found two things
+worth knowing in advance: **this machine's user is not in the `video` group**, and seatd is
+already running alongside logind.
+
+The log lands in `harness/bare-metal-out/drm.log` whether the run succeeds or not. That file is
+what turns "it did not work" into a bug list.
+
 ## Status: written and compiled, not yet run on a display
 
 The author could not take the DRM master on the development machine (a KDE
