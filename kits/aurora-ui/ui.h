@@ -309,6 +309,19 @@ public:
     virtual int Columns() const = 0;
     virtual float ColumnWidth(int col) const = 0;
     virtual std::string ColumnTitle(int col) const = 0;
+
+    // ---- sorting ----
+    //
+    // The source sorts, not the widget. The widget has cells of text and no idea that one column
+    // is a size in bytes displayed as "4.0 KB" and another is a time; sorting those as the
+    // strings it was handed is how a file manager ends up putting 10 B after 9 KB.
+    //
+    // SortColumn() is -1 when nothing is sorted. The widget draws the indicator from these, so
+    // a source that ignores Sort() simply never shows one, and the header stops looking
+    // clickable -- which is correct, because it is not.
+    virtual int SortColumn() const { return -1; }
+    virtual bool SortAscending() const { return true; }
+    virtual void Sort(int col, bool ascending) { (void)col; (void)ascending; }
 };
 
 Desc ListView(Rows* rows, int* selected);

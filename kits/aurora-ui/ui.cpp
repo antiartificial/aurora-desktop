@@ -368,12 +368,28 @@ public:
         const float edge = frame.x + frame.w - 1;
 
         // header
+        const int sort_col = r_->SortColumn();
         float x = frame.x;
         for (int col = 0; col < r_->Columns() && x <= edge; col++) {
             const float cw = r_->ColumnWidth(col);
+            const bool sorted = col == sort_col;
             au_clip_set(s, au_rect{x, frame.y, std::min(x + cw - 6, edge), frame.y + head_h_});
-            au_text_draw(s, e.bold, e.size - 1, r_->ColumnTitle(col).c_str(), -1,
-                         x + e.unit * 0.75f, frame.y + head_h_ * 0.72f, e.dim);
+            const float tx = x + e.unit * 0.75f;
+            au_text_draw(s, e.bold, e.size - 1, r_->ColumnTitle(col).c_str(), -1, tx,
+                         frame.y + head_h_ * 0.72f, sorted ? e.fg : e.dim);
+            if (sorted) {
+                // A chevron after the title, pointing the way the rows run. Drawn rather than
+                // typed: an arrow glyph is a font's opinion and half of them have none.
+                const float ax = tx + au_text_width(e.bold, e.size - 1,
+                                                    r_->ColumnTitle(col).c_str(), -1) +
+                                 e.unit * 0.5f;
+                const float ay = frame.y + head_h_ * 0.5f;
+                const float r = 3;
+                const float dir = r_->SortAscending() ? -1.0f : 1.0f;
+                au_stroke_line(s, ax, ay - r * dir * 0.5f, ax + r, ay + r * dir * 0.5f, e.fg, 1.5f);
+                au_stroke_line(s, ax + r, ay + r * dir * 0.5f, ax + r * 2, ay - r * dir * 0.5f,
+                               e.fg, 1.5f);
+            }
             au_clip_reset(s);
             x += cw;
         }
@@ -451,6 +467,7 @@ public:
     Node* HitTest(float x, float y) override { return frame.has(x, y) ? this : nullptr; }
     void OnPress() override {}
     void OnRelease(bool inside) override {
+        if (header_press_) { header_press_ = false; return; }   // a sort, not a row click
         if (sb_.dragging) { sb_.dragging = false; return; }
         if (on_bar_) { on_bar_ = false; return; }   // a press on the bar is never a row click
         if (!inside || !sel_) return;
@@ -462,6 +479,25 @@ public:
     void OnPressAt(float x, float y, int clicks) override {
         click_y_ = y;
         clicks_ = clicks;
+        // A click in the header sorts by that column, and clicking the sorted one reverses it.
+        // Nothing else in the header is clickable, so this is checked before anything else.
+        if (y < frame.y + head_h_ && r_->SortColumn() >= -1) {
+            float cx = frame.x;
+            for (int col = 0; col < r_->Columns(); col++) {
+                const float cw = r_->ColumnWidth(col);
+                if (x >= cx && x < cx + cw) {
+                    const bool same = col == r_->SortColumn();
+                    r_->Sort(col, same ? !r_->SortAscending() : true);
+                    top_ = 0;              // the rows under you are different rows now
+                    whole_ = true;
+                    dirty_ = true;
+                    header_press_ = true;
+                    return;
+                }
+                cx += cw;
+            }
+        }
+        header_press_ = false;
         on_bar_ = sb_.hit(x, y);
         if (!on_bar_) return;
         const int to = sb_.press(y, r_->Count(), visible(), top_);
@@ -714,7 +750,7 @@ private:
     std::function<std::vector<std::string>(int)> drag_paths_;
     std::function<bool(int, const DragData&)> on_drop_;
     int drop_row_ = -1;
-    bool drop_active_ = false;
+    bool drop_active_ = false, header_press_ = false;
     float row_h_ = 18, head_h_ = 20, click_y_ = 0;
     bool focused_ = false, dirty_ = false, whole_ = false;
     std::vector<int> rows_dirty_;

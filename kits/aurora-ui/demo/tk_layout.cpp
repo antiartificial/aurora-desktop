@@ -86,9 +86,21 @@ struct ManyRows : Rows {
     CellValue Cell(int row, int) const override {
         return CellValue{CellState::Ready, "row " + std::to_string(row)};
     }
-    int Columns() const override { return 1; }
-    float ColumnWidth(int) const override { return 380; }
-    std::string ColumnTitle(int) const override { return "Name"; }
+    int Columns() const override { return 2; }
+    float ColumnWidth(int c) const override { return c == 0 ? 200 : 120; }
+    std::string ColumnTitle(int c) const override { return c == 0 ? "Name" : "Size"; }
+
+    // What the header asked for, so a test can hold the widget to it.
+    int col = -1;
+    bool asc = true;
+    int sorts = 0;
+    int SortColumn() const override { return col; }
+    bool SortAscending() const override { return asc; }
+    void Sort(int c, bool a) override {
+        col = c;
+        asc = a;
+        sorts++;
+    }
 };
 
 // A child with a natural size and no font behind it. Spacer measures zero, and everything that
@@ -526,6 +538,42 @@ int main() {
         eq("now it accepts", t->CanAcceptDrop(d));
         eq("a drop on row 0 is taken", t->OnDrop(100, 1, d));
         eq("and names that row's id", onto == "/a");
+    }
+
+    // ---- clicking a column header sorts, and clicking it again reverses ------------------------
+    // The widget does not sort; it asks the SOURCE to, because the widget has cells of text and
+    // no idea that one column is a byte count shown as "4.0 KB". Sorting the displayed text is
+    // how a listing ends up with 10 B after 9 KB. So what is tested here is the ASK.
+    {
+        ManyRows src(30);
+        int selected = -1;
+        Desc list = ListView(&src, &selected);
+        lay(list, e, Rect{0, 0, 400, 600});
+        list->Draw(nullptr, e);
+
+        // frame.y + 1 is inside the header whatever the font makes the header height.
+        list->OnPressAt(50, list->frame.y + 1, 1);
+        eq("a header click sorts by that column", src.sorts == 1 && src.col == 0);
+        eq("and ascending first", src.asc);
+        list->OnRelease(true);
+        eq("a header click does not select a row", selected == -1);
+
+        list->OnPressAt(50, list->frame.y + 1, 1);
+        list->OnRelease(true);
+        eq("clicking the sorted column again reverses it", src.sorts == 2 && !src.asc);
+
+        // The second column is a different column, and it starts ascending again rather than
+        // inheriting the direction of the one before it.
+        list->OnPressAt(260, list->frame.y + 1, 1);
+        list->OnRelease(true);
+        eq("another column sorts by that one", src.col == 1);
+        eq("and starts ascending", src.asc);
+
+        // Past the last column is not a column.
+        const int before = src.sorts;
+        list->OnPressAt(390, list->frame.y + 1, 1);
+        list->OnRelease(true);
+        eq("past the last column sorts nothing", src.sorts == before);
     }
 
     if (fails == 0) printf("tk_layout: ok\n");

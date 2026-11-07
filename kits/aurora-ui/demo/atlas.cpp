@@ -93,11 +93,7 @@ public:
             fresh.push_back(std::move(en));
         }
         closedir(d);
-        std::sort(fresh.begin(), fresh.end(),
-                  [](const std::unique_ptr<Entry>& a, const std::unique_ptr<Entry>& b) {
-                      if (a->dir != b->dir) return a->dir > b->dir;
-                      return strcasecmp(a->name.c_str(), b->name.c_str()) < 0;
-                  });
+        sort_into(fresh);
         {
             std::lock_guard<std::mutex> g(mu_);
             e_ = std::move(fresh);
@@ -113,10 +109,7 @@ public:
     void SetFilter(const std::string& f) {
         std::lock_guard<std::mutex> g(mu_);
         filter_ = f;
-        view_.clear();
-        if (f.empty()) return;
-        for (size_t i = 0; i < e_.size(); i++)
-            if (strcasestr(e_[i]->name.c_str(), f.c_str())) view_.push_back((int)i);
+        rebuild_view_locked();
     }
 
     int Count() const override {
@@ -199,6 +192,18 @@ public:
                     }
                     did = true;
                 }
+                // Sorting by size or time means sorting on values the worker is still
+                // learning, so the order has to be re-applied as they land. Sorting by name
+                // does not, and re-sorting a large directory per batch for nothing would be
+                // the expensive mistake.
+                if (did) {
+                    bool by_stat;
+                    {
+                        std::lock_guard<std::mutex> g(mu_);
+                        by_stat = sort_col_ != 0;
+                    }
+                    if (by_stat) Resort();
+                }
                 // Tell the window something landed. Without this the sizes and dates arrived and
                 // were never drawn: the listing looked like it had failed to load, and clicking
                 // any toolbar button "fixed" it by forcing a frame.
@@ -211,6 +216,34 @@ public:
         stop_ = true;
         if (worker_.joinable()) worker_.join();
     }
+    // ---- sorting ----
+    //
+    // Directories first, always, whichever column and whichever direction. Every file manager
+    // does this and the reason is navigational: the folders are the map, and a reversed sort
+    // that buried them under three thousand files would make going anywhere a search.
+    //
+    // Size and time sort on the NUMBER, not on "4.0 KB" and not on a formatted date. Sorting the
+    // displayed text is how a listing ends up with 10 B after 9 KB.
+    int SortColumn() const override { return sort_col_; }
+    bool SortAscending() const override { return sort_asc_; }
+
+    void Sort(int col, bool ascending) override {
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            sort_col_ = col;
+            sort_asc_ = ascending;
+        }
+        Resort();
+    }
+
+    // Re-apply the current order to the rows we already have. Used by Sort and by the worker
+    // when it has learned enough to change the answer.
+    void Resort() {
+        std::lock_guard<std::mutex> g(mu_);
+        sort_locked(e_);
+        rebuild_view_locked();
+    }
+
     int stated() const { std::lock_guard<std::mutex> g(mu_); return stated_; }
     int Total() const { std::lock_guard<std::mutex> g(mu_); return (int)e_.size(); }
 
@@ -222,6 +255,48 @@ private:
     std::vector<int> view_;        // row -> entry, when a filter is on
     std::function<void()> on_change_;
     int want_first_ = 0, want_last_ = 0, generation_ = 0, stated_ = 0;
+    int sort_col_ = 0;
+    bool sort_asc_ = true;
+
+    // The filter is a VIEW over the entries, so it has to be rebuilt whenever their order
+    // changes -- a sort that left view_ pointing at the old positions would show the right rows
+    // in the wrong places, which looks like corruption rather than like a sort.
+    void rebuild_view_locked() {
+        view_.clear();
+        if (filter_.empty()) return;
+        for (size_t i = 0; i < e_.size(); i++)
+            if (strcasestr(e_[i]->name.c_str(), filter_.c_str())) view_.push_back((int)i);
+    }
+
+    void sort_into(std::vector<std::unique_ptr<Entry>>& v) {
+        std::lock_guard<std::mutex> g(mu_);
+        sort_locked(v);
+    }
+
+    void sort_locked(std::vector<std::unique_ptr<Entry>>& v) {
+        const int col = sort_col_;
+        const bool asc = sort_asc_;
+        std::sort(v.begin(), v.end(),
+                  [col, asc](const std::unique_ptr<Entry>& a, const std::unique_ptr<Entry>& b) {
+                      if (a->dir != b->dir) return a->dir > b->dir;
+                      int c = 0;
+                      if (col == 1) {
+                          // A row whose lstat has not landed sorts as zero rather than jumping
+                          // once it does. It will be re-sorted; see the worker.
+                          const off_t x = a->stated.load(std::memory_order_acquire) ? a->size : 0;
+                          const off_t y = b->stated.load(std::memory_order_acquire) ? b->size : 0;
+                          c = x < y ? -1 : (x > y ? 1 : 0);
+                      } else if (col == 2) {
+                          const time_t x = a->stated.load(std::memory_order_acquire) ? a->mtime : 0;
+                          const time_t y = b->stated.load(std::memory_order_acquire) ? b->mtime : 0;
+                          c = x < y ? -1 : (x > y ? 1 : 0);
+                      }
+                      // Name is the column-0 order AND the tie-break for the others, so two
+                      // files of the same size do not shuffle between frames.
+                      if (c == 0) c = strcasecmp(a->name.c_str(), b->name.c_str());
+                      return asc ? c < 0 : c > 0;
+                  });
+    }
     std::atomic<bool> stop_{false};
     std::thread worker_;
 };
