@@ -4,6 +4,7 @@ mod handlers;
 
 mod capture;
 mod clipboard;
+mod dnd;
 mod drm;
 mod fx;
 mod grabs;
@@ -133,6 +134,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     clipboard::start(&mut state, &event_loop.handle(), clip);
 
+    // The host drag-and-drop bridge: same rules as the clipboard's, but it listens on winit's own
+    // connection (a drag is only delivered to the client that owns the surface).
+    let dnd_choice = if args.no_host_dnd {
+        dnd::Choice::Disabled
+    } else if let Some(d) = args.host_dnd_display.clone() {
+        dnd::Choice::StandIn(d)
+    } else if args.headless.is_some() {
+        dnd::Choice::NoHost("headless has no host")
+    } else if args.drm.is_some() {
+        dnd::Choice::NoHost("--drm has no host compositor")
+    } else if let Some(d) = state.host_display {
+        dnd::Choice::Winit(d)
+    } else {
+        dnd::Choice::NoHost("the host window is not a Wayland window")
+    };
+    dnd::start(&mut state, &event_loop.handle(), dnd_choice);
+
     // One timer for every backend, installed after the backend so it cannot be
     // lost by a backend that forgets to honour it. Headless has no window to
     // close and no VT to switch, so without this it only ever stops by being
@@ -248,6 +266,10 @@ struct Args {
     no_host_clipboard: bool,
     /// `--host-clipboard-display NAME`: bridge to this host socket instead of `WAYLAND_DISPLAY` (test affordance: a second Aurora can stand in for the host).
     host_clipboard_display: Option<std::ffi::OsString>,
+    /// `--no-host-dnd`: do not bridge drag and drop from the host.
+    no_host_dnd: bool,
+    /// `--host-dnd-display NAME`: open a stand-in window on this host socket and bridge drags to it (test affordance).
+    host_dnd_display: Option<std::ffi::OsString>,
 }
 
 /// The repo's theme directory, if this binary runs from its build tree.
@@ -265,7 +287,7 @@ fn parse_args() -> Args {
     let mut args = Args {
         headless: None, drm: None, quit_after: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, no_host_clipboard: false, host_clipboard_display: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, frame_stats: None, xwayland: false, state_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -284,6 +306,8 @@ fn parse_args() -> Args {
             "--xwayland" => args.xwayland = true,
             "--no-host-clipboard" => args.no_host_clipboard = true,
             "--host-clipboard-display" => args.host_clipboard_display = it.next().map(Into::into),
+            "--no-host-dnd" => args.no_host_dnd = true,
+            "--host-dnd-display" => args.host_dnd_display = it.next().map(Into::into),
             "--legacy-scene" => args.legacy_scene = true,
             "--freeze-time" => args.freeze_time = true,
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
