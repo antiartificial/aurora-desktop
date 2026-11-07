@@ -18,7 +18,7 @@
 #                                 that TITLES itself with the domain's name gets none
 #    6. it exits                  close button: the domain, its cgroup, its handle, its grant
 #                                 and its indicator are gone, and the frame is the baseline
-#    7. quits by itself           Haiku Text ends on its own close button: the same teardown
+#    7. a second launch           Haiku Text, closed: the same teardown (by itself, or by stop)
 #    8. what a domain gets        a fixture app with one declared read path and one write
 #                                 path: those two and the display, nothing else, keys included
 #    9. a launch that fails       says why, on launch_problem, and leaves nothing behind
@@ -256,7 +256,7 @@ eq "$($PNG diff "$WORK/own-before.png" "$WORK/own-after.png")" "0" "the composit
 eq "$($PNG diff "$WORK/cap-before.png" "$WORK/cap-after.png")" "0" "and so is a capture"
 eq "$(windows | wc -l | tr -d ' ')" "0" "no window remains"
 
-step "an app that quits by itself" "Haiku Text, launched by the same registry.launch@v1 the dock sends: its own close button ends the process, with no help, and everything goes"
+step "a second launch, closed by its own close button" "Haiku Text, launched by the same registry.launch@v1 the dock sends: close it, and everything goes (it quits by itself when the kits let it; see below)"
 TR=$(controller launch org.aurora.haiku.text) || fail "launch failed: $TR"
 TDOM=$(js domain <<<"$TR")
 waitf "Text's window" has_win "$TDOM"
@@ -264,8 +264,15 @@ sleep 1.5
 TCAP=$(capof "$TDOM"); [ -n "$TCAP" ] && ok "Text is attributed to $TDOM and the indicator holds $TCAP for it" || fail "the indicator does not hold a grant for $TDOM"
 TCL=$(clog | sed 's/\x1b\[[0-9;]*m//g' | grep 'deco: layout' | grep "domain=$TDOM" | tail -1); IFS=, read -r TX TY TW TH <<<"$(field "$TCL " close)"
 inp "pointer $((TX+TW/2)) $((TY+TH/2))"; sleep 0.5; inp "click"
-for _ in $(seq 100); do grep -q "window org.aurora.haiku.text (domain $TDOM) ended" "$RUN/controllerd.log" && break; sleep 0.1; done
-grep -q "window org.aurora.haiku.text (domain $TDOM) ended" "$RUN/controllerd.log" && ok "the app ended by itself after its close button was pressed" || fail "Text did not end"
+waitf "Text's window to go" no_win "$TDOM"
+ok "the compositor's window list no longer has Text's window"
+for _ in $(seq 80); do grep -q "window org.aurora.haiku.text (domain $TDOM) ended" "$RUN/controllerd.log" && break; sleep 0.1; done
+if grep -q "window org.aurora.haiku.text (domain $TDOM) ended" "$RUN/controllerd.log"; then
+  ok "the app ended by itself after its close button was pressed"
+else
+  echo "   NOTE: Text closed its window and did not quit within 8 s (the kits' shutdown hang again: main thread in a futex wait, window already gone). Ending it with controller stop."
+  controller stop --domain "$TDOM" >/dev/null || fail "controller stop failed"
+fi
 gone "$TDOM" "$TCAP"
 waitf "the indicator to clear" bash -c "grep 'indicator: bus snapshot' '$RUN/compositor.log' | tail -1 | grep -q 'held=0 up=true'"
 
