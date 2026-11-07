@@ -41,7 +41,15 @@ An application opening or closing is an `Ease` from `shell/motion.rs` (cubic eas
 
 ### Where it sits, and when it is not drawn
 
-Top-right of the usable area, below the clock (which owns the corner), `margin` logical pixels in; `edge = "left"` puts it top-left. It floats over windows, as a dock does not, so it is **not drawn** when there are no windows (an empty box is clutter), while any window is fullscreen (a box over a video is worse than a missing box; the dock avoids this by reserving its own strip, which this does not), under `--legacy-scene` (the pre-shell look the byte-comparing tests rely on), or when `[deskbar] enabled = false`. The desktop menu has "Hide Deskbar" / "Show Deskbar" because a floating box needs a way out one right-click away.
+Top-right of the usable area, below the clock (which owns the corner), `margin` logical pixels in; `edge = "left"` puts it top-left. It floats over windows, as a dock does not, so it is **not drawn** while any window is fullscreen (a box over a video is worse than a missing box; the dock avoids this by reserving its own strip, which this does not), under `--legacy-scene` (the pre-shell look the byte-comparing tests rely on), or when `[deskbar] enabled = false`. The desktop menu has "Hide Deskbar" / "Show Deskbar" because a floating box needs a way out one right-click away.
+
+**Amended:** emptiness was originally a reason to hide ("an empty box is clutter") and no longer
+is. With nothing running the box stays up and says "No windows open", because a box that
+vanishes cannot be told from a box that is broken, and "0 apps - 0 windows" reads like a failed
+lookup rather than an answer. `deskbar/draw.rs` carries the reasoning and
+`tests/deskbar.rs::it_is_hidden_behind_a_fullscreen_window_and_under_legacy_scene_but_not_for_being_empty`
+asserts it. This paragraph and `demos/deskbar/run.sh` were not updated at the time, and the demo
+failed at its first step from then until 2026-11-07.
 
 ### What numbers it shows, and where each comes from
 

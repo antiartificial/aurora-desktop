@@ -5,7 +5,7 @@
 #
 # Proved here, each read from the compositor's own `deskbar: layout` log line (the words it
 # rasterised), from decoded pixels of a client capture (aurora-capture), and from /proc and cgroupfs:
-#   1. no windows              -> no Deskbar
+#   1. no windows              -> the box is up and says "No windows open"
 #   2. two host-process apps   -> a box, grouped by application, each "not in a domain", no numeral
 #   3. a click on an app       -> it opens to its windows (ease-out); a click on a window raises it
 #   4. hover                   -> nothing outside the box restyles; the box is IN a client capture
@@ -95,8 +95,18 @@ source "$RUN/env"
 waitf "the Deskbar's bus thread to connect" grep -q 'deskbar: bus snapshot up=true' "$RUN/compositor.log"
 ok "stack up; the compositor's Deskbar is subscribed to busd (net.conn, net.summary)"
 
-step "no windows, no Deskbar" "an empty box is clutter: with nothing to list it is not drawn at all"
-eq "$(state | js deskbar)" "null" "the compositor reports no Deskbar"
+step "no windows: the box is up and says so" "emptiness stopped being a reason to hide; it answers the question instead"
+# This demo, and decision 0021's prose, used to expect `null` here: "an empty box is clutter".
+# The behaviour was deliberately changed (deskbar/draw.rs: "With nothing running, say so in
+# words. '0 apps - 0 windows' is accurate and reads like a failed lookup; the box is answering a
+# question, so it should answer it"), tests/deskbar.rs was updated to match
+# (it_is_hidden_..._but_not_for_being_empty asserts "the box is shown with no windows"), and this
+# demo was not. It has failed at step 1 ever since.
+[ "$(state | js deskbar)" != "null" ] && ok "the Deskbar is drawn with no windows" || fail "the Deskbar is not drawn with no windows"
+case "$(layout | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["rows"][0]["text"])')" in
+  *"No windows open"*) ok "and its header says 'No windows open' rather than counting nothing" ;;
+  *) fail "the empty header does not say so: $(layout | head -c 120)" ;;
+esac
 cap "$WORK/empty.png"; ok "baseline capture taken ($($PNG info "$WORK/empty.png"))"
 
 step "two host-process apps" "grouped by application; an app that is not in a domain says so and carries no figure"
@@ -184,7 +194,24 @@ else
   case "$META" in *mem*) fail "the row shows memory but $CGDIR/$DOM has no memory.current: $META";; *) ok "no memory.current in $CGDIR/$DOM, and the row draws no memory figure: it left it out rather than invent one";; esac
 fi
 HDR=$(lq "d['rows'][0]['meta']"); echo "   | header (machine-wide, labelled): $HDR"
-case "$HDR" in "cpu "*|"mem "*|"") ok "the header carries only labelled machine figures ('$HDR')";; *) fail "unlabelled header figure: $HDR";; esac
+# Every part is either a link STATE (one word, no number) or a labelled figure, and the last
+# part may be cut: the header gives the figures whatever room the label leaves and elides the
+# rest from the tail, so "mem 42%" can arrive as "me...". This check used to require the whole
+# string to START with "cpu " or "mem ", which stopped being true when the network and battery
+# figures were put first (they lead because they are what a person is actually checking), and
+# the demo never ran far enough for anyone to see it fail.
+hdr_ok=1
+IFS='·' read -ra PARTS <<<"$HDR"
+for part in "${PARTS[@]}"; do
+  p=$(echo "$part" | xargs)
+  case "$p" in
+    ""|wired|wi-fi|offline) ;;                 # a state, not a figure
+    *...) ;;                                   # cut to fit; the full value is not this check's claim
+    "cpu "*|"mem "*|"batt "*|"vol "*) ;;       # labelled
+    *) hdr_ok=0; echo "   | unlabelled part: '$p'" ;;
+  esac
+done
+[ "$hdr_ok" = 1 ] && ok "every header part is a link state or a labelled figure ('$HDR')" || fail "unlabelled header figure: $HDR"
 
 step "shutdown leaves nothing behind" "no processes, run dir or cgroups survive"
 kill "$CP" 2>/dev/null; wait "$DPID" 2>/dev/null

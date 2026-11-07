@@ -69,7 +69,7 @@ step 1 "build and bring the stack up" "the real stack in its own run dir; the co
 waitf "aurora-up ready" test -f "$RUN/ready"
 # A still wallpaper and no clock, so two frames differ only if something real changed (the clock ticking over
 # a minute between a baseline and a later capture cost one run 508 pixels).
-sed -i 's/^mode = "shader"/mode = "solid"/; s/^clock = true/clock = false/' "$RUN/theme/aurora-glass.toml"; sleep 1
+sed -i 's/^mode = "shader"/mode = "solid"/; s/^clock = true/clock = false/; s/^system = true/system = false/' "$RUN/theme/aurora-glass.toml"; sleep 1
 source "$RUN/env"
 waitf "the indicator's bus thread to connect" grep -q 'indicator: bus snapshot held=0 up=true' "$RUN/compositor.log"
 ok "stack up; the compositor's indicator is subscribed to busd and sees nothing held"
