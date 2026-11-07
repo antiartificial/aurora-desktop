@@ -167,6 +167,12 @@ target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 # Atlas links the bus client so its context menu can ask registry.plumb@v1 what can be done with
 # a file. aurora_ui_tk itself does NOT: a toolkit that needs a message bus to draw a button would
 # be the wrong shape, and the bus is the application's business.
+# Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
+# read back, which is why this is a test and the other aurora-ui demos are demos.
+add_executable(tk_layout ../aurora-ui/demo/tk_layout.cpp)
+target_link_libraries(tk_layout PRIVATE aurora_ui_tk)
+add_test(NAME tk_layout COMMAND tk_layout)
+
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)

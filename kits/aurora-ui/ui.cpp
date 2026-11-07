@@ -155,7 +155,13 @@ public:
             meas_.push_back(s);
             float w = c_[i]->weight;
             float ww = 0;
-            if (c_[i]->Wants(&ww)) w = ww > 0 ? ww : 1;
+            // An explicit weight() WINS over the node's own Wants. Place already decided it that
+            // way, and for a while Measure decided the opposite: Wants overrode the weight here,
+            // so weight(Spacer(), 3) was counted as one share while being placed at three. The
+            // shares then did not sum to the available space and the stack's children overran
+            // their box. Two places deciding the same thing differently is the whole bug, so
+            // whichever rule wins, it has to be this one line and that one.
+            if (w <= 0 && c_[i]->Wants(&ww)) w = ww > 0 ? ww : 1;
             wsum_ += w;
             main += vert_ ? s.h : s.w;
             cross = std::max(cross, vert_ ? s.w : s.h);
@@ -1417,6 +1423,167 @@ private:
 
 }  // namespace
 
+// ---- Split ------------------------------------------------------------------------------------
+
+// Two panes and a divider the user drags.
+//
+// Relayout is driven through Animating(), which is not a borrowed mechanism but exactly the one
+// this needs: Animating means "my size is part of the layout and it changed, lay out again", and
+// a dragged divider is that statement. The window already lays out before drawing when anything
+// answers true, so the new ratio shows in the SAME frame as the drag, and setting the ratio from
+// outside the widget works for free -- which is what makes `ratio` being the app's State honest
+// rather than decorative.
+class SplitNode : public Node {
+public:
+    SplitNode(Desc a, Desc b, State<float>* r, bool vert, SplitOpts o)
+        : a_(std::move(a)), b_(std::move(b)), r_(r), vert_(vert), o_(o) {
+        if (r_) r_->attach(this);
+    }
+
+    Size Measure(const Env& e, Constraints c) override {
+        unit_ = e.unit;
+        div_ = std::max(2.0f, o_.thickness * e.unit);
+        const Constraints in = shrink(c);
+        // A split divides the space it is GIVEN. With no constraint on the main axis there is
+        // nothing to take a fraction of, so it falls back to a size rather than asking its
+        // children and inventing a ratio from their natural sizes -- which would make the
+        // divider jump the first time a pane's content changed.
+        const float main = vert_ ? (in.max_h >= 0 ? in.max_h : 300) : (in.max_w >= 0 ? in.max_w : 400);
+        const float cross = vert_ ? in.max_w : in.max_h;
+        geom(main);
+        // Each child measured once, at the main size it will actually be placed at: a pane that
+        // wraps text must wrap to its own width, not to the split's.
+        a_->Measure(e, vert_ ? Constraints{cross, ma_} : Constraints{ma_, cross});
+        b_->Measure(e, vert_ ? Constraints{cross, mb_} : Constraints{mb_, cross});
+        applied_ = raw();
+        return vert_ ? Size{(cross >= 0 ? cross : 400) + pad.l + pad.r, main + pad.t + pad.b}
+                     : Size{main + pad.l + pad.r, (cross >= 0 ? cross : 300) + pad.t + pad.b};
+    }
+
+    void Place(Rect r) override {
+        frame = r;
+        const Rect in = inner();
+        geom(vert_ ? in.h : in.w);
+        a_->parent = this;
+        b_->parent = this;
+        if (vert_) {
+            a_->Place(Rect{in.x, in.y, in.w, ma_});
+            dv_ = Rect{in.x, in.y + ma_, in.w, div_};
+            b_->Place(Rect{in.x, in.y + ma_ + div_, in.w, mb_});
+        } else {
+            a_->Place(Rect{in.x, in.y, ma_, in.h});
+            dv_ = Rect{in.x + ma_, in.y, div_, in.h};
+            b_->Place(Rect{in.x + ma_ + div_, in.y, mb_, in.h});
+        }
+    }
+
+    void Draw(au_surface* s, const Env& e) override {
+        unit_ = e.unit;
+        a_->Draw(s, e);
+        b_->Draw(s, e);
+        au_fill_rect(s, dv_.box(), (hot_ || drag_) ? e.accent : e.surface_hi);
+        // The grip: three marks at the middle of the divider. There is no cursor change to
+        // discover the gesture with, so the divider has to say what it is.
+        const float cx = dv_.x + dv_.w * 0.5f, cy = dv_.y + dv_.h * 0.5f;
+        const float step = std::max(3.0f, unit_ * 0.4f);
+        for (int i = -1; i <= 1; i++) {
+            const float gx = vert_ ? cx + i * step * 2 : cx;
+            const float gy = vert_ ? cy : cy + i * step * 2;
+            au_fill_round_rect(s, au_rect{gx - 1, gy - 1, gx + 1, gy + 1}, 1, 1,
+                               (hot_ || drag_) ? e.fg : e.dim);
+        }
+    }
+
+    Node* HitTest(float x, float y) override {
+        if (!frame.has(x, y)) return nullptr;
+        // The divider wins inside its grab zone, which is wider than it is drawn: a 4 px target
+        // is a target people miss, and missing it hits a pane instead, which moves a selection.
+        if (grab().has(x, y)) return this;
+        if (Node* n = a_->HitTest(x, y)) return n;
+        if (Node* n = b_->HitTest(x, y)) return n;
+        return nullptr;
+    }
+
+    void Children(std::vector<Node*>* out) override {
+        out->push_back(a_.get());
+        out->push_back(b_.get());
+    }
+
+    void OnEnter() override { hot_ = true; }
+    void OnLeave() override { hot_ = false; }
+
+    void OnPressAt(float x, float y, int clicks) override {
+        if (clicks >= 2) {
+            // Collapse and restore. Remembering the old ratio is what makes this a toggle: a
+            // collapse with no way back would be the one gesture on this widget that destroys
+            // something, and it would be the easiest one to trigger by accident.
+            drag_ = false;
+            if (collapsed_) {
+                set(restore_);
+                collapsed_ = false;
+            } else {
+                restore_ = raw();
+                set(0.0f);
+                collapsed_ = true;
+            }
+            return;
+        }
+        drag_ = true;
+        grab_at_ = vert_ ? y - dv_.y : x - dv_.x;
+    }
+
+    void OnDragTo(float x, float y) override {
+        if (!drag_) return;
+        const Rect in = inner();
+        const float avail = std::max(1.0f, (vert_ ? in.h : in.w) - div_);
+        const float at = (vert_ ? y - in.y : x - in.x) - grab_at_;
+        set(std::max(0.0f, std::min(1.0f, at / avail)));
+        collapsed_ = false;
+    }
+
+    void OnRelease(bool) override { drag_ = false; }
+
+    // The ratio changed since the last layout, so the layout is stale. `applied_` holds the RAW
+    // value seen at layout time, not the clamped one: storing the clamp would leave the two
+    // permanently unequal whenever a min kicked in, and the window would lay out every frame
+    // forever.
+    bool Animating() const override { return raw() != applied_; }
+
+    float divider_pos() const { return vert_ ? dv_.y : dv_.x; }   // for tests
+
+private:
+    float raw() const { return r_ ? r_->get() : 0.5f; }
+    void set(float v) {
+        if (r_) r_->set(v);
+    }
+
+    // The two main-axis sizes for a given total. One place decides this, so Measure and Place
+    // cannot disagree about where the divider is -- which would put a pane's hit test and its
+    // pixels in different places.
+    void geom(float main) {
+        const float avail = std::max(0.0f, main - div_);
+        const float lo = std::min(o_.min_a * unit_, avail);
+        const float hi = std::max(lo, avail - o_.min_b * unit_);
+        ma_ = std::max(lo, std::min(raw() * avail, hi));
+        mb_ = avail - ma_;
+    }
+
+    Rect grab() const {
+        const float s = o_.grab_slop;
+        return vert_ ? Rect{dv_.x, dv_.y - s, dv_.w, dv_.h + 2 * s}
+                     : Rect{dv_.x - s, dv_.y, dv_.w + 2 * s, dv_.h};
+    }
+
+    Desc a_, b_;
+    State<float>* r_;
+    bool vert_;
+    SplitOpts o_;
+    Rect dv_;
+    float unit_ = 8, div_ = 4, ma_ = 0, mb_ = 0, grab_at_ = 0;
+    float applied_ = -1, restore_ = 0.5f;
+    bool hot_ = false, drag_ = false, collapsed_ = false;
+};
+
 // ---- Ease -------------------------------------------------------------------------------------
 
 void Ease::target(float t, uint32_t ms) {
@@ -1512,6 +1679,14 @@ void BeginListRename(const Desc& list, int row) {
 }
 Desc Either(State<bool>* first, Desc a, Desc b) {
     return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
+}
+
+Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, false, o);
+}
+
+Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, true, o);
 }
 
 Desc Reveal(State<bool>* shown, Desc child, Transition t) {

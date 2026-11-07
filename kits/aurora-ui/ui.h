@@ -420,6 +420,36 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
 // toggle back.
 Desc Either(State<bool>* first, Desc a, Desc b);
 
+// ---- split panes ------------------------------------------------------------------------------
+
+// Two children with a divider the user drags. `ratio` is the fraction of the main axis the FIRST
+// child gets, and it is a State rather than an internal field so the APP owns it: a pane ratio is
+// something a person sets once and expects to find again, so it belongs in whatever the app
+// persists, not inside a widget that is rebuilt on the next launch.
+//
+// Two functions rather than one axis flag, for the same reason Motion has both Reveal and
+// RevealX: the axis is a property of the split, and a bool at the call site reads as noise where
+// a name reads as the layout. HSplit divides left | right, so its divider is vertical; VSplit
+// divides top / bottom.
+//
+// min_a and min_b are in layout units and are a floor, not a hint. A pane dragged to nothing is
+// a pane the user cannot get back, because there is no longer a divider wide enough to grab.
+// Collapsing is therefore a separate gesture -- a double-click on the divider -- and it
+// remembers where the divider was, so it is a toggle and not a destructive snap.
+//
+// There is no cursor change over the divider, because present_wl does not set a cursor shape.
+// That is why the divider draws a grip: without one the gesture is undiscoverable, and a
+// resizable pane nobody knows is resizable is a fixed pane that cost more to build.
+struct SplitOpts {
+    float min_a = 8;           // layout units, a floor on the first pane
+    float min_b = 8;
+    float thickness = 0.5f;    // units; the divider as drawn
+    float grab_slop = 3;       // px added each side of it for hit testing only
+};
+
+Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
+Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
+
 // ---- damage -----------------------------------------------------------------------------------
 
 // A bounded list of dirty rectangles in LAYOUT units.
