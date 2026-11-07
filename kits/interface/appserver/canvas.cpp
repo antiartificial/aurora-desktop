@@ -15,6 +15,28 @@ void Canvas::Init(int lw, int lh, double scale)
 	fClip = DRect{0, 0, fW, fH};
 }
 
+void Canvas::Resize(int lw, int lh, double scale)
+{
+	const int ow = fW, oh = fH;
+	const int nw = (int)ceil(lw * scale), nh = (int)ceil(lh * scale);
+	if (nw == ow && nh == oh && scale == fScale) return;
+
+	std::vector<uint32_t> old;
+	old.swap(fPx);
+	fScale = scale;
+	fW = nw;
+	fH = nh;
+	fPx.assign((size_t)fW * fH, 0xFFFFFFFFu);
+	fClip = DRect{0, 0, fW, fH};
+
+	// Straight row copy of the overlap, in device pixels. No resampling: a pixel keeps its
+	// position, so the stale frame is the old content where it still fits and white only where
+	// the window actually grew.
+	const int cw = ow < nw ? ow : nw, chh = oh < nh ? oh : nh;
+	for (int y = 0; y < chh; y++)
+		memcpy(&fPx[(size_t)y * fW], &old[(size_t)y * ow], (size_t)cw * sizeof(uint32_t));
+}
+
 void Canvas::Clear(Color c)
 {
 	uint32_t v = 0xFF000000u | (c.r << 16) | (c.g << 8) | c.b;

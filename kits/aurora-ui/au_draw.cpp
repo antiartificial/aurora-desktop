@@ -78,28 +78,16 @@ int au_surface_resize(au_surface* s, int layout_w, int layout_h, double scale) {
     const bool same = (layout_w == s->layout_w && layout_h == s->layout_h && scale == s->scale);
     if (same) return 0;
 
-    // Canvas::Init would fill the whole buffer opaque white here. Instead: keep what is on
-    // screen, copy as much of it as still fits, and let the caller paint over it. A resize then
-    // shows stale pixels for at most one frame rather than a white flash, and pays a copy of the
-    // overlap instead of a memset of the whole new buffer.
-    const int ow = s->canvas.Width(), oh = s->canvas.Height();
-    std::vector<uint32_t> old;
-    if (ow > 0 && oh > 0) old.assign(s->canvas.Pixels(), s->canvas.Pixels() + (size_t)ow * oh);
-
+    // Keep what is on screen rather than flashing white, and let the caller paint over it.
+    // Canvas::Resize is the whole of it now. This used to copy the overlap back row by row
+    // through DrawImage, whose destination is in LAYOUT units -- so each device row was placed
+    // at y / scale and resampled. At scale 1, harmless. At the 1.45 a real display asks for,
+    // rows were duplicated and dropped, and the kept frame came back sheared. Canvas::Resize
+    // copies in device pixels, where a pixel keeps its position.
     s->layout_w = layout_w;
     s->layout_h = layout_h;
     s->scale = scale;
-    s->canvas.Init(layout_w, layout_h, scale);
-
-    if (!old.empty()) {
-        const int nw = s->canvas.Width(), nh = s->canvas.Height();
-        const int cw = ow < nw ? ow : nw, ch = oh < nh ? oh : nh;
-        for (int y = 0; y < ch; y++)
-            s->canvas.DrawImage(old.data() + (size_t)y * ow, cw, 1,
-                                FRect{0, 0, (float)(cw - 1), 0},
-                                FRect{0, (float)(y / s->scale), (float)((cw - 1) / s->scale),
-                                      (float)(y / s->scale)});
-    }
+    s->canvas.Resize(layout_w, layout_h, scale);
     return 1;
 }
 

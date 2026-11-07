@@ -948,7 +948,10 @@ void ApplyWindowResize(SWindow* w, int lw, int lh)
 	if (gTrace) fprintf(stderr, "appserver[%s]: RESIZE to %dx%d\n", w->title.c_str(), lw, lh);
 	w->frame.right = w->frame.left + lw - 1;
 	w->frame.bottom = w->frame.top + lh - 1;
-	w->canvas.Init(lw, lh, gScale);
+	// Resize, NOT Init: Init fills the buffer opaque white, and the repaint that answers this
+	// is asynchronous (B_WINDOW_RESIZED below, answered by the client whenever it gets round to
+	// it), so every frame presented in between showed a white window. That was the flash.
+	w->canvas.Resize(lw, lh, gScale);
 	// follow modes, as View::ParentResized does
 	struct R { static void Go(SView* v, int dx, int dy) {
 		BRect f = v->frame;

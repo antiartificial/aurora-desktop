@@ -31,6 +31,19 @@ class Canvas {
 public:
 	Canvas() : fW(0), fH(0), fScale(1.0) {}
 	void Init(int layoutW, int layoutH, double scale);	// device size = ceil(layout * scale)
+	// Like Init, but KEEPS the pixels that still fit instead of filling white.
+	//
+	// Init exists for a window being created, where white is as good as anything. A window being
+	// RESIZED is different: the repaint that follows is asynchronous -- the app_server posts
+	// B_WINDOW_RESIZED and the client answers later -- so every frame presented in between shows
+	// whatever Init left behind, which is an opaque white rectangle the size of the window. That
+	// is the flash on resize. Keeping the overlap means the stale frame is the previous CONTENT,
+	// which is a frame late rather than a different colour.
+	//
+	// The copy is done in DEVICE pixels, by row. Going through layout units would resample, and
+	// at a fractional scale (1.45 is what a real display here asks for) the rounding duplicates
+	// and drops rows, which is a mangled window rather than a stale one.
+	void Resize(int layoutW, int layoutH, double scale);
 	int Width() const { return fW; }		// device px
 	int Height() const { return fH; }
 	double Scale() const { return fScale; }
