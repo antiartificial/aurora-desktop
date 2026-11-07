@@ -263,6 +263,39 @@ impl Aurora {
         Rectangle::new((area.loc.x, area.loc.y + bar).into(), (area.size.w, (area.size.h - bar).max(1)).into())
     }
 
+    /// Fullscreen: the whole output, over the dock, no bar. Wayland toplevels only. What it can NOT do is
+    /// cover the capability indicator, which is drawn after every window (`indicator::draw`).
+    pub fn set_fullscreen(&mut self, w: &Window, on: bool) {
+        let Some(t) = w.toplevel() else { return };
+        let Some(geo) = self.space.outputs().next().and_then(|o| self.space.output_geometry(o)) else { return };
+        let key = win_key(w);
+        let was = self.space.element_location(w).map(|l| Rectangle::new(l, w.geometry().size)).filter(|r| r.size.w > 0 && r.size.h > 0);
+        if on {
+            if let (Some(k), Some(r)) = (&key, was) {
+                if !t.with_pending_state(|s| s.states.contains(xdg_toplevel::State::Fullscreen)) {
+                    self.deco.restore.insert(k.clone(), r);
+                }
+            }
+        }
+        let back = if on { None } else { key.as_ref().and_then(|k| self.deco.restore.remove(k)) };
+        t.with_pending_state(|s| {
+            if on {
+                s.states.set(xdg_toplevel::State::Fullscreen);
+                s.size = Some(geo.size);
+            } else {
+                s.states.unset(xdg_toplevel::State::Fullscreen);
+                s.size = back.map(|r| r.size);
+            }
+        });
+        if t.is_initial_configure_sent() {
+            t.send_pending_configure();
+        }
+        if let Some(r) = if on { Some(geo) } else { back } {
+            self.space.map_element(w.clone(), r.loc, true);
+        }
+        tracing::info!("deco: {} {:?}", if on { "fullscreen" } else { "left fullscreen" }, self.window_title(w));
+    }
+
     pub fn toggle_maximize(&mut self, w: &Window) {
         let on = !self.is_maximized(w);
         self.set_maximized(w, on);

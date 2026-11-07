@@ -144,6 +144,12 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
         });
         return format!("ok {v}");
     }
+    if let Some(p) = cmd.strip_prefix("dump ") {
+        // `dump PATH`: after the next frame, write the compositor's own final frame (overlay and indicator
+        // included, as no client can see them) to PATH. Returns at once; the file appears when the frame is done.
+        state.indicator.dump = Some(std::path::PathBuf::from(p.trim()));
+        return "ok".into();
+    }
     if cmd == "stats" || cmd.starts_with("stats ") {
         let last = cmd["stats".len()..].trim().parse::<usize>().unwrap_or(0);
         return match &state.stats {

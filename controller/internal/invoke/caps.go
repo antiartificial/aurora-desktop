@@ -1,6 +1,7 @@
 package invoke
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -107,4 +108,19 @@ func (iv *Invoker) publishRecord(cs *capSet, payload []byte) error {
 		return nil
 	}
 	return iv.Publish(prov.Topic, payload)
+}
+
+// announceHeld says which domain a device grant was just composed into, naming the grant by its handle id. It is
+// published on the connection that minted the handle: busd stamps `from` from that connection, so the compositor can
+// require the sender to be the handle's minter and ignore anyone else who speaks the topic. Never fails an invoke;
+// without a handle (no bus capability client, or the mint failed) there is nothing to tie the statement to and
+// nothing is sent, so such a grant is not shown by the indicator (decision 0016, "what this does not cover").
+func (iv *Invoker) announceHeld(g prov.Grant, domainIdentity, app string) {
+	if iv.Caps == nil || g.Cap == "" || domainIdentity == "" {
+		return
+	}
+	b, _ := json.Marshal(map[string]string{"cap": g.Cap, "resource": g.Resource(), "domain": domainIdentity, "app": app})
+	if err := iv.Caps.Publish(prov.TopicHeld, b, nil); err != nil {
+		iv.logf("WARNING: could not announce %s held by %s: %v", g.Resource(), domainIdentity, err)
+	}
 }

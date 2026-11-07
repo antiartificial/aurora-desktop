@@ -130,6 +130,22 @@ impl XdgShellHandler for Aurora {
         }
     }
 
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>) {
+        let wl = surface.wl_surface().clone();
+        let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)).cloned();
+        if let Some(w) = win {
+            self.set_fullscreen(&w, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        let wl = surface.wl_surface().clone();
+        let win = self.space.elements().find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == &wl)).cloned();
+        if let Some(w) = win {
+            self.set_fullscreen(&w, false);
+        }
+    }
+
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         // TODO popup grabs
     }

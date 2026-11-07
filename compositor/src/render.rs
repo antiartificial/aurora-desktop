@@ -81,6 +81,8 @@ pub fn render_and_capture(
         Ok(false) => {}
         Err(e) => tracing::error!("trusted overlay draw failed: {e}"),
     }
+    // The indicator goes on after the overlay: the scrim must not dim the evidence. Also after the capture.
+    draw_indicator(state, renderer, framebuffer, output, size);
     if state.stats.is_some() {
         sample.overlay = ms(overlay_start.elapsed());
         sample.total = ms(frame_start.elapsed());
@@ -116,6 +118,20 @@ pub fn render_direct(
     }
     if let Err(e) = crate::trusted::draw::draw_overlay(&mut state.trusted, &mut state.shell.text, renderer, framebuffer, output, size) {
         tracing::error!("trusted overlay draw failed: {e}");
+    }
+    draw_indicator(state, renderer, framebuffer, output, size);
+}
+
+/// The indicator, last of all. A `dump` request (test input) is answered from the same final frame.
+fn draw_indicator(state: &mut Aurora, renderer: &mut GlesRenderer, framebuffer: &mut GlesTarget<'_>, output: &Output, size: Size<i32, Physical>) {
+    let cfg = state.fx.theme.indicator.clone();
+    if let Err(e) = crate::indicator::draw::draw_indicator(&mut state.indicator, &cfg, &mut state.shell.text, renderer, framebuffer, output, size) {
+        tracing::error!("indicator draw failed: {e}");
+    }
+    if let Some(path) = state.indicator.dump.take() {
+        if let Err(e) = crate::trusted::dump::write_frame(renderer, framebuffer, size, &path) {
+            tracing::error!("frame dump failed: {e}");
+        }
     }
 }
 

@@ -48,6 +48,7 @@ func (iv *Invoker) execute(ctx context.Context, app *apps.App, exe string, argv 
 					iv.logf("WARNING: revoke device %s from %s failed (stale grant): %v", g.Device, name, err)
 				}
 			})
+			iv.announceHeld(g, ident.ID, app.ID())
 			continue
 		}
 		if err := iv.Runner.Grant(name, g.Path, g.Mode); err != nil {

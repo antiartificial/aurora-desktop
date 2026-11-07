@@ -85,7 +85,7 @@ pub fn clean(s: &str) -> String {
 /// Heads keep the start, tails keep the end (for paths, where the end is what
 /// matters). Binary search on the kept length: shaping is the cost, and a
 /// field can be 2048 characters.
-fn fit(t: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max_w: f32, keep_tail: bool) -> String {
+pub(crate) fn fit(t: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max_w: f32, keep_tail: bool) -> String {
     if t.string_width(s, spec, scale) <= max_w {
         return s.to_string();
     }

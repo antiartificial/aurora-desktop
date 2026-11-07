@@ -8,6 +8,7 @@ mod drm;
 mod fx;
 mod grabs;
 mod headless;
+mod indicator;
 mod render;
 mod scale;
 mod input;
@@ -61,9 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.trusted.allow.deny_prefixes = args.deny_cgroups.clone();
     state.trusted.bus_sock = args.bus_socket.clone();
+    if let Some(p) = &args.bus_socket {
+        indicator::bus::spawn(&event_loop.handle(), p.clone());
+        state.indicator.watching = true;
+    }
     match &args.bus_socket {
         Some(p) => eprintln!("aurora-compositor: domain claims are checked against busd at {}", p.display()),
-        None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown)"),
+        None => eprintln!("aurora-compositor: WARNING: no --bus-socket / AURORA_BUS_SOCK: every domain claim will show as UNVERIFIED (unknown), and the capability indicator has nothing to learn grants from, so it will NEVER light"),
     }
     let kp = trusted::sign::key_path();
     match trusted::sign::load_key(&kp, true) {

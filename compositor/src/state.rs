@@ -71,6 +71,8 @@ pub struct Aurora {
 
     pub seat: Seat<Self>,
     pub trusted: crate::trusted::Trusted,
+    /// The capability-in-use indicator (decision 0016).
+    pub indicator: crate::indicator::Indicator,
     pub fx: crate::fx::Fx,
     pub shell: crate::shell::Shell,
     /// Title-bar input and window placement state (see `windeco`).
@@ -195,6 +197,7 @@ impl Aurora {
             pending_frames: Vec::new(),
             seat,
             trusted: Default::default(),
+            indicator: Default::default(),
             fx: crate::fx::Fx::new(None),
             shell: crate::shell::Shell::new(),
             deco: Default::default(),

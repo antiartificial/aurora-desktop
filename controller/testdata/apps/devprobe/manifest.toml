@@ -35,3 +35,11 @@ effect = "write"
 accepts = ["image/png"]
 capabilities = ["device:wayland"]
 output = { image = "image/png" }
+
+[[verb]]
+name = "hold@v1"
+summary = "As display@v1, then keeps the domain and its grant alive for seconds (capability indicator demo)"
+effect = "write"
+accepts = ["image/png"]
+capabilities = ["device:wayland"]
+output = { image = "image/png" }

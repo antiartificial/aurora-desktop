@@ -92,12 +92,12 @@ pub fn check(bus_sock: Option<&Path>, name: &str, identity: &str) -> Verificatio
     }
 }
 
-pub(super) fn inspect(sock: &Path) -> Result<Value, String> {
+pub(crate) fn inspect(sock: &Path) -> Result<Value, String> {
     call(sock, "bus.inspect@v1", None)
 }
 
 /// One control request on the session socket, addressed to the `bus` service; the reply payload.
-pub(super) fn call(sock: &Path, verb: &str, payload: Option<Value>) -> Result<Value, String> {
+pub(crate) fn call(sock: &Path, verb: &str, payload: Option<Value>) -> Result<Value, String> {
     call_to(sock, "bus", verb, payload)
 }
 
