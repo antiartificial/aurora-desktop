@@ -867,6 +867,24 @@ int main() {
         int multi_sel = -1, single_sel = -1;
         Desc multi = ListView(&src, &multi_sel);
         Desc single = ListView(&src, &single_sel);
+        // Row icons are opt-in and are drawn, not laid out, so what a headless test can check
+        // is that turning them on changes no geometry and that the draw path survives a null
+        // surface the way every other node here does. tk_layout calls Draw(nullptr), so a
+        // widget that dereferenced the surface would take the whole suite down.
+        {
+            int icon_sel = -1;
+            Desc icony = ListView(&src, &icon_sel);
+            const Size before = icony->Measure(e, Constraints{400, 600});
+            ListIcons(icony);
+            const Size after = icony->Measure(e, Constraints{400, 600});
+            eq("ListIcons changes no geometry", before.w == after.w && before.h == after.h);
+            lay(icony, e, Rect{0, 0, 400, 600});
+            icony->Draw(nullptr, e);          // must not dereference the surface
+            ListIcons(icony, false);
+            lay(icony, e, Rect{0, 0, 400, 600});
+            icony->Draw(nullptr, e);
+        }
+
         ListSingleSelect(single);
         for (Desc l : {multi, single}) {
             lay(l, e, Rect{0, 0, 400, 600});

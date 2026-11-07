@@ -575,6 +575,16 @@ Desc make_field(State<std::string>* t, std::function<void(const std::string&)> c
                 std::function<void(const std::string&)> co, std::function<void()> ca,
                 FieldOpts o);
 
+// Defined with the icon grid further down: the list draws the same glyphs at row size, so a
+// folder reads as a folder in either view rather than as a name with a slash on it. Declared
+// inside the anonymous namespace, which is one entity per translation unit, so these name the
+// definitions below rather than a second pair the linker cannot find.
+namespace {
+enum class FileKind : uint8_t;
+FileKind classify(const std::string& name, bool dir);
+void draw_icon(au_surface* s, Rect r, FileKind k, double scale, bool on_accent);
+}  // namespace
+
 class ListNode : public Node {
 public:
     ListNode(Rows* r, int* sel) : r_(r), sel_(sel), edit_text_("") {}
@@ -683,8 +693,25 @@ public:
                                           : (v.state == CellState::Ready ? e.fg : e.dim);
                 au_clip_set(s, au_rect{cx, ry, std::min(cx + r_->ColumnWidth(col) - 6, edge),
                                        ry + row_h_ - 1});
-                au_text_draw(s, e.font, e.size, txt, -1, cx + e.unit * 0.75f,
-                             ry + row_h_ * 0.72f, c);
+                float tx = cx + e.unit * 0.75f;
+                // The first column carries the name, so it is the one that gets an icon. A
+                // directory is told by the trailing '/', the same signal the icon grid reads, so
+                // no Rows implementation has to grow a field to opt in.
+                std::string shown;
+                if (icons_ && col == 0 && v.state == CellState::Ready) {
+                    shown = v.text;
+                    const bool dir = !shown.empty() && shown.back() == '/';
+                    if (dir) shown.pop_back();   // the icon says it; the slash would say it twice
+                    static const bool no_icons = getenv("AURORA_UI_NO_ICONS") != nullptr;
+                    const float side = row_h_ - 6;
+                    if (!no_icons) {
+                        draw_icon(s, Rect{tx, ry + 3, side, side}, classify(shown, dir),
+                                  au_surface_scale(s), picked);
+                        tx += side + e.unit * 0.5f;
+                    }
+                    txt = shown.c_str();
+                }
+                au_text_draw(s, e.font, e.size, txt, -1, tx, ry + row_h_ * 0.72f, c);
                 au_clip_reset(s);
                 cx += r_->ColumnWidth(col);
             }
@@ -732,6 +759,8 @@ public:
 
     // A single-select list reads no modifiers, so Ctrl-click and Shift-click are plain clicks.
     uint32_t mods_now() const { return win_ && !single_ ? win_->mods() : 0u; }
+    void SetIcons(bool on) { icons_ = on; dirty_ = true; whole_ = true; }
+
     void SetSingleSelect() { single_ = true; }
     void OnPressAt(float x, float y, int clicks) override {
         click_y_ = y;
@@ -1099,6 +1128,7 @@ private:
     bool on_bar_ = false;
     std::set<int> multi_;
     bool single_ = false;
+    bool icons_ = false;
     int anchor_ = -1;
     std::function<void(const std::vector<int>&)> on_multi_;
     std::function<std::vector<std::string>(int)> drag_paths_;
@@ -1171,7 +1201,7 @@ au_color kind_color(FileKind k) {
 //
 // This is also the shape HVIF wants when it lands: a vector icon is decoded and rasterised once
 // at the size in use, then cached. The widget does not change.
-void draw_icon_geometry(au_surface* s, Rect r, FileKind k);
+void draw_icon_geometry(au_surface* s, Rect r, FileKind k, bool on_accent);
 
 struct IconCache {
     struct Entry {
@@ -1182,15 +1212,17 @@ struct IconCache {
     // rasterisation.
     std::vector<std::pair<std::pair<int, int>, Entry>> e;
 
-    const Entry* get(FileKind k, int w, int h, double scale) {
-        const std::pair<int, int> key{(int)k, w * 1000 + h};
+    const Entry* get(FileKind k, int w, int h, double scale, bool on_accent) {
+        // The variant is part of the KEY, not a tint applied after: the glyphs are cached as
+        // rendered surfaces, so a second palette is a second entry rather than a recolour.
+        const std::pair<int, int> key{(int)k + (on_accent ? 100 : 0), w * 1000 + h};
         for (auto& it : e)
             if (it.first == key) return &it.second;
         Entry fresh;
         fresh.sf = au_surface_new(w, h, scale);
         if (!fresh.sf) return nullptr;
         au_clear(fresh.sf, au_color{0, 0, 0, 0});
-        draw_icon_geometry(fresh.sf, Rect{0, 0, (float)w, (float)h}, k);
+        draw_icon_geometry(fresh.sf, Rect{0, 0, (float)w, (float)h}, k, on_accent);
         fresh.w = au_surface_px_w(fresh.sf);
         fresh.h = au_surface_px_h(fresh.sf);
         e.push_back({key, fresh});
@@ -1203,8 +1235,8 @@ IconCache& icons_cache() {
     return *c;
 }
 
-void draw_icon(au_surface* s, Rect r, FileKind k, double scale) {
-    const IconCache::Entry* en = icons_cache().get(k, (int)r.w, (int)r.h, scale);
+void draw_icon(au_surface* s, Rect r, FileKind k, double scale, bool on_accent) {
+    const IconCache::Entry* en = icons_cache().get(k, (int)r.w, (int)r.h, scale, on_accent);
     if (!en || !en->sf) return;
     au_draw_image(s, au_surface_pixels(en->sf), en->w, en->h,
                   au_rect{r.x, r.y, r.x + r.w - 1, r.y + r.h - 1});
@@ -1212,8 +1244,15 @@ void draw_icon(au_surface* s, Rect r, FileKind k, double scale) {
 
 // A folder, or a page with a folded corner. Everything is a canvas primitive: no bitmap, no
 // decoder, and it scales because it is geometry rather than pixels.
-void draw_icon_geometry(au_surface* s, Rect r, FileKind k) {
-    const au_color c = kind_color(k);
+void draw_icon_geometry(au_surface* s, Rect r, FileKind k, bool on_accent) {
+    // On a selected row the background is the accent, which is light. The row's TEXT already
+    // switches to a dark ink there; an icon that did not came out as a faint outline and the
+    // selected row was the one row whose type you could not read. Same hues, taken down far
+    // enough to carry on a light fill, so a folder is still blue and an archive still amber.
+    const au_color base = kind_color(k);
+    const au_color c = on_accent ? au_color{(uint8_t)(base.r * 2 / 5), (uint8_t)(base.g * 2 / 5),
+                                            (uint8_t)(base.b * 2 / 5), 255}
+                                 : base;
     const au_color dim{(uint8_t)(c.r * 2 / 3), (uint8_t)(c.g * 2 / 3), (uint8_t)(c.b * 2 / 3), 255};
     if (k == FileKind::Dir) {
         // tab, then body: drawn tab-first so the body's corner radius covers the seam
@@ -1530,7 +1569,7 @@ public:
             static const bool no_labels = getenv("AURORA_UI_NO_LABELS") != nullptr;
             if (!no_icons)
                 draw_icon(s, Rect{t.x + t.w / 2 - 18, t.y + 10, 36, 40}, classify(name, dir),
-                          au_surface_scale(s));
+                          au_surface_scale(s), is_sel);
             if (no_labels) continue;
 
             // One line, middle-elided: a tile is narrower than most names, and truncating the
@@ -2911,6 +2950,10 @@ void OnIconsSelect(const Desc& d, std::function<void(int)> f) {
 
 void OnListSelectionChanged(const Desc& list, std::function<void(const std::vector<int>&)> f) {
     if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetMultiHandler(std::move(f));
+}
+
+void ListIcons(const Desc& list, bool on) {
+    if (ListNode* l = dynamic_cast<ListNode*>(list.get())) l->SetIcons(on);
 }
 
 void ListSingleSelect(const Desc& list) {

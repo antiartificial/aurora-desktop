@@ -414,6 +414,13 @@ std::vector<int> ListSelection(const Desc& list);
 // Make a list refuse multi-selection: Ctrl-click, Shift-click, Shift+arrows and Ctrl+A all behave
 // as the plain gesture, so highlighted rows and the cursor are always the same single row. For a
 // picker, where what is highlighted is exactly what will be granted.
+// A file-type icon at the head of each row's first column, classified from the name's
+// extension exactly as the icon grid does, with a trailing '/' meaning a directory. Opt-in,
+// because `Rows` is generic and a list of things that are not files should not get file icons.
+// With it on, the first column drops the trailing slash: the icon already says "folder", and
+// saying it twice is how a list starts to look like a terminal.
+void ListIcons(const Desc& list, bool on = true);
+
 void ListSingleSelect(const Desc& list);
 
 void OnListRename(const Desc& list, std::function<bool(int, const std::string&)> f);

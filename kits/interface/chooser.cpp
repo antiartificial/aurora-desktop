@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
     OnTreeActivate(tree, [&](const std::string& id) { if (!revealing) go(id); });
 
     Desc list = named(ListView(&rows, &selected), "files");
+    ListIcons(list);   // a folder should look like a folder, not like a name with a slash
     ListSingleSelect(list);
     OnListSelect(list, [&](int row) {
         // Clicking a file in a save dialog proposes its name, which is how replacing a file is done.

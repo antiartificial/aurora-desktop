@@ -308,6 +308,7 @@ int main() {
     list_view.bind(&w);
     preview_open.bind(&w);
     auto list = named(ListView(&rows, &selected), "files");
+    ListIcons(list);   // a folder should look like a folder, not like a name with a slash
     auto icons = named(IconView(&rows, &selected), "icons");
     State<std::string> last_action("");
     last_action.bind(&w);
