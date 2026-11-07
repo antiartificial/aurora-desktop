@@ -164,3 +164,117 @@ the navigator it serves, which is the test this record applies.
   opaque under load -- is the other half and is not decided here.
 - Rounded corners and shadows for client surfaces are the obvious next request
   after glass, and are not decided here.
+
+## Appendix: what to lift, from where, and what to refuse
+
+This record earlier said "SwiftUI's shape, not XAML's". That was too blunt. The
+four toolkits worth raiding each solve a *different* problem well, and the useful
+answer is which mechanism to take from which, not which framework to imitate.
+
+A second kit beside Haiku's Interface Kit is the proposal here: a BeOS-flavoured
+kit and a modern one, sharing a substrate. **The rule that makes two kits safe:
+they share drawing primitives, layout, theme tokens and the app_server, and they
+share no widgets.** If they shared widgets the modern kit would be a skin; if
+they shared nothing we would maintain two of everything. Decision `0013` already
+treats kits as plural, so this is an extension of it, not a new idea.
+
+### The spine: composition and modifiers, from SwiftUI
+
+A view is a value; you build by nesting rather than subclassing; appearance is a
+chain of small orthogonal modifiers. This is the anti-bloat mechanism in the
+whole record: one `padding` modifier replaces a `padding` property on every
+widget, and `n` modifiers compose into far more than `n` behaviours. It is also
+the exact opposite of WinForms' and BeOS's deep inheritance, which is why a
+modern kit cannot be grafted onto the Interface Kit and has to sit beside it.
+
+Also from SwiftUI: **environment propagation** — font, scale, colour scheme and
+locale flow down the tree implicitly with explicit override points, so a control
+does not take six constructor arguments to look right.
+
+### The structural idea: the template split, from XAML
+
+**`ControlTemplate` separate from `DataTemplate`.** A control's *appearance* is
+replaceable independently of its *behaviour*, and how a data item is rendered is
+separate again. This is the most valuable structural idea for a themeable
+toolkit, and `BControlLook` (which `AuroraControlLook` already implements) is a
+primitive version of exactly it — so the seam is proven here, just narrow.
+
+**Value precedence**, also from XAML: a property's effective value resolves
+through an explicit chain (animation, then local, then template, then style, then
+inherited, then default). The explicit ordering is what lets themes compose
+without becoming CSS's cascade.
+
+### The layout: star sizing from XAML, anchoring from WinForms
+
+**Star sizing** (`*`, `Auto`, fixed) is the best idea in XAML layout and predates
+CSS Grid's `fr` by over a decade. Proportional allocation that a person can
+predict by reading it.
+
+**Anchoring and docking**, from WinForms — and we already have it: BeOS's
+`B_FOLLOW_ALL`, `B_FOLLOW_LEFT_RIGHT` and friends are the same mechanism. It
+handles the easy eighty percent with no layout pass worth the name, which matters
+for a first frame. Keep both: anchoring where it suffices, star-sized grids where
+it does not.
+
+### Named visual states, from XAML's VisualStateManager
+
+Hover, pressed, disabled, focused declared per control rather than coded per
+control. Cheap to build and it buys consistency across every widget for free,
+including the ones written later. Without it, each control reinvents its own
+hover and they drift.
+
+### The vocabulary: the component inventory, from WinUI
+
+This is WinUI's real contribution, and it is what "a rich vocabulary" means in
+practice: named solutions to recurring problems. `NavigationView`, `CommandBar`,
+`BreadcrumbBar`, `InfoBar`, `Expander`, `SplitButton`, `NumberBox`,
+`ContentDialog`, `TeachingTip`, `ItemsRepeater`.
+
+Take the *list* as a catalogue to work from, with the visual treatment from
+macOS: vibrancy, restrained type, generous spacing, subtle depth. Fluent's
+inventory, Apple's manners.
+
+**Filtered hard, though.** A component enters the kit when a real client needs
+it, never to fill the catalogue. For the navigator that is roughly: the
+virtualised list, a breadcrumb, a split view, a toolbar, a sidebar and a context
+menu. Six, not sixty.
+
+Also from WinUI: **`ItemsRepeater`'s premise that virtualisation is a
+first-class concern**, not an optimisation bolted on later. And **`x:Bind`'s
+lesson** — compiled, typed bindings — which here means: no string paths at all.
+
+### What to refuse, and why
+
+- **The binding engine.** XAML's stringly-typed paths fail silently and at
+  runtime. Data arriving late is this toolkit's central case, so the one thing it
+  cannot have is a data mechanism that fails quietly.
+- **Markup files.** A startup parse on the path whose goal is the first frame,
+  and a second place to look when something renders wrong.
+- **Retained-mode tree diffing.** SwiftUI's complexity and its surprises live
+  here, and for a list over slow data it buys little over invalidating the rows
+  whose data changed.
+- **Deep inheritance hierarchies**, from WinForms and BeOS. Fine for the
+  Interface Kit, which is what it is; wrong for the kit being added.
+- **A visual designer.** It is what makes XAML worth its ceremony, and building
+  one costs more than every client we have.
+
+### The shape, concretely
+
+Declarative in code, no new language:
+
+```
+Grid(rows: ["Auto", "*"], cols: ["240", "*"])
+  .child(Toolbar(...), row: 0, col: 0, colSpan: 2)
+  .child(Sidebar(places).anchor(.vertical), row: 1, col: 0)
+  .child(FileList(model)                      // virtualised, async-backed
+           .rowTemplate(FileRow)              // DataTemplate
+           .onActivate(plumb)                 // ranked verbs, 0009 effects
+           .padding(8)
+           .glass(.promoted),                 // opaque until there is budget
+         row: 1, col: 1)
+```
+
+`Grid`/`anchor` is the layout, `.rowTemplate` is the DataTemplate split,
+`.glass(.promoted)` is this record's quality-level rule, and every modifier is a
+value returning a value. Nothing here needs a parser, a designer or a binding
+engine.
