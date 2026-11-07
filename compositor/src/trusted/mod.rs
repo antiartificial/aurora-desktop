@@ -11,6 +11,7 @@ pub mod draw;
 pub mod dump;
 pub mod font;
 pub mod sign;
+pub mod ticket;
 pub mod socket;
 pub mod testinput;
 pub mod verify;
