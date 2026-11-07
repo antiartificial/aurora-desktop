@@ -25,6 +25,7 @@
 // have created aurora::ui::au_wl, a different type, and every call would have failed to convert.
 #include "../interface/appserver/present.h"
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <mutex>
@@ -671,6 +672,18 @@ public:
     void Invalidate(Rect r) { dirty_ = true; damage_.add(r); }
     void Quit() { quit_ = true; }
 
+    // Mark the window dirty from ANOTHER THREAD.
+    //
+    // A worker that has produced something worth showing calls this -- Atlas's directory lister
+    // fills in sizes and dates behind the listing, and before this existed those values simply
+    // never appeared: the data landed, nothing repainted, and the columns stayed blank until
+    // some unrelated event happened to force a frame. The user's report was that a directory
+    // would not load until they clicked a toolbar button.
+    //
+    // It touches ONE ATOMIC and nothing else. Invalidate() appends to the damage list, which is
+    // not safe to touch off the main thread; the loop turns this flag into real damage.
+    void InvalidateThreadsafe() { ext_dirty_.store(true, std::memory_order_release); }
+
     // What is being dragged right now, or nullptr. A node that wants to draw differently while
     // a drag is in flight -- a list dimming the rows it cannot accept -- reads this.
     const DragData* dragging() const { return drag_live_ ? &drag_ : nullptr; }
@@ -686,6 +699,7 @@ private:
     // the only piece of window state a handler must not act on directly: everything else a
     // handler touches is a scalar or a damage rectangle, but a resize REPLACES the pixel buffer
     // the main thread is drawing into.
+    std::atomic<bool> ext_dirty_{false};
     std::mutex size_mu_;
     int want_w_ = 0, want_h_ = 0;
 
@@ -755,6 +769,12 @@ public:
     // agent reading the accessibility tree, and the app itself all address a widget. This is its
     // first real use, and it is the primitive that makes the other two possible.
     bool FocusNamed(const char* name);
+
+    // Move focus in a DIRECTION, for the arrow keys. Tab is reading order; arrows are where
+    // things are on screen, which is what a person means when the sidebar is to the left of the
+    // list. Only reached when the focused widget declined the key, so a list still gets its own
+    // up and down and a tree still gets expand and collapse.
+    bool MoveFocusSpatial(int dx, int dy);
     Node* FindNamed(const char* name);
 
 private:

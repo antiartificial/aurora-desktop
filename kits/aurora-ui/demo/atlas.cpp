@@ -162,6 +162,10 @@ public:
         return view_[row];
     }
 
+    // Called from the WORKER thread when stat results land. Must be safe to call off the main
+    // thread; Window::InvalidateThreadsafe is.
+    void SetOnChange(std::function<void()> f) { on_change_ = std::move(f); }
+
     void StartWorker() {
         worker_ = std::thread([this] {
             while (!stop_.load()) {
@@ -195,6 +199,10 @@ public:
                     }
                     did = true;
                 }
+                // Tell the window something landed. Without this the sizes and dates arrived and
+                // were never drawn: the listing looked like it had failed to load, and clicking
+                // any toolbar button "fixed" it by forcing a frame.
+                if (did && on_change_) on_change_();
                 if (!did) std::this_thread::sleep_for(std::chrono::milliseconds(4));
             }
         });
@@ -212,6 +220,7 @@ private:
     std::string path_;
     std::string filter_;
     std::vector<int> view_;        // row -> entry, when a filter is on
+    std::function<void()> on_change_;
     int want_first_ = 0, want_last_ = 0, generation_ = 0, stated_ = 0;
     std::atomic<bool> stop_{false};
     std::thread worker_;
@@ -885,6 +894,7 @@ int main() {
         filter_open.set(true);
         w.FocusNamed("filter");
     }
+    rows.SetOnChange([&w] { w.InvalidateThreadsafe(); });
     rows.StartWorker();
 
     const char* fr = getenv("ATLAS_FRAMES");

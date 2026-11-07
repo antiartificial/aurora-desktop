@@ -1843,7 +1843,10 @@ public:
                 const Row& r = flat_[cur];
                 if (r.expandable && !open_.count(r.id)) { toggle(cur); return true; }
                 if (cur + 1 < n && flat_[cur + 1].depth > r.depth) { move(cur + 1); return true; }
-                return true;
+                // Nothing to open and nowhere further in: DECLINE, so the window can move focus
+                // out of the sidebar and into the pane beside it. Swallowing it here is what
+                // makes a tree a place you can get into and not out of.
+                return false;
             }
             case 0x1c: {                                                           // left
                 if (cur < 0) { move(0); return true; }
@@ -1855,7 +1858,7 @@ public:
                 // outside, where there is no row to walk back from.
                 for (int i = cur - 1; i >= 0; i--)
                     if (flat_[i].depth < r.depth) { move(i); return true; }
-                return true;
+                return false;        // at the root with nothing to collapse: let focus leave
             }
             case 0x0a:
             case 0x0d:
@@ -2945,7 +2948,26 @@ void Window::Key(void* user, const au_key* k) {
         w->MoveFocus((k->mods & AU_MOD_SHIFT) ? -1 : 1);
         return;
     }
-    if (w->focus_ && w->focus_->OnKey(*k)) {
+    // OnKey is asked ONCE and the answer kept. Asking twice -- once to see whether it declined,
+    // then again to let it act -- delivers every keystroke to the widget twice, which for a
+    // list's type-ahead means every letter typed lands two deep.
+    const bool took = w->focus_ && w->focus_->OnKey(*k);
+
+    // An arrow the focused widget DECLINED moves focus instead. A list keeps its own up and
+    // down, and a tree keeps expand and collapse; what reaches here is an arrow that meant
+    // nothing where it was, which is exactly when a person expects to leave.
+    if (!took && k->pressed && !(k->mods & AU_MOD_ALT) && w->focus_) {
+        int dx = 0, dy = 0;
+        switch (k->raw_char) {
+            case 0x1c: dx = -1; break;
+            case 0x1d: dx = 1; break;
+            case 0x1e: dy = -1; break;
+            case 0x1f: dy = 1; break;
+            default: break;
+        }
+        if ((dx || dy) && w->MoveFocusSpatial(dx, dy)) return;
+    }
+    if (took) {
         std::vector<Rect> hint;
         if (w->focus_->DamageHint(&hint))
             for (const Rect& r : hint) w->Invalidate(r);
@@ -2985,6 +3007,10 @@ void Window::CollectFocusables() {
 
 void Window::SetFocus(Node* n) {
     if (n == focus_) return;
+    if (getenv("AURORA_UI_TRACE"))
+        fprintf(stderr, "ui: focus %s -> %s\n",
+                focus_ ? (focus_->name.empty() ? "(unnamed)" : focus_->name.c_str()) : "NONE",
+                n ? (n->name.empty() ? "(unnamed)" : n->name.c_str()) : "NONE");
     if (focus_) { focus_->OnFocus(false); Invalidate(focus_->frame); }
     focus_ = n;
     if (focus_) { focus_->OnFocus(true); Invalidate(focus_->frame); }
@@ -3019,6 +3045,36 @@ bool Window::FocusNamed(const char* name) {
     Node* n = FindNamed(name);
     if (!n || !n->CanFocus()) return false;
     SetFocus(n);
+    return true;
+}
+
+bool Window::MoveFocusSpatial(int dx, int dy) {
+    if (focusables_.empty()) CollectFocusables();
+    if (!focus_ || focusables_.size() < 2) return false;
+    const Rect f = focus_->frame;
+    const float cx = f.x + f.w * 0.5f, cy = f.y + f.h * 0.5f;
+    Node* best = nullptr;
+    float best_d = 0;
+    for (Node* n : focusables_) {
+        if (n == focus_ || n->frame.w <= 0 || n->frame.h <= 0) continue;
+        const float ddx = n->frame.x + n->frame.w * 0.5f - cx;
+        const float ddy = n->frame.y + n->frame.h * 0.5f - cy;
+        // Strictly in the direction asked for. Without this, Left from a left-hand pane picks
+        // the thing to its RIGHT because it happens to be nearest.
+        if (dx != 0 && ddx * dx <= 0) continue;
+        if (dy != 0 && ddy * dy <= 0) continue;
+        const float along = dx != 0 ? std::fabs(ddx) : std::fabs(ddy);
+        const float across = dx != 0 ? std::fabs(ddy) : std::fabs(ddx);
+        // Drift across the axis costs double, so Left from the list prefers the sidebar beside
+        // it over the toolbar button that is also technically to the left, but far above.
+        const float d = along + across * 2;
+        if (!best || d < best_d) {
+            best = n;
+            best_d = d;
+        }
+    }
+    if (!best) return false;
+    SetFocus(best);
     return true;
 }
 
@@ -3137,6 +3193,9 @@ int Window::Run(int frames, bool force_redraw, int max_ms) {
             }
             for (auto& f : todo) f();
         }
+        // A worker asked for a frame. Turned into damage HERE, on the main thread, because the
+        // damage list is the main thread's.
+        if (ext_dirty_.exchange(false, std::memory_order_acquire)) Invalidate();
         if (force_redraw) Invalidate();
         if (dirty_) {
             Draw();
