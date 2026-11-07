@@ -13,6 +13,12 @@ const Attr = "user.aurora.provenance"
 // Topic is the bus topic a record is published on.
 const Topic = "provenance.created"
 
+// TopicHeld is published, by the connection that minted a device grant's handle, once the grant is composed into
+// a domain's namespace and before the payload runs: {"cap","resource","domain"}. The compositor's capability
+// indicator (decision 0016) believes it only from the handle's own minter. "provenance." is a system namespace,
+// so no domain connection hears it.
+const TopicHeld = "provenance.grant.held"
+
 // How a grant was authorised.
 const (
 	// SourceAmbient: covered by a capability the app's manifest declares
