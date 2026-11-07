@@ -42,6 +42,14 @@ pub struct Request {
     pub effect: String,
     pub grants: Vec<String>,
     pub args: String,
+    /// SHA-256 of the EXACT request line, hex. Signed into the reply so a verified answer says
+    /// which request it answered, not merely which id. The controller recomputes this from the
+    /// bytes it sent and never reads it from the reply, which is the only reason it binds
+    /// anything: a value taken from the answer would be chosen by whoever sent the answer.
+    ///
+    /// Hashing the raw line rather than the parsed fields keeps `clean()` out of it. The
+    /// controller would otherwise have to reproduce that function, in Go, exactly, forever.
+    pub request_sha256: String,
 }
 
 pub struct Pending {
@@ -125,7 +133,7 @@ fn reply(mut out: &UnixStream, key: Option<&[u8]>, req: &Request, allow: bool, p
         "decision": decision, "key": pressed, "reason": reason,
     });
     if let Some(k) = key {
-        let fields = [req.request_id.as_str(), decision, pressed, reason, v.verdict.wire(), v.detail.as_str(), source, req.domain_identity.as_str(), mismatch.as_str()];
+        let fields = [req.request_id.as_str(), decision, pressed, reason, v.verdict.wire(), v.detail.as_str(), source, req.domain_identity.as_str(), mismatch.as_str(), req.request_sha256.as_str()];
         body["sig"] = sign::sign_fields(k, &fields).into();
     }
     let _ = writeln!(out, "{body}");

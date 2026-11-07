@@ -163,7 +163,7 @@ mod tests {
     fn req() -> Request {
         Request {
             request_id: "r1".into(), app: "a".into(), domain: "x".into(), domain_identity: "domain:x:1".into(),
-            verification: Verification::unchecked(), verb: "v".into(), effect: "destructive".into(), grants: vec!["rw /p (gesture)".into()], args: String::new(),
+            verification: Verification::unchecked(), verb: "v".into(), effect: "destructive".into(), grants: vec!["rw /p (gesture)".into()], args: String::new(), request_sha256: String::new(),
         }
     }
 

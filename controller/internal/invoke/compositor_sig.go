@@ -29,12 +29,17 @@ const replyLabel = "aurora-approval-reply-v1\x00"
 
 // replyFields is what the signature covers, in order: the request id, the
 // decision, the key pressed, why, what the compositor found about the domain,
-// where the domain shown came from, the identity shown, and whether it
-// differed from what we claimed. Each is length prefixed, so no two different
-// decisions have the same encoding. compositor/src/trusted/sign.rs is the
-// signing side.
+// where the domain shown came from, the identity shown, whether it differed
+// from what we claimed, and the SHA-256 of the request line we sent. Each is
+// length prefixed, so no two different decisions have the same encoding.
+// compositor/src/trusted/sign.rs is the signing side.
+//
+// The digest is last because it was added last, and the order is the wire
+// format. It is the field that makes a verified answer say WHICH request was
+// answered: without it the signature covers an id we chose and nothing about
+// the verb, the effect or the grants the user was actually shown.
 func (a *CompositorAnswer) replyFields() []string {
-	return []string{a.RequestID, a.Decision, a.Key, a.Reason, a.DomainVerified, a.DomainVerifyDetail, a.DomainSource, a.DomainIdentity, a.DomainMismatch}
+	return []string{a.RequestID, a.Decision, a.Key, a.Reason, a.DomainVerified, a.DomainVerifyDetail, a.DomainSource, a.DomainIdentity, a.DomainMismatch, a.requestSHA256}
 }
 
 func replyMAC(key []byte, fields []string) []byte {
@@ -65,11 +70,16 @@ func verifyReply(key []byte, a *CompositorAnswer, requestID, socket string) erro
 	if err != nil {
 		return &SignatureError{socket, "the signature is not hex"}
 	}
-	if !hmac.Equal(sig, replyMAC(key, a.replyFields())) {
-		return &SignatureError{socket, "the signature does not verify (wrong key, or a field was changed after signing)"}
-	}
+	// The id is compared BEFORE the MAC, for the error message and nothing else. Both
+	// refuse, and the MAC alone would now catch a replay anyway, since the signed fields
+	// include the digest of the request we sent. But "signed for request X, not Y" names
+	// what happened and "the signature does not verify" does not, and a replay is the case
+	// worth naming.
 	if a.RequestID != requestID {
 		return &SignatureError{socket, fmt.Sprintf("the reply is signed for request %q, not %q (replayed)", a.RequestID, requestID)}
+	}
+	if !hmac.Equal(sig, replyMAC(key, a.replyFields())) {
+		return &SignatureError{socket, "the signature does not verify (wrong key, a field was changed after signing, or it answers a different request)"}
 	}
 	return nil
 }

@@ -8,13 +8,19 @@ use common::*;
 #[allow(dead_code)]
 mod sign;
 
-fn fields(a: &serde_json::Value) -> Vec<String> {
-    ["request_id", "decision", "key", "reason", "domain_verified", "domain_verify_detail", "domain_source", "domain_identity", "domain_mismatch"]
-        .iter().map(|k| a[*k].as_str().unwrap_or_else(|| panic!("reply has no {k}: {a}")).to_string()).collect()
+fn fields(a: &serde_json::Value, sent: &str) -> Vec<String> {
+    let mut f: Vec<String> = ["request_id", "decision", "key", "reason", "domain_verified", "domain_verify_detail", "domain_source", "domain_identity", "domain_mismatch"]
+        .iter().map(|k| a[*k].as_str().unwrap_or_else(|| panic!("reply has no {k}: {a}")).to_string()).collect();
+    // The digest of the request LINE, computed here from what was sent rather than read out
+    // of the reply. It is deliberately not a field of the reply: a verifier that took it from
+    // the answer would be trusting the answerer to say which question it answered, which binds
+    // nothing. The controller does the same thing in compositor.go.
+    f.push(sign::hex(&sign::sha256(sent.as_bytes())));
+    f
 }
 
-fn mac(key: &[u8], a: &serde_json::Value) -> String {
-    let f = fields(a);
+fn mac(key: &[u8], a: &serde_json::Value, sent: &str) -> String {
+    let f = fields(a, sent);
     sign::sign_fields(key, &f.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
@@ -26,30 +32,39 @@ fn every_reply_carries_a_signature_over_the_whole_decision() {
     let key = sign::load_key(&key_file, false).expect("the compositor made a 0600 key under XDG_RUNTIME_DIR/aurora");
 
     // allow, by key
-    let pending = ask(&c, &request_json("sig-allow", 60_000));
+    let sent_allow = request_json("sig-allow", 60_000);
+    let pending = ask(&c, &sent_allow);
     wait_for("overlay", || c.dump.exists());
     wait_until_armed();
     c.inject("key a");
     let a = answer(pending);
     assert_eq!(a["decision"], "allow", "{a}");
-    assert_eq!(a["sig"].as_str().unwrap(), mac(&key, &a), "{a}");
+    assert_eq!(a["sig"].as_str().unwrap(), mac(&key, &a, &sent_allow), "{a}");
     println!("SIGNED allow: {a}");
 
     // deny, by timeout: also signed
-    let a2 = answer(ask(&c, &request_json("sig-timeout", 1_000)));
+    let sent_timeout = request_json("sig-timeout", 1_000);
+    let a2 = answer(ask(&c, &sent_timeout));
     assert_eq!(a2["decision"], "deny");
     assert_eq!(a2["reason"], "timeout");
-    assert_eq!(a2["sig"].as_str().unwrap(), mac(&key, &a2));
+    assert_eq!(a2["sig"].as_str().unwrap(), mac(&key, &a2, &sent_timeout));
 
     // the signature covers each field: changing any one breaks it
     let sig = a["sig"].as_str().unwrap();
     for (k, v) in [("request_id", "sig-other"), ("decision", "deny"), ("key", "d"), ("reason", "timeout"), ("domain_source", "bus"), ("domain_identity", "domain:evil:1"), ("domain_mismatch", "true"), ("domain_verified", "true")] {
         let mut t = a.clone();
         t[k] = v.into();
-        assert_ne!(mac(&key, &t), sig, "changing {k} did not change the signature");
+        assert_ne!(mac(&key, &t, &sent_allow), sig, "changing {k} did not change the signature");
     }
     // and a signature from another request's reply is not this one's
     assert_ne!(a["sig"], a2["sig"]);
+
+    // The request BODY is covered, not only its id: the same reply verified against a
+    // different request line does not match. This is what makes a verified allow mean "the
+    // key holder answered THIS request" rather than "answered some request with this id".
+    let other_body = request_json("sig-allow", 59_000);   // same id, one field different
+    assert_ne!(other_body, sent_allow);
+    assert_ne!(mac(&key, &a, &other_body), a["sig"].as_str().unwrap(), "the signature does not cover the request body");
 }
 
 #[test]

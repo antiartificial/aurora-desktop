@@ -3,6 +3,8 @@ package invoke
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -51,6 +53,11 @@ type CompositorPrompt struct {
 // CompositorAnswer is the compositor's reply.
 type CompositorAnswer struct {
 	RequestID string `json:"request_id"`
+	// requestSHA256 is the hex SHA-256 of the request line WE wrote. It is set here from
+	// our own bytes and is deliberately not a JSON field: a digest read out of the answer
+	// would be chosen by whoever sent the answer, and would bind nothing. Signing it means
+	// a verified reply names the request it answered and not merely a request id.
+	requestSHA256 string
 	// Sig is the hex HMAC-SHA256 over the fields in replyFields.
 	Sig      string `json:"sig"`
 	Decision string `json:"decision"`
@@ -127,6 +134,9 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 		w.Grants = append(w.Grants, wireGrant{g.Path, g.Mode, g.Source})
 	}
 	b, _ := json.Marshal(w)
+	// Over the bytes as sent, which is exactly what the compositor hashes on receipt.
+	sum := sha256.Sum256(b)
+	sentDigest := hex.EncodeToString(sum[:])
 	conn.SetDeadline(time.Now().Add(wait + 5*time.Second))
 	if _, err := conn.Write(append(b, '\n')); err != nil {
 		return nil, err
@@ -147,6 +157,7 @@ func (c *CompositorPrompt) Ask(ctx context.Context, req ApprovalRequest, wait ti
 			ch <- res{nil, fmt.Errorf("unreadable compositor answer: %w", err)}
 			return
 		}
+		a.requestSHA256 = sentDigest
 		ch <- res{&a, nil}
 	}()
 	select {

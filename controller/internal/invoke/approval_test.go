@@ -2,7 +2,10 @@ package invoke
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -214,7 +217,7 @@ var testKey = []byte("0123456789abcdef0123456789abcdef")
 
 // fakeCompositorFn listens like the compositor's trusted socket; each request
 // line is decoded into got and answered with whatever answer returns for it.
-func fakeCompositorFn(t *testing.T, answer func(m map[string]any) string) (string, chan map[string]any) {
+func fakeCompositorFn(t *testing.T, answer func(m map[string]any, raw []byte) string) (string, chan map[string]any) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "trusted.sock")
 	ln, err := net.Listen("unix", path)
@@ -235,7 +238,9 @@ func fakeCompositorFn(t *testing.T, answer func(m map[string]any) string) (strin
 				var m map[string]any
 				json.Unmarshal(line, &m)
 				got <- m
-				fmt.Fprintln(c, answer(m))
+				// The digest is over the line as sent, newline excluded, which is what the
+				// real compositor hashes in trusted/socket.rs.
+				fmt.Fprintln(c, answer(m, bytes.TrimRight(line, "\n")))
 			}()
 		}
 	}()
@@ -243,24 +248,28 @@ func fakeCompositorFn(t *testing.T, answer func(m map[string]any) string) (strin
 }
 
 // signedAs returns reply with the request id of m and a signature made with
-// key, as the real compositor does.
-func signedAs(key []byte, reply string, m map[string]any) string {
+// key, as the real compositor does. `raw` is the request line as it arrived:
+// the signature covers its digest, so a fake that does not hash the same bytes
+// produces a signature the controller rightly refuses.
+func signedAs(key []byte, reply string, m map[string]any, raw []byte) string {
 	var a CompositorAnswer
 	json.Unmarshal([]byte(reply), &a)
 	if a.RequestID == "" {
 		a.RequestID, _ = m["request_id"].(string)
 	}
+	sum := sha256.Sum256(raw)
+	a.requestSHA256 = hex.EncodeToString(sum[:])
 	a.Sig = SignReply(key, a)
-	var raw map[string]any
-	json.Unmarshal([]byte(reply), &raw)
-	raw["request_id"], raw["sig"] = a.RequestID, a.Sig
-	b, _ := json.Marshal(raw)
+	var obj map[string]any
+	json.Unmarshal([]byte(reply), &obj)
+	obj["request_id"], obj["sig"] = a.RequestID, a.Sig
+	b, _ := json.Marshal(obj)
 	return string(b)
 }
 
 // fakeCompositor answers every request with reply (a JSON line), signed with testKey.
 func fakeCompositor(t *testing.T, reply string) (string, chan map[string]any) {
-	return fakeCompositorFn(t, func(m map[string]any) string { return signedAs(testKey, reply, m) })
+	return fakeCompositorFn(t, func(m map[string]any, raw []byte) string { return signedAs(testKey, reply, m, raw) })
 }
 
 func TestCompositorRouteAllowRecordsRouteAndKey(t *testing.T) {

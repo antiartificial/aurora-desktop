@@ -138,6 +138,9 @@ fn field(s: &str) -> Result<String, String> {
 
 fn parse(line: &[u8]) -> Result<(Request, Duration), String> {
     let w: Wire = serde_json::from_slice(line).map_err(|e| format!("bad request: {e}"))?;
+    // Over the bytes as they arrived, before any field is cleaned or truncated, so the digest
+    // is of the request the sender actually wrote.
+    let digest = crate::trusted::sign::hex(&crate::trusted::sign::sha256(line));
     if w.op != "approve" {
         return Err(format!("unknown op {:?}, want \"approve\"", clean(&w.op)));
     }
@@ -164,6 +167,7 @@ fn parse(line: &[u8]) -> Result<(Request, Duration), String> {
         effect: field(&w.effect)?,
         grants,
         args: field(&args)?,
+        request_sha256: digest,
     };
     Ok((req, Duration::from_millis(w.timeout_ms.unwrap_or(60_000).clamp(1_000, 600_000))))
 }

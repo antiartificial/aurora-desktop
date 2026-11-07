@@ -95,7 +95,7 @@ pub fn sign_fields(key: &[u8], fields: &[&str]) -> String {
     hex(&hmac_sha256(key, &message(fields)))
 }
 
-fn hex(b: &[u8]) -> String {
+pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -192,5 +192,24 @@ mod tests {
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(load_key(&p, true).is_err(), "a wrong-sized key must be refused");
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod cross_language_digest {
+    use super::*;
+
+    /// The request digest crosses a language boundary: the compositor computes it in Rust and
+    /// the controller recomputes it in Go (controller/internal/invoke/compositor.go). If the
+    /// two ever disagree, every signed reply is refused and the compositor route silently falls
+    /// back to the bus, which is a failure that looks like a configuration problem.
+    ///
+    /// This pins the exact bytes. The matching Go assertion is
+    /// TestRequestDigestMatchesTheCompositorVector.
+    #[test]
+    fn the_request_digest_is_lowercase_hex_sha256_of_the_line() {
+        let line = br#"{"v":1,"op":"approve","request_id":"r1"}"#;
+        let got = hex(&sha256(line));
+        assert_eq!(got, "aab51d14477500a94b09cb5d34f6c71fe9506e5be51139c424de2ca5ce8f7ec0");
     }
 }
