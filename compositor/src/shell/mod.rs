@@ -137,6 +137,11 @@ pub struct Shell {
     pub freeze_time: bool,
     pub aurora_bin: String,
     pub deco: Decoration,
+    /// Windows that are still arriving, keyed by surface id. An entry lives from the window's
+    /// first real commit until its animation is done, and is read once per frame by the
+    /// effects pipeline. Absent means "fully here", which is what almost every window is almost
+    /// all of the time, so the common path is one hash lookup that misses.
+    pub appearing: std::collections::HashMap<String, motion::Appear>,
     decos: deco::DecoStore,
     pub registry: apps::Registry,
     items: Vec<Item>,
@@ -182,6 +187,7 @@ impl Shell {
             freeze_time: false,
             aurora_bin: "aurora".into(),
             deco: Decoration::default(),
+            appearing: Default::default(),
             decos: Default::default(),
             registry: apps::Registry::new(None),
             items: vec![],
@@ -316,6 +322,28 @@ impl Shell {
     }
 
     /// Per-frame housekeeping outside the renderer: the registry ask.
+    /// How far along a window's arrival is: `(alpha, scale)`, or `None` once it is fully here.
+    ///
+    /// Reading it ALSO retires it. An entry that outlived its animation would keep the
+    /// compositor drawing a window at alpha 1.0 and scale 1.0 through a transform that does
+    /// nothing, forever, for every window ever opened.
+    pub fn window_arrival(&mut self, key: &str) -> Option<(f32, f32)> {
+        let elapsed = self.appearing.get(key)?.elapsed_ms();
+        match motion::window_arrival(elapsed) {
+            Some(v) => Some(v),
+            None => {
+                self.appearing.remove(key);
+                None
+            }
+        }
+    }
+
+    /// A window has stopped existing; forget any arrival it had in flight.
+    pub fn forget_arrival(&mut self, key: &str) {
+        self.appearing.remove(key);
+    }
+
+
     pub fn tick(&mut self) {
         self.registry.tick();
     }
@@ -866,3 +894,4 @@ mod tests {
         assert!(g[0] > 200 && g[99 * 4] < 40 && g[3] == 255);
     }
 }
+

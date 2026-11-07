@@ -219,8 +219,15 @@ impl Fx {
         }
         s.reset();
         for (i, w) in space.elements().enumerate() {
-            let geo = crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale);
-            let els = window_elements(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc, scale);
+            let geo_full = crate::scale::rect_to_physical(space.element_geometry(w).ok_or("window without geometry")?, scale);
+            // Is this window still arriving? Alpha goes into the surfaces as they are built;
+            // the shrink is applied to every destination rectangle that makes up the window --
+            // its glass, its title bar and its surfaces -- about the window's own centre, so it
+            // grows into place as one object instead of coming apart.
+            let arrival = crate::windeco::win_key(w).and_then(|k| shell.window_arrival(&k));
+            let (alpha, k) = arrival.unwrap_or((1.0, 1.0));
+            let geo = scale_about(geo_full, geo_full, k);
+            let els = window_elements_alpha(r, w, space.element_location(w).unwrap_or_default() - w.geometry().loc, scale, alpha);
             // Everything this window puts in the scene: its glass, and its surfaces (which may overhang it).
             let mut touched = els.iter().map(|e| e.geometry(Scale::from(scale))).fold(rect_of(geo), |a, g| union(a, rect_of(g)));
             if glass.enabled { blur::backdrop(r, s, &bp, Kind::Window, rect_of(geo), glass.blur_radius, linear, &mut self.phases)?; }
@@ -233,12 +240,12 @@ impl Fx {
                 let mut t = r.bind(&mut s.scene)?;
                 let mut f = r.render(&mut t, size, Transform::Normal)?;
                 if glass.enabled { draw_glass(&mut f, glass_p, &s.window.up[0], geo, size, &glass, 0.0, linear)?; self.phases.surfaces += 1; }
-                if !split { draw_elements(&mut f, &els, scale)?; }
+                if !split { draw_elements_scaled(&mut f, &els, scale, k, Some(geo_full))?; }
                 let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
             }
             if let Some((tex, dst)) = bar {
                 s.mark_dirty(rect_of(geo));
-                let bg = Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into());
+                let bg = scale_about(Rectangle::<i32, Physical>::new((dst.x, dst.y).into(), (dst.w, dst.h).into()), geo_full, k);
                 if glass.enabled { blur::backdrop(r, s, &bp, Kind::Chrome, rect_of(bg), chrome_radius, linear, &mut self.phases)?; }
                 {
                     let mut t = r.bind(&mut s.scene)?;
@@ -249,8 +256,12 @@ impl Fx {
                         draw_glass(&mut f, glass_p, &s.chrome.up[0], bg, size, &g, glass.chrome.luminance_max, linear)?;
                         self.phases.surfaces += 1;
                     }
-                    crate::shell::draw_tex(&mut f, tex, dst)?;
-                    draw_elements(&mut f, &els, scale)?;
+                    // The bar fades and shrinks with the window it belongs to. Drawing it at
+                    // full opacity over a half-faded client would make the chrome look like it
+                    // had arrived first and been waiting.
+                    crate::shell::draw_tex_alpha(&mut f, tex,
+                        crate::shell::layout::Rect { x: bg.loc.x, y: bg.loc.y, w: bg.size.w, h: bg.size.h }, alpha)?;
+                    draw_elements_scaled(&mut f, &els, scale, k, Some(geo_full))?;
                     let sy = f.finish()?; self.phases.lap(Phase::Composite, &sy); wait(r, sy)?;
                 }
                 touched = union(touched, rect_of(bg));
@@ -371,14 +382,48 @@ pub fn wait(r: &mut GlesRenderer, sync: smithay::backend::renderer::sync::SyncPo
 /// A window's surface elements. `loc` is the logical place of the window's
 /// surface origin; the elements are in device pixels at `scale`.
 pub fn window_elements(r: &mut GlesRenderer, w: &Window, loc: Point<i32, Logical>, scale: f64) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    window_elements_alpha(r, w, loc, scale, 1.0)
+}
+
+pub fn window_elements_alpha(r: &mut GlesRenderer, w: &Window, loc: Point<i32, Logical>, scale: f64, alpha: f32) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     use smithay::backend::renderer::element::AsRenderElements;
-    w.render_elements(r, loc.to_physical_precise_round(scale), Scale::from(scale), 1.0)
+    w.render_elements(r, loc.to_physical_precise_round(scale), Scale::from(scale), alpha)
 }
 
 pub fn draw_elements(f: &mut GlesFrame<'_, '_>, els: &[WaylandSurfaceRenderElement<GlesRenderer>], scale: f64) -> Res<()> {
+    draw_elements_scaled(f, els, scale, 1.0, None)
+}
+
+/// Shrink `r` toward the centre of `about` by `k`. `k == 1.0` leaves it alone.
+///
+/// About the window's centre rather than each element's own, so a title bar and a client surface
+/// that overhangs it move together. Scaling each piece about itself would pull the window apart.
+pub fn scale_about(r: Rectangle<i32, Physical>, about: Rectangle<i32, Physical>, k: f32) -> Rectangle<i32, Physical> {
+    if (k - 1.0).abs() < 0.0005 {
+        return r;
+    }
+    let cx = about.loc.x as f32 + about.size.w as f32 * 0.5;
+    let cy = about.loc.y as f32 + about.size.h as f32 * 0.5;
+    let x = cx + (r.loc.x as f32 - cx) * k;
+    let y = cy + (r.loc.y as f32 - cy) * k;
+    let w = (r.size.w as f32 * k).round().max(1.0);
+    let h = (r.size.h as f32 * k).round().max(1.0);
+    Rectangle::new((x.round() as i32, y.round() as i32).into(), (w as i32, h as i32).into())
+}
+
+/// Draw a window's surfaces, optionally shrunk toward the centre of `about` while it arrives.
+///
+/// The destination rectangle is chosen here anyway -- `e.geometry()` is only where the element
+/// WOULD go -- so an opening animation costs one multiply per element and needs no wrapper
+/// element type threaded through the pipeline.
+pub fn draw_elements_scaled(f: &mut GlesFrame<'_, '_>, els: &[WaylandSurfaceRenderElement<GlesRenderer>], scale: f64, k: f32, about: Option<Rectangle<i32, Physical>>) -> Res<()> {
     for e in els.iter().rev() {
         let geo = e.geometry(Scale::from(scale));
-        e.draw(f, e.src(), geo, &[Rectangle::from_size(geo.size)], &[], None)?;
+        let dst = match about {
+            Some(a) => scale_about(geo, a, k),
+            None => geo,
+        };
+        e.draw(f, e.src(), dst, &[Rectangle::from_size(dst.size)], &[], None)?;
     }
     Ok(())
 }

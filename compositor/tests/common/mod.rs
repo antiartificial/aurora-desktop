@@ -197,12 +197,36 @@ impl Comp {
         log
     }
 
+    /// A frame of the output, taken once nothing is still animating into place.
+    ///
+    /// The wait is not politeness. A window ARRIVES over ~170 ms, fading and growing, so a
+    /// capture taken the instant one is mapped catches it part-way and the client's colour comes
+    /// back blended with the background -- [158, 49, 163] where the client painted
+    /// [200, 40, 200]. Every pixel assertion in this suite would be a race without this.
     pub fn capture(&self, name: &str) -> Img {
+        self.settle();
         let out = self.dir.path().join(name);
         let st = Command::new(capture_bin()).args(["--display", &self.display, "-o"]).arg(&out)
             .env("XDG_RUNTIME_DIR", self.dir.path()).status().unwrap();
         assert!(st.success(), "aurora-capture failed");
         Img::load(&out)
+    }
+
+    /// Wait until no window is mid-arrival. Each poll nudges the pointer, because an arrival is
+    /// read and retired by a FRAME, and `state` alone does not draw one.
+    pub fn settle(&self) {
+        for _ in 0..200 {
+            let r = self.inject_reply("state");
+            let n = serde_json::from_str::<serde_json::Value>(r.trim_start_matches("ok "))
+                .ok()
+                .and_then(|v| v["arriving"].as_u64())
+                .unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            self.inject("pointer 1 1");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     pub fn globals(&self) -> String {

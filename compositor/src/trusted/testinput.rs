@@ -197,6 +197,10 @@ fn run(state: &mut Aurora, cmd: &str) -> String {
             // resize from its edges is only resizable if the cursor says so -- and an affordance
             // nothing can assert on is one that quietly stops working.
             "cursor": format!("{:?}", state.cursor),
+            // How many windows are still ARRIVING: mid open-animation. Exposed for the same
+            // reason the cursor is -- an animation nothing can assert on is one that quietly
+            // stops playing, and nobody notices for months.
+            "arriving": state.shell.appearing.len(),
         });
         return format!("ok {v}");
     }

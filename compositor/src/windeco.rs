@@ -405,6 +405,10 @@ impl Aurora {
             return;
         }
         self.deco.unplaced.remove(&key);
+        // A window ARRIVES rather than appearing. Started here and not at new_toplevel, because
+        // until the first commit its size is zero and an animation from nothing to nothing is a
+        // flash on the first frame.
+        self.shell.appearing.insert(key.clone(), crate::shell::motion::Appear::new(crate::shell::motion::WINDOW_MS));
         if self.shell.legacy_scene || self.is_maximized(&w) {
             return;
         }

@@ -628,3 +628,35 @@ fn the_cursor_says_what_each_edge_and_corner_will_do() {
     // Well inside the client is the client's own business, and so is its cursor.
     assert_eq!(cursor(x + w / 2, y + h / 2), "Default", "the middle of the window");
 }
+
+/// A window ARRIVES rather than appearing: it fades and grows into place over ~170 ms.
+///
+/// Asserted on the compositor's own report of what is still animating, not on pixels. An
+/// animation measured by screenshot is measured by whatever the capture latency happened to be
+/// that run, which is how a test ends up passing because the machine was slow.
+#[test]
+fn a_new_window_arrives_and_then_is_done_arriving() {
+    let (_t, mut c) = themed("1", "", &[]);
+
+    let arriving = |c: &Comp| -> u64 {
+        let r = c.inject_reply("state");
+        let v: serde_json::Value = serde_json::from_str(r.trim_start_matches("ok ")).unwrap();
+        v["arriving"].as_u64().unwrap()
+    };
+
+    assert_eq!(arriving(&c), 0, "nothing is arriving before a window exists");
+    c.client_args(&["--size", "400x300", "--title", "Arriver"]);
+    wait_deco(&c, "Arriver");
+
+    // It is either still animating now, or it finished between the commit and this call. Both
+    // are fine; what must NOT happen is an entry that never retires, which is the bug this
+    // guards -- it would keep every window ever opened in the map and transform them forever.
+    let seen = arriving(&c);
+    assert!(seen <= 1, "at most the one window is arriving, saw {seen}");
+
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    // A frame has to happen for the arrival to be read and retired; `state` does not render.
+    c.inject("pointer 10 10");
+    wait_for("the arrival retires", || arriving(&c) == 0);
+    assert_eq!(arriving(&c), 0, "the window has finished arriving");
+}
