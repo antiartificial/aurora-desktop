@@ -254,6 +254,31 @@ ListNode* g_list = nullptr;   // the one list a window has, for wheel routing in
 
 }  // namespace
 
+// ---- damage -----------------------------------------------------------------------------------
+
+void Damage::add(Rect r) {
+    if (all_) return;
+    if (r.w <= 0 || r.h <= 0) return;
+    // Merge into an existing rect when one already covers it: a hover that invalidates the same
+    // button twice in a frame should not add two entries.
+    for (const Rect& e : r_)
+        if (r.x >= e.x && r.y >= e.y && r.x + r.w <= e.x + e.w && r.y + r.h <= e.y + e.h) return;
+    if (r_.size() >= kMax) { all(); return; }
+    r_.push_back(r);
+}
+
+Rect Damage::bounds() const {
+    if (r_.empty()) return Rect{};
+    float x0 = r_[0].x, y0 = r_[0].y, x1 = r_[0].x + r_[0].w, y1 = r_[0].y + r_[0].h;
+    for (const Rect& e : r_) {
+        x0 = std::min(x0, e.x);
+        y0 = std::min(y0, e.y);
+        x1 = std::max(x1, e.x + e.w);
+        y1 = std::max(y1, e.y + e.h);
+    }
+    return Rect{x0, y0, x1 - x0, y1 - y0};
+}
+
 // ---- modifiers --------------------------------------------------------------------------------
 
 Desc padding(Desc d, float units) { d->pad = Insets(units * 8); return d; }
@@ -310,15 +335,59 @@ void Window::Layout() {
 
 void Window::Draw() {
     if (!sf_) return;
+    if (damage_.empty()) { dirty_ = false; return; }   // nothing asked to be redrawn
     const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-    au_clear(sf_, au_color{24, 26, 34, 255});
-    if (!laid_) Layout();
+
+    if (!laid_) { Layout(); damage_.all(); }           // a new layout invalidates everything
+
+    const bool full = damage_.is_all();
+    const Rect clip = full ? Rect{0, 0, (float)lw_, (float)lh_} : damage_.bounds();
+
+    // Clip to the damaged union and redraw the tree through it. The nodes are not asked which
+    // of them intersect: the clip rejects their pixels cheaply, and an intersection test per
+    // node would cost more than it saves at this tree size. That stops being true for a tree
+    // with thousands of nodes, which is what the list's virtualisation already prevents.
+    au_clip_set(sf_, clip.box());
+    au_fill_rect(sf_, clip.box(), au_color{24, 26, 34, 255});
     if (root_) root_->Draw(sf_, env_);
+    au_clip_reset(sf_);
+
     draw_ms_.push_back(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-    au_wl_win_present(win_, au_surface_pixels(sf_), au_surface_px_w(sf_), au_surface_px_h(sf_),
-                      (int)scale_);
+
+    // Report the damage in BUFFER pixels, which is layout times scale.
+    const double sc = scale_;
+    total_px_ += (double)lw_ * lh_;
+    if (full) {
+        full_frames_++;
+        damaged_px_ += (double)lw_ * lh_;
+        au_wl_win_present_damage(win_, au_surface_pixels(sf_), au_surface_px_w(sf_),
+                                 au_surface_px_h(sf_), (int)sc, nullptr, 0);
+    } else {
+        partial_frames_++;
+        std::vector<int> r;
+        r.reserve(damage_.rects().size() * 4);
+        for (const Rect& e : damage_.rects()) {
+            r.push_back((int)(e.x * sc));
+            r.push_back((int)(e.y * sc));
+            r.push_back((int)(e.w * sc) + 1);
+            r.push_back((int)(e.h * sc) + 1);
+            damaged_px_ += (double)e.w * e.h;
+        }
+        au_wl_win_present_damage(win_, au_surface_pixels(sf_), au_surface_px_w(sf_),
+                                 au_surface_px_h(sf_), (int)sc, r.data(),
+                                 (int)(r.size() / 4));
+    }
+    damage_.clear();
     dirty_ = false;
+}
+
+Window::DamageStats Window::damage_stats() const {
+    DamageStats s;
+    s.full = full_frames_;
+    s.partial = partial_frames_;
+    s.mean_fraction = total_px_ > 0 ? damaged_px_ / total_px_ : 1.0;
+    return s;
 }
 
 void Window::Event(void* user, int kind, int a, int b) {
@@ -334,7 +403,7 @@ void Window::Event(void* user, int kind, int a, int b) {
                 w->lh_ = b;
                 au_surface_resize(w->sf_, a, b, w->scale_);   // keeps the pixels; no white flash
                 w->laid_ = false;
-                w->dirty_ = true;
+                w->Invalidate();                              // new geometry: the whole frame
             }
             break;
         case AU_EV_POINTER_MOVE: {
@@ -342,15 +411,21 @@ void Window::Event(void* user, int kind, int a, int b) {
             w->py_ = b / 256.0f;
             Node* n = w->root_ ? w->root_->HitTest(w->px_, w->py_) : nullptr;
             if (n != w->hover_) {
-                if (w->hover_) w->hover_->OnLeave();
+                // The payoff: a hover repaints the two nodes whose appearance changed, not the
+                // window. Before damage tracking this was a full repaint of every frame a
+                // pointer crossed a button.
+                if (w->hover_) { w->hover_->OnLeave(); w->Invalidate(w->hover_->frame); }
                 w->hover_ = n;
-                if (n) n->OnEnter();
-                w->dirty_ = true;
+                if (n) { n->OnEnter(); w->Invalidate(n->frame); }
             }
             break;
         }
         case AU_EV_POINTER_LEAVE:
-            if (w->hover_) { w->hover_->OnLeave(); w->hover_ = nullptr; w->dirty_ = true; }
+            if (w->hover_) {
+                w->hover_->OnLeave();
+                w->Invalidate(w->hover_->frame);
+                w->hover_ = nullptr;
+            }
             break;
         case AU_EV_POINTER_BUTTON: {
             if (a != 1) break;
@@ -358,31 +433,53 @@ void Window::Event(void* user, int kind, int a, int b) {
             if (b) {
                 w->pressed_ = n;
                 if (g_list && n == g_list) g_list->SetClickY(w->py_);
-                if (n) n->OnPress();
+                if (n) { n->OnPress(); w->Invalidate(n->frame); }
             } else {
-                if (w->pressed_) w->pressed_->OnRelease(w->pressed_ == n);
+                if (w->pressed_) {
+                    w->pressed_->OnRelease(w->pressed_ == n);
+                    w->Invalidate(w->pressed_->frame);
+                }
                 w->pressed_ = nullptr;
+                // A click handler can change anything, so after a release the safe answer is a
+                // full frame. A node that knows better can call Invalidate(rect) itself.
+                w->Invalidate();
             }
-            w->dirty_ = true;
             break;
         }
         case AU_EV_WHEEL:
-            if (g_list) { g_list->Scroll(b / 256.0f); w->dirty_ = true; }
+            // A scroll changes every row, so the list's own rect is the damage -- which is still
+            // less than the window, and is why ListView reports its frame rather than calling
+            // the no-argument Invalidate.
+            if (g_list) { g_list->Scroll(b / 256.0f); w->Invalidate(g_list->frame); }
             break;
         default:
             break;
     }
 }
 
-int Window::Run(int frames) {
+int Window::Run(int frames, bool force_redraw, int max_ms) {
     if (!win_) return 1;
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     Draw();
     while (!quit_) {
         if (frames > 0 && (int)draw_ms_.size() >= frames) break;
-        if (dirty_) Draw();
-        // present_wl dispatches on present; a redraw is how the loop turns. A real toolkit waits
-        // on the Wayland fd here instead of spinning, which is the next thing to build.
-        Draw();
+        if (max_ms > 0 &&
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count() > max_ms)
+            break;
+        if (force_redraw) Invalidate();
+        if (dirty_) {
+            Draw();
+            continue;             // drain the work that is already pending before sleeping
+        }
+        // Sleep until the event thread dispatched something. Events arrive on present_wl's own
+        // thread and set dirty_ through the handlers, so this is the whole loop: wake, redraw
+        // what changed, sleep. The old version called Draw() unconditionally, which spun a core
+        // and made every frame measurement a measurement of a busy loop.
+        //
+        // The timeout is a floor on responsiveness, not a tick: nothing animates yet. When the
+        // animation driver lands it shortens this while a transition is running.
+        au_wl_wait(wl_, max_ms > 0 ? 20 : 100);
     }
     return 0;
 }

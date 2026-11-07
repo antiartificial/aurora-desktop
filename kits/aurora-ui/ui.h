@@ -170,6 +170,33 @@ public:
 
 Desc ListView(Rows* rows, int* selected);
 
+// ---- damage -----------------------------------------------------------------------------------
+
+// A bounded list of dirty rectangles in LAYOUT units.
+//
+// Deliberately not a region algebra. Overlapping rects cost a little duplicate copying and no
+// correctness; a proper region costs code and a per-frame allocation. Past `kMax` it collapses to
+// one bounding rect, so the worst case is a full repaint rather than an unbounded list -- which is
+// also what a scroll or a resize wants anyway.
+class Damage {
+public:
+    static const size_t kMax = 16;
+
+    void add(Rect r);
+    void all() { all_ = true; r_.clear(); }
+    void clear() { all_ = false; r_.clear(); }
+    bool empty() const { return !all_ && r_.empty(); }
+    bool is_all() const { return all_; }
+    const std::vector<Rect>& rects() const { return r_; }
+    // The union, for the clip: drawing is clipped to this and then each rect is reported
+    // separately to the compositor.
+    Rect bounds() const;
+
+private:
+    std::vector<Rect> r_;
+    bool all_ = true;        // a fresh window owes a full frame
+};
+
 // ---- the window -------------------------------------------------------------------------------
 
 class Window {
@@ -180,11 +207,21 @@ public:
     bool ok() const { return win_ != nullptr; }
     void SetRoot(Desc root) { root_ = std::move(root); dirty_ = true; }
     Env& env() { return env_; }
-    void Invalidate() { dirty_ = true; }
+    void Invalidate() { dirty_ = true; damage_.all(); }
+    // Mark one rectangle dirty. This is what a State<T> set and a hover should call: a hover that
+    // restyles one button must not repaint the window.
+    void Invalidate(Rect r) { dirty_ = true; damage_.add(r); }
     void Quit() { quit_ = true; }
 
-    // Runs until the window closes. frames > 0 stops after that many, for scripted runs.
-    int Run(int frames = 0);
+    // Runs until the window closes.
+    //
+    // frames > 0 stops after that many. An IDLE APP NOW DRAWS NOTHING -- the loop sleeps until
+    // an event arrives -- so a frame count alone can wait forever, which is correct behaviour
+    // and a trap for a scripted run. Hence two guards:
+    //   force_redraw: invalidate the whole window each iteration. Measurement only, and the only
+    //                 way to get an unattended full-repaint number.
+    //   max_ms:       wall-clock ceiling, so a scripted run cannot hang.
+    int Run(int frames = 0, bool force_redraw = false, int max_ms = 0);
 
     // What the frame-timing instrument saw. The 8 ms rule is only a rule if it is measured.
     struct Timing { size_t frames = 0; double p50 = 0, p95 = 0, max = 0; size_t over_8ms = 0; };
@@ -209,6 +246,14 @@ private:
     Node* hover_ = nullptr;
     Node* pressed_ = nullptr;
     std::vector<double> draw_ms_;
+    Damage damage_;
+    size_t full_frames_ = 0, partial_frames_ = 0;
+    double damaged_px_ = 0, total_px_ = 0;
+
+public:
+    // What damage tracking actually saved, so the claim is measured rather than asserted.
+    struct DamageStats { size_t full = 0, partial = 0; double mean_fraction = 1.0; };
+    DamageStats damage_stats() const;
 };
 
 template <class T>

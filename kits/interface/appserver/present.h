@@ -37,6 +37,22 @@ void au_wl_win_set_parent(au_wl_win* child, au_wl_win* parent);
 void au_wl_win_set_key_fn(au_wl_win*, au_key_fn fn);
 void au_wl_win_destroy(au_wl_win*);
 
+/* ---- additions for aurora::ui ------------------------------------------------------------
+ * The app_server does not use these and its behaviour is unchanged.
+ *
+ * au_wl_wait: sleep until the event thread has dispatched something, or until timeout_ms.
+ * Events already arrive on present_wl's own thread, so a toolkit's main loop needs to WAIT,
+ * not spin. Returns 1 if woken by an event, 0 on timeout.
+ *
+ * au_wl_win_present_damage: like au_wl_win_present, but it reuses the window's shm buffers
+ * instead of creating a memfd, pool and wl_buffer per frame, and it tells the compositor which
+ * rectangles actually changed. The per-frame allocation is the expensive part at size: a
+ * 1920x1200 window at scale 1.45 copies 19 MB every frame whether one pixel changed or not.
+ * rects is nrects quadruples of {x, y, w, h} in BUFFER (device) pixels; nrects 0 damages all. */
+int au_wl_wait(au_wl*, int timeout_ms);
+int au_wl_win_present_damage(au_wl_win*, const uint32_t* argb, int px_w, int px_h,
+                             int buffer_scale, const int* rects, int nrects);
+
 #ifdef __cplusplus
 }
 #endif

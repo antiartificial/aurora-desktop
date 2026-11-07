@@ -8,6 +8,7 @@
 #include "xdg-shell-client-protocol.h"
 
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,13 +43,24 @@ struct au_wl {
 	int scale;
 	pthread_mutex_t mu;
 	pthread_t thread;
+	int wake;			/* eventfd: the event thread bumps it, au_wl_wait sleeps on it */
 	int running;
 	struct au_wl_win* focus;
 	int nwins;
 };
 
+/* A reusable shm buffer. The one-shot path above makes and destroys one per frame; this one is
+ * kept and reused, because at window size the memfd, mmap and copy dominate the frame. */
+struct pbuf {
+	struct wl_buffer* b;
+	void* mem;
+	size_t size;
+	int w, h, busy;
+};
+
 struct au_wl_win {
 	au_wl* g;
+	struct pbuf pool[2];		/* reused by au_wl_win_present_damage; unused by the one-shot path */
 	struct wl_surface* surf;
 	struct xdg_surface* xs;
 	struct xdg_toplevel* top;
@@ -70,6 +82,20 @@ static void buffer_release(void* data, struct wl_buffer* b)
 	free(x);
 }
 static const struct wl_buffer_listener buffer_listener = { buffer_release };
+
+static void pbuf_release(void* data, struct wl_buffer* b)
+{
+	(void)b;
+	((struct pbuf*)data)->busy = 0;
+}
+static const struct wl_buffer_listener pbuf_listener = { pbuf_release };
+
+static void pbuf_drop(struct pbuf* p)
+{
+	if (p->b) wl_buffer_destroy(p->b);
+	if (p->mem) munmap(p->mem, p->size);
+	p->b = NULL; p->mem = NULL; p->size = 0; p->w = p->h = 0; p->busy = 0;
+}
 
 static void wm_ping(void* d, struct xdg_wm_base* wm, uint32_t serial) { (void)d; xdg_wm_base_pong(wm, serial); }
 static const struct xdg_wm_base_listener wm_listener = { wm_ping };
@@ -319,8 +345,25 @@ static void* event_thread(void* arg)
 		wl_display_dispatch_pending(g->dpy);
 		repeat_tick(g);
 		pthread_mutex_unlock(&g->mu);
+		/* Wake a main loop sleeping in au_wl_wait. Done outside the lock: the waiter may
+		 * immediately want g->mu to draw, and holding it here would hand it a stall. */
+		if (g->wake >= 0 && r > 0) { uint64_t one = 1; ssize_t n = write(g->wake, &one, sizeof one); (void)n; }
 	}
 	return NULL;
+}
+
+int au_wl_wait(au_wl* g, int timeout_ms)
+{
+	if (!g || g->wake < 0) return 0;
+	struct pollfd pfd = { g->wake, POLLIN, 0 };
+	const int r = poll(&pfd, 1, timeout_ms);
+	if (r > 0 && (pfd.revents & POLLIN)) {
+		uint64_t sink;
+		ssize_t n = read(g->wake, &sink, sizeof sink);	/* drain: one wake per batch */
+		(void)n;
+		return 1;
+	}
+	return 0;
 }
 
 au_wl* au_wl_connect(void)
@@ -328,6 +371,7 @@ au_wl* au_wl_connect(void)
 	au_wl* g = calloc(1, sizeof(*g));
 	g->dpy = wl_display_connect(NULL);
 	if (!g->dpy) { free(g); return NULL; }
+	g->wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	g->scale = 1;
 	g->xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 	g->rep_rate = 25; g->rep_delay = 400;
@@ -440,6 +484,82 @@ int au_wl_win_present(au_wl_win* w, const uint32_t* argb, int pw, int ph, int bs
 	return 0;
 }
 
+int au_wl_win_present_damage(au_wl_win* w, const uint32_t* argb, int pw, int ph, int bscale,
+                             const int* rects, int nrects)
+{
+	au_wl* g = w->g;
+	if (w->destroyed || !w->configured) return -1;
+	const size_t stride = (size_t)pw * 4, size = stride * ph;
+
+	pthread_mutex_lock(&g->mu);
+
+	/* Pick a buffer the compositor has handed back. Two is enough for a single surface: one
+	 * on screen, one to draw into. If both are still held we fall through to the slow path
+	 * rather than block, because stalling a frame is worse than one extra allocation. */
+	struct pbuf* p = NULL;
+	for (int i = 0; i < 2; i++) {
+		struct pbuf* c = &w->pool[i];
+		if (c->busy) continue;
+		if (c->b && (c->w != pw || c->h != ph)) pbuf_drop(c);	/* a resize invalidates it */
+		p = c;
+		break;
+	}
+	if (p && !p->b) {
+		const int fd = memfd_create("aurora-ui-frame", MFD_CLOEXEC);
+		if (fd >= 0 && ftruncate(fd, size) == 0) {
+			void* mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+			if (mem != MAP_FAILED) {
+				struct wl_shm_pool* pool = wl_shm_create_pool(g->shm, fd, (int32_t)size);
+				p->b = wl_shm_pool_create_buffer(pool, 0, pw, ph, (int32_t)stride,
+				                                 WL_SHM_FORMAT_XRGB8888);
+				wl_shm_pool_destroy(pool);
+				p->mem = mem; p->size = size; p->w = pw; p->h = ph;
+				wl_buffer_add_listener(p->b, &pbuf_listener, p);
+			}
+		}
+		if (fd >= 0) close(fd);
+	}
+	if (!p || !p->b) {
+		pthread_mutex_unlock(&g->mu);
+		return au_wl_win_present(w, argb, pw, ph, bscale);	/* no pooled buffer: one-shot */
+	}
+
+	/* Copy only what changed. This is where damage tracking pays: a hover that restyles one
+	 * row copies that row's scanlines, not the window. */
+	if (nrects <= 0 || !rects) {
+		memcpy(p->mem, argb, size);
+	} else {
+		for (int i = 0; i < nrects; i++) {
+			int x = rects[i * 4], y = rects[i * 4 + 1];
+			int rw = rects[i * 4 + 2], rh = rects[i * 4 + 3];
+			if (x < 0) { rw += x; x = 0; }
+			if (y < 0) { rh += y; y = 0; }
+			if (x >= pw || y >= ph || rw <= 0 || rh <= 0) continue;
+			if (x + rw > pw) rw = pw - x;
+			if (y + rh > ph) rh = ph - y;
+			for (int row = y; row < y + rh; row++)
+				memcpy((char*)p->mem + (size_t)row * stride + (size_t)x * 4,
+				       (const char*)argb + (size_t)row * stride + (size_t)x * 4,
+				       (size_t)rw * 4);
+		}
+	}
+
+	p->busy = 1;
+	wl_surface_set_buffer_scale(w->surf, bscale);
+	wl_surface_attach(w->surf, p->b, 0, 0);
+	if (nrects <= 0 || !rects) {
+		wl_surface_damage_buffer(w->surf, 0, 0, pw, ph);
+	} else {
+		for (int i = 0; i < nrects; i++)
+			wl_surface_damage_buffer(w->surf, rects[i * 4], rects[i * 4 + 1],
+			                         rects[i * 4 + 2], rects[i * 4 + 3]);
+	}
+	wl_surface_commit(w->surf);
+	wl_display_flush(g->dpy);
+	pthread_mutex_unlock(&g->mu);
+	return 0;
+}
+
 void au_wl_win_set_key_fn(au_wl_win* w, au_key_fn fn) { w->kfn = fn; }
 
 void au_wl_win_destroy(au_wl_win* w)
@@ -449,6 +569,10 @@ void au_wl_win_destroy(au_wl_win* w)
 	w->destroyed = 1;
 	if (g->focus == w) g->focus = NULL;
 	if (g->kfocus == w) { g->kfocus = NULL; g->rep_key = 0; }
+	/* Drop pooled buffers before the surface: a wl_buffer outliving its surface is legal but
+	 * its release never arrives, so the mapping would leak for the life of the process. */
+	pbuf_drop(&w->pool[0]);
+	pbuf_drop(&w->pool[1]);
 	if (w->pop) xdg_popup_destroy(w->pop);
 	if (w->top) xdg_toplevel_destroy(w->top);
 	xdg_surface_destroy(w->xs);

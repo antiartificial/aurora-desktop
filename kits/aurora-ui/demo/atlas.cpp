@@ -215,7 +215,9 @@ int main() {
     rows.StartWorker();
 
     const char* fr = getenv("ATLAS_FRAMES");
-    w.Run(fr ? atoi(fr) : 0);
+    const bool force = getenv("ATLAS_FORCE") != nullptr;
+    const char* ms = getenv("ATLAS_MAX_MS");
+    w.Run(fr ? atoi(fr) : 0, force, ms ? atoi(ms) : 0);
     rows.Stop();
 
     if (getenv("ATLAS_REPORT")) {
@@ -225,6 +227,9 @@ int main() {
                t.frames, t.p50, t.p95, t.max, t.over_8ms);
         printf("ATLAS stated=%d of %d (lstat is demand-driven: only what the list looked at)\n",
                rows.stated(), rows.Count());
+        const Window::DamageStats ds = w.damage_stats();
+        printf("ATLAS damage full=%zu partial=%zu mean_fraction=%.3f\n",
+               ds.full, ds.partial, ds.mean_fraction);
         fflush(stdout);
     }
     return 0;
