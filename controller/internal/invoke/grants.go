@@ -21,7 +21,21 @@ func (iv *Invoker) planGrants(m *manifest.Manifest, verb manifest.Verb, input, o
 			gs = append(gs, prov.Grant{Path: c.path, Mode: c.mode, Source: iv.classify(m, c.path, c.mode)})
 		}
 	}
-	return append(gs, planDevices(m, verb)...)
+	gs = append(gs, planDevices(m, verb)...)
+	return append(gs, planUI(verb)...)
+}
+
+// planUI turns the ui capabilities a verb lists ("ui:read") into grants. As with devices the manifest validator has
+// already refused a verb that lists a class the manifest does not declare, and a declared class no verb lists is not
+// granted. The domain it is granted to is filled in by the invoke (UIFor), once the bus has attested it.
+func planUI(verb manifest.Verb) []prov.Grant {
+	var gs []prov.Grant
+	for _, c := range verb.Capabilities {
+		if class, ok := strings.CutPrefix(c, "ui:"); ok && class != "" {
+			gs = append(gs, prov.Grant{Path: "ui:" + class, Mode: prov.ModeUse, UI: class, Source: prov.SourceAmbient})
+		}
+	}
+	return gs
 }
 
 // planDevices turns the device capabilities a verb lists ("device:gpu") into

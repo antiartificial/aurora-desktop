@@ -135,7 +135,10 @@ func show(w io.Writer, m *manifest.Manifest) {
 	for _, d := range c.Devices {
 		fmt.Fprintf(w, "  device  %s\n", d)
 	}
-	if len(c.Paths)+len(c.Network)+len(c.Devices) == 0 {
+	for _, u := range c.UI {
+		fmt.Fprintf(w, "  ui      %s\n", u)
+	}
+	if len(c.Paths)+len(c.Network)+len(c.Devices)+len(c.UI) == 0 {
 		fmt.Fprintln(w, "  (none)")
 	}
 	fmt.Fprintf(w, "types\n  opens   %s\n  creates %s\n", strings.Join(m.Types.Opens, ", "), strings.Join(m.Types.Creates, ", "))

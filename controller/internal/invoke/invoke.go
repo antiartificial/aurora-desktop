@@ -218,6 +218,9 @@ func (iv *Invoker) Invoke(ctx context.Context, req Request) (*Result, *Error) {
 		defer cancel()
 	}
 
+	if e := iv.bindUIGrants(app, grants); e != nil {
+		return nil, e
+	}
 	cs := iv.mintCaps(grants)
 	defer cs.release(iv.logf)
 

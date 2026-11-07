@@ -97,6 +97,11 @@ func (v *validator) capabilities() {
 			v.add(fmt.Sprintf("capabilities.devices[%d]", i), "capabilities", 0, "devices", "%q must be a lowercase device class name", d)
 		}
 	}
+	for i, u := range c.UI {
+		if !uiClasses[u] {
+			v.add(fmt.Sprintf("capabilities.ui[%d]", i), "capabilities", 0, "ui", `%q is not a ui class (want "read")`, u)
+		}
+	}
 }
 
 func (v *validator) types() {
@@ -116,7 +121,7 @@ func (v *validator) types() {
 func (m *Manifest) capDeclared(ref string) (known bool, msg string) {
 	kind, val, ok := strings.Cut(ref, ":")
 	if !ok || val == "" {
-		return false, `must look like "path:<path>", "net:<host>" or "device:<name>"`
+		return false, `must look like "path:<path>", "net:<host>", "device:<name>" or "ui:<class>"`
 	}
 	switch kind {
 	case "path":
@@ -137,11 +142,20 @@ func (m *Manifest) capDeclared(ref string) (known bool, msg string) {
 				return true, ""
 			}
 		}
+	case "ui":
+		for _, u := range m.Capabilities.UI {
+			if u == val {
+				return true, ""
+			}
+		}
 	default:
-		return false, fmt.Sprintf("unknown capability kind %q (want path, net or device)", kind)
+		return false, fmt.Sprintf("unknown capability kind %q (want path, net, device or ui)", kind)
 	}
 	return false, "is not among the app's requested capabilities"
 }
+
+// uiClasses are the accessibility classes (decision 0017). "read" is the only one composed.
+var uiClasses = map[string]bool{"read": true}
 
 const maxGroupLen = 40
 

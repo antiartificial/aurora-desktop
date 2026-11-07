@@ -77,6 +77,7 @@ func Diff(old, new *Manifest) DiffResult {
 	diffPaths(&r, old.Capabilities.Paths, new.Capabilities.Paths)
 	diffHosts(&r, old.Capabilities.Network, new.Capabilities.Network)
 	diffDevices(&r, old.Capabilities.Devices, new.Capabilities.Devices)
+	diffUI(&r, old.Capabilities.UI, new.Capabilities.UI)
 	diffVerbs(&r, old.Verbs, new.Verbs)
 	return r
 }
@@ -158,6 +159,20 @@ func diffDevices(r *DiffResult, old, new []string) {
 	for _, o := range old {
 		if !contains(new, o) {
 			r.add(false, "device %s removed", o)
+		}
+	}
+}
+
+// diffUI: reading a window's text is never a quiet change (decision 0017).
+func diffUI(r *DiffResult, old, new []string) {
+	for _, n := range new {
+		if !contains(old, n) {
+			r.add(true, "ui:%s newly requested", n)
+		}
+	}
+	for _, o := range old {
+		if !contains(new, o) {
+			r.add(false, "ui:%s removed", o)
 		}
 	}
 }

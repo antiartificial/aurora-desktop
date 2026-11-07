@@ -1,0 +1,17 @@
+#!/bin/sh
+# Reports what the domain can see. Protocol as the demo fixture: run --verb NAME,
+# request on stdin, JSON on stdout. It reads facts; it asserts nothing.
+req=$(cat)
+in=$(printf "%s" "$req" | sed -n 's/.*"input":"\([^"]*\)".*/\1/p')
+out=$(printf "%s" "$req" | sed -n 's/.*"output":"\([^"]*\)".*/\1/p')
+cp "$in" "$out" || exit 1
+node=$(ls /dev/dri/renderD* 2>/dev/null | head -1)
+card=$(ls /dev/dri/card* 2>/dev/null | head -1)
+dri=$(ls /dev/dri 2>/dev/null | tr '\n' ' ')
+sock=false; [ -S /run/aurora-display/wayland-0 ] && sock=true
+keys=$(find / -xdev \( -name approval.key -o -name powerbox.key \) 2>/dev/null | tr '\n' ' ')
+opened=none
+if [ -n "$node" ]; then
+  if ( exec 3<>"$node" ) 2>/dev/null; then opened=yes; else opened=denied; fi
+fi
+printf '{"ok":true,"dri":"%s","render_node":"%s","card_node":"%s","open":"%s","wayland_socket":%s,"keys":"%s"}\n' "$dri" "$node" "$card" "$opened" "$sock" "$keys"

@@ -64,6 +64,8 @@ type Capabilities struct {
 	Paths   []PathCap `toml:"paths,omitempty"`
 	Network []string  `toml:"network,omitempty"`
 	Devices []string  `toml:"devices,omitempty"`
+	// UI lists the accessibility classes requested (decision 0017): "read" is the right to read the tree of the app's own windows.
+	UI []string `toml:"ui,omitempty"`
 }
 
 // PathCap grants a path (and everything under it) with read or write access.
@@ -78,7 +80,7 @@ type Types struct {
 }
 
 // Verb is a named, versioned operation. Capabilities lists the app-level
-// capabilities it uses as "path:<p>", "net:<host>" or "device:<d>".
+// capabilities it uses as "path:<p>", "net:<host>", "device:<d>" or "ui:<class>".
 // Accepts is the MIME patterns of objects the verb can take.
 type Verb struct {
 	Name         string   `toml:"name"`
