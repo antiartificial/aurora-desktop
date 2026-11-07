@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# sound: diagnose this machine's audio, and if it works, prove Aurora's audio path end to end.
+#
+#     harness/sound
+#
+# Why it exists. Aurora's `system.audio@v1` has been written and unit-tested against a stub, and
+# has never spoken to a real audio server, because this machine has none running: PipeWire cannot
+# start. That is a HOST fault, not an Aurora one, and it breaks the desktop's own sound too.
+#
+# This says precisely which it is, and once the host is fixed it exercises the real path over the
+# real bus in one command, so the install is immediately verifiable.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+say() { printf '  %-28s %s\n' "$1" "$2"; }
+
+echo "aurora sound check"
+echo
+
+# ---- the host ------------------------------------------------------------------------------
+server=0
+if command -v pactl >/dev/null && pactl info >/dev/null 2>&1; then
+    server=1
+    say "audio server" "reachable ($(pactl info 2>/dev/null | sed -n 's/^Server Name: //p'))"
+else
+    say "audio server" "NOT reachable (pactl: connection refused)"
+fi
+
+# The specific failure this machine had, named so it is recognised rather than rediscovered.
+# -ENFILE is not involved here; this one is an ABI mismatch.
+spa=$(find /usr/lib64/spa-0.2 /usr/lib/spa-0.2 -name 'libspa-support.so' 2>/dev/null | head -1)
+if [ -n "$spa" ]; then
+    arch=$(file -b "$spa" 2>/dev/null | cut -d, -f1)
+    say "spa support plugin" "$spa"
+    say "  its architecture" "$arch"
+    case "$arch" in
+        *64-bit*) ;;
+        *) echo
+           echo "  ->  That is a 32-bit plugin, and a 64-bit PipeWire cannot load it. It exits 254 with"
+           echo "      \"can't make support.system handle\" and the whole machine has no sound."
+           echo "      The 64-bit build is a separate package:"
+           echo
+           echo "          sudo zypper install pipewire-spa-plugins-0_2"
+           echo
+           ;;
+    esac
+else
+    say "spa support plugin" "none found"
+fi
+
+if command -v systemctl >/dev/null; then
+    # is-active PRINTS the state and EXITS non-zero for a bad one, so `|| echo unknown` appends
+    # a second line to a perfectly good answer.
+    st=$(systemctl --user is-active pipewire.service 2>/dev/null)
+    say "pipewire.service" "${st:-unknown}"
+fi
+
+if [ "$server" = 0 ]; then
+    echo
+    echo "No audio server, so Aurora's audio path cannot be exercised. Nothing below ran."
+    echo "Fix the host first; this script then proves the rest in one go."
+    exit 1
+fi
+
+# ---- Aurora's path, over the real bus ---------------------------------------------------------
+echo
+echo "exercising system.audio@v1 over the bus:"
+BUSD="$ROOT/kits/build/busd"; CTL="$ROOT/build/bin/controllerd"; BUS="$ROOT/kits/build/bus"
+for b in "$BUSD" "$CTL" "$BUS"; do
+    [ -x "$b" ] || { echo "  missing $b; run: make build"; exit 2; }
+done
+W=$(mktemp -d /tmp/snd.XXXXXX); PIDS=()
+cleanup() { for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$W"; }
+trap cleanup EXIT
+
+"$BUSD" --data-dir "$W/log" 2>"$W/busd.err" & PIDS+=($!)
+for _ in $(seq 100); do grep -q "listening on" "$W/busd.err" 2>/dev/null && break; sleep 0.05; done
+SOCK=$(grep -oE '/[^ ]*bus\.sock' "$W/busd.err" | head -1)
+[ -n "$SOCK" ] || { echo "  busd did not start"; exit 2; }
+AURORA_BUS_SOCK="$SOCK" "$CTL" --socket "$SOCK" --apps "$ROOT/apps" >"$W/ctl.out" 2>"$W/ctl.err" & PIDS+=($!)
+sleep 1.2
+
+read_out=$(AURORA_BUS_SOCK="$SOCK" "$BUS" send registry 'system.audio@v1' '{}' 2>&1)
+echo "  read  -> $read_out"
+case "$read_out" in
+    *volume*) say "  system.audio@v1" "answers with the machine's volume" ;;
+    *)        say "  system.audio@v1" "UNEXPECTED (above)" ;;
+esac
+
+# Setting is refused inside a domain and allowed from the session socket (decision 0019's rule).
+set_out=$(AURORA_BUS_SOCK="$SOCK" "$BUS" send registry 'system.audio.set@v1' '{"volume":42}' 2>&1)
+echo "  set   -> $set_out"
+echo
+echo "The volume was CHANGED on this machine if the set succeeded. Put it back where you want it."
