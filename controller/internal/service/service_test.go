@@ -362,3 +362,38 @@ func TestAudioIsReadableByAnyoneAndSettableOnlyFromTheSession(t *testing.T) {
 		t.Fatalf("an absurd volume reached the tool as %q", fakeVol)
 	}
 }
+
+func TestAppsReplyCarriesCategoryAndOrder(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "filed")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "manifest.toml"), []byte(`[app]
+id = "org.example.filed"
+name = "Filed"
+version = "1.0.0"
+image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "media"
+`), 0o644)
+	e := start(t, &domain.Fake{}, root)
+	raw, err := e.call(t, "registry.apps@v1", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Apps       []struct{ ID, Category string }
+		Categories []struct{ ID, Label string }
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Apps) != 1 || r.Apps[0].Category != "media" {
+		t.Fatalf("per-app category missing: %s", raw)
+	}
+	var got []string
+	for _, c := range r.Categories {
+		got = append(got, c.ID)
+	}
+	if want := "files,media,development,utilities,haiku"; strings.Join(got, ",") != want {
+		t.Fatalf("category order %v, want %s", got, want)
+	}
+}

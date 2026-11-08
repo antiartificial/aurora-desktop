@@ -28,6 +28,8 @@ type App struct {
 	Windowed    bool     `json:"windowed,omitempty"`
 	Exec        string   `json:"exec,omitempty"`
 	ExecProblem string   `json:"exec_problem,omitempty"`
+	// Category is presentation only; empty means no section.
+	Category string `json:"category,omitempty"`
 }
 
 // Verb is one entry of registry.verbs@v1.
