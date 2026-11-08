@@ -30,6 +30,17 @@ target_link_libraries(test_ui_toolkit PRIVATE aurora_ui_tk)
 add_test(NAME ui_toolkit COMMAND test_ui_toolkit)
 set_tests_properties(ui_toolkit PROPERTIES TIMEOUT 60)
 
+# ADR 0009 / docs 00 §8.0: the tree-swap use-after-free, proven gone under ASan. State<T>::set is a
+# header template, so it instantiates in this TU and instruments the freed read even though the node
+# is allocated in the uninstrumented library (ASan intercepts malloc/free globally).
+add_executable(test_root_swap tests/test_root_swap.cpp)
+target_link_libraries(test_root_swap PRIVATE aurora_ui_tk)
+target_compile_options(test_root_swap PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_root_swap PRIVATE -fsanitize=address)
+add_test(NAME root_swap COMMAND test_root_swap)
+set_tests_properties(root_swap PROPERTIES TIMEOUT 60
+	ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")   # the claim is "no use-after-free", not "no leaks"
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

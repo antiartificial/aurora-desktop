@@ -191,23 +191,35 @@ float default_base_size();
 class Window;
 class Node;      // State holds Node* to invalidate what reads it; the class comes below
 
+// Symmetric attachment. A state records the nodes that read it (so set() invalidates them), and a
+// node records the states it bound to (so its destructor can detach itself). Without the second
+// direction, SetRoot frees the old tree while cells still hold raw Node* and the next set() walks
+// freed memory -- the heap-use-after-free ADR 0009 records.
+class StateBase {
+public:
+    virtual ~StateBase() = default;
+    virtual void detach(Node* n) = 0;
+};
+
 // Set() invalidates exactly the nodes that read this cell: no diffing and no tree walk, because
 // the binding was made when the tree was built. A node constructed from a State attaches itself,
 // which is what makes "bound at build time" true rather than aspirational -- without it set()
 // can only invalidate the whole window, which it did at first and which measured every frame as
 // a full repaint.
 //
-// Lifetime: a State must outlive the nodes built from it. In practice both are owned by the
-// window's setup scope, and a node is never destroyed before the tree it is in.
+// Lifetime: a State must outlive the nodes built from it, OR the node must detach before the
+// State dies (StateBase::detach from ~Node). Both directions are recorded here.
 template <class T>
-class State {
+class State : public StateBase {
 public:
     explicit State(T v) : v_(std::move(v)) {}
     const T& get() const { return v_; }
     void set(T n);
     void bind(Window* w) { win_ = w; }
     Window* window() const { return win_; }
-    void attach(Node* n) { nodes_.push_back(n); }
+    ~State() override;               // removes this from each bound node's cell list
+    void attach(Node* n);            // defined below, after Node is complete
+    void detach(Node* n) override;   // erase n from nodes_
     size_t bound_count() const { return nodes_.size(); }
 
 private:
@@ -241,7 +253,20 @@ using Desc = std::shared_ptr<Node>;
 
 class Node {
 public:
-    virtual ~Node() {}
+    virtual ~Node();   // detaches from every cell it bound to, so a swapped-out tree cannot dangle
+
+    // A cell records this node (State::attach); the node records the cell here so the destructor
+    // can undo it. addCell is the reverse pointer that makes attachment symmetric (ADR 0009).
+    void addCell(StateBase* c) { cells_.push_back(c); }
+    // The reverse of addCell: a State being destroyed forgets itself in every node it bound to, so
+    // a later ~Node has no dangling cell to call. Symmetric in BOTH directions, so neither order
+    // ("node outlives state" or "state outlives node") can dereference a dead object.
+    void removeCell(StateBase* c) {
+        for (auto it = cells_.begin(); it != cells_.end();) {
+            if (*it == c) it = cells_.erase(it);
+            else ++it;
+        }
+    }
 
     // Flutter's two halves. Measure must not depend on where it will be placed, and must not
     // visit a child more than once -- that is what keeps a pass linear.
@@ -350,6 +375,7 @@ public:
     Insets pad;
     float weight = 0;              // > 0 takes a share of the leftover main-axis space
     std::string name;              // what the accessibility tree and tests find it by
+    std::vector<StateBase*> cells_; // states this node bound to; detached in ~Node
 
 protected:
     // The box a child gets after padding, and the constraints to offer it.
@@ -1266,6 +1292,37 @@ void State<T>::set(T n) {
         return;
     }
     for (Node* n : nodes_) win_->Invalidate(n->frame);
+}
+
+// Symmetric attach/detach (ADR 0009). attach() records the node in the state so set() invalidates
+// it, and the state in the node so the node can detach itself when destroyed. detach() erases the
+// node from this state's list. ~Node calls detach on every cell it bound to, which is what makes
+// SetRoot safe: dropping the old tree frees the nodes, and their destructors remove them from the
+// cells before a later set() can touch them.
+template <class T>
+void State<T>::attach(Node* n) {
+    nodes_.push_back(n);
+    n->addCell(this);
+}
+
+template <class T>
+void State<T>::detach(Node* n) {
+    for (auto it = nodes_.begin(); it != nodes_.end();) {
+        if (*it == n) it = nodes_.erase(it);
+        else ++it;
+    }
+}
+
+inline Node::~Node() {
+    for (StateBase* c : cells_) c->detach(this);
+}
+
+// The other direction: a State is destroyed before the nodes that read it (main's teardown can
+// destroy a tree after its cells, e.g. a Desc held longer than the state it bound). Forget itself
+// in each node so a later ~Node has nothing dangling to call.
+template <class T>
+State<T>::~State() {
+    for (Node* n : nodes_) n->removeCell(this);
 }
 
 }  // namespace ui
