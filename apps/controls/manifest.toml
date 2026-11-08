@@ -17,5 +17,6 @@ id = "org.aurora.haiku.controls"
 name = "Haiku Controls"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "haiku"
 windowed = true
 exec = "../../kits/build/interface/iface_controls"
