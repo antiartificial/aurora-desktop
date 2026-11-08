@@ -626,7 +626,7 @@ mod tests {
 
     fn shell(status: Status, verbs: Vec<String>, details: Option<Vec<VerbEntry>>) -> Shell {
         let mut s = Shell::new();
-        s.registry.apps = vec![AppEntry { id: "a.b".into(), name: "Ab".into(), verbs, launchable: true, problem: String::new(), windowed: false, exec: String::new() }];
+        s.registry.apps = vec![AppEntry { id: "a.b".into(), name: "Ab".into(), verbs, launchable: true, problem: String::new(), windowed: false, exec: String::new(), category: None }];
         s.registry.verbs = details;
         s.registry.status = status;
         s

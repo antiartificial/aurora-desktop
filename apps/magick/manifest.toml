@@ -12,6 +12,7 @@ id = "org.aurora.magick"
 name = "ImageMagick"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "media"
 
 [[runtime]]
 name = "imagemagick"

@@ -13,6 +13,7 @@ id = "org.aurora.haiku.ledger"
 name = "Haiku Ledger"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "haiku"
 
 [[verb]]
 name = "add@v1"

@@ -7,6 +7,8 @@ id = "org.aurora.lumen"
 name = "Lumen"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# Native image app: resize and export are its verbs, so it sits with media.
+category = "media"
 
 [[runtime]]
 name = "go"

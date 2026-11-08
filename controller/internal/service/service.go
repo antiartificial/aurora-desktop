@@ -180,6 +180,9 @@ type appInfo struct {
 	LaunchProblem string `json:"launch_problem,omitempty"`
 	Exec          string `json:"exec,omitempty"`
 	ExecProblem   string `json:"exec_problem,omitempty"`
+	// Category is the manifest's, unchanged, and presentation only. Empty
+	// means the app files itself under no section.
+	Category string `json:"category,omitempty"`
 }
 
 func (s *Service) listApps() any {
@@ -188,6 +191,7 @@ func (s *Service) listApps() any {
 		m := a.Manifest
 		info := appInfo{ID: m.App.ID, Name: m.App.Name, Version: m.App.Version, Verbs: []string{}}
 		info.Windowed = m.App.Windowed
+		info.Category = m.App.Category
 		info.Exec, info.ExecProblem = a.ExecStatus()
 		info.Launchable, info.LaunchProblem = a.Launchable()
 		// A launch that just failed is reported on the same channel, for a while.
@@ -201,7 +205,9 @@ func (s *Service) listApps() any {
 		}
 		list = append(list, info)
 	}
-	return map[string]any{"apps": list}
+	// categories is the vocabulary in display order; an app's section sorts by
+	// its index here (decision 0025).
+	return map[string]any{"apps": list, "categories": manifest.Categories}
 }
 
 type verbInfo struct {

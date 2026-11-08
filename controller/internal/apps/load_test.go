@@ -85,3 +85,22 @@ capabilities = ["path:~/Documents"]
 		t.Fatalf("reason: %s", r)
 	}
 }
+
+func TestCategoryLoadsOrSkipsWithKnownValues(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "filed", strings.Replace(good, "%s", "filed", 1)+"category = \"media\"\n")
+	put(t, root, "stray", strings.Replace(good, "%s", "stray", 1)+"category = \"games\"\n")
+	reg, skipped := Load(root)
+	a, ok := reg.App("org.example.filed")
+	if !ok || a.Manifest.App.Category != "media" {
+		t.Fatalf("category did not round-trip through Load: %+v", a)
+	}
+	if len(reg.Apps()) != 1 || len(skipped) != 1 {
+		t.Fatalf("want 1 loaded and 1 skipped, got %d and %v", len(reg.Apps()), skipped)
+	}
+	for _, want := range []string{"games", "files, media, development, utilities, haiku"} {
+		if !strings.Contains(skipped[0].Reason, want) {
+			t.Errorf("skip reason %q does not mention %q", skipped[0].Reason, want)
+		}
+	}
+}
