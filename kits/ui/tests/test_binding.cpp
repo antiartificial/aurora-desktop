@@ -27,7 +27,7 @@ int main() {
 
     // Constant: implicit from a non-string literal, read-only, writes its own copy.
     {
-        Binding<int> b = 42;
+        Binding<int> b(42);
         CHECK(b.get() == 42, "a constant binding reads its literal, got %d", b.get());
         CHECK(!b.writable(), "a constant binding is not writable");
         b.set(5);

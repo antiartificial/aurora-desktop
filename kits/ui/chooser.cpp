@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
                                      styled(Label(action_line(args.verb)), TextStyle{0.85f, false, true})}, 0.25f),
                              Insets(1, 0.75f)));
     column.push_back(padding(HStack({Button("Up", [&] { go(parent_path(path.get())); }),
-                                     padding(Checkbox("Hidden files", &show_hidden, [&](bool on) {
+                                     padding(Checkbox("Hidden files", show_hidden, [&](bool on) {
                                                  rows.SetShowHidden(on);
                                                  selected.set(-1);
                                                  refresh();
@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
                                             TextStyle{0.8f}),
                                      Spacer(),
                                      named(Button("Cancel", cancel), "cancel"),
-                                     named(styled(Button("Grant", try_grant, &can_grant), grant_style), "grant")}),
+                                     named(styled(Button("Grant", try_grant, can_grant), grant_style), "grant")}),
                              Insets(1, 0.5f)));
     w.SetRoot(VStack(column, 0));
 

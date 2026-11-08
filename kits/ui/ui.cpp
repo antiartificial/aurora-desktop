@@ -205,9 +205,9 @@ private:
 
 class ButtonNode : public Node {
 public:
-    ButtonNode(std::string l, std::function<void()> f, State<bool>* enabled = nullptr)
-        : l_(std::move(l)), f_(std::move(f)), enabled_(enabled) {
-        if (enabled_) enabled_->attach(this);
+    ButtonNode(std::string l, std::function<void()> f, Binding<bool> enabled = Binding<bool>(true))
+        : l_(std::move(l)), f_(std::move(f)), enabled_(std::move(enabled)) {
+        enabled_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints) override {
@@ -249,11 +249,11 @@ public:
     }
 
 private:
-    bool enabled() const { return !enabled_ || enabled_->get(); }
+    bool enabled() const { return !enabled_.live() || enabled_.get(); }
 
     std::string l_;
     std::function<void()> f_;
-    State<bool>* enabled_ = nullptr;
+    Binding<bool> enabled_;
     TextStyle st_;
     bool over_ = false, down_ = false, focused_ = false;
 
@@ -343,9 +343,9 @@ void draw_chevron(au_surface* s, float cx, float cy, float r, au_color c) {
 
 class GlyphButtonNode : public Node {
 public:
-    GlyphButtonNode(Glyph g, std::function<void()> f, State<bool>* enabled)
-        : g_(g), f_(std::move(f)), enabled_(enabled) {
-        if (enabled_) enabled_->attach(this);
+    GlyphButtonNode(Glyph g, std::function<void()> f, Binding<bool> enabled)
+        : g_(g), f_(std::move(f)), enabled_(std::move(enabled)) {
+        enabled_.attach(this);
     }
     // The menu form: the items are asked for at PRESS time, so a tick in the menu shows the
     // state now and not the state the tree was built in.
@@ -408,12 +408,12 @@ private:
         std::function<std::vector<MenuItem>()> items = items_;
         w->Defer([w, r, items] { w->ShowMenu(r.x, r.y + r.h + 2, items()); });
     }
-    bool enabled() const { return !enabled_ || enabled_->get(); }
+    bool enabled() const { return !enabled_.live() || enabled_.get(); }
 
     Glyph g_;
     std::function<void()> f_;
     std::function<std::vector<MenuItem>()> items_;
-    State<bool>* enabled_ = nullptr;
+    Binding<bool> enabled_;
     Window* win_ = nullptr;
     float side_ = 28;
     bool chevron_ = false, over_ = false, down_ = false, focused_ = false;
@@ -435,9 +435,9 @@ public:
 // the keyboard and the state binding to express a choice of shape.
 class ToggleNode : public Node {
 public:
-    ToggleNode(std::string label, State<bool>* on, bool as_switch, std::function<void(bool)> f)
-        : l_(std::move(label)), on_(on), sw_(as_switch), f_(std::move(f)) {
-        if (on_) on_->attach(this);
+    ToggleNode(std::string label, Binding<bool> on, bool as_switch, std::function<void(bool)> f)
+        : l_(std::move(label)), on_(std::move(on)), sw_(as_switch), f_(std::move(f)) {
+        on_.attach(this);
     }
 
     // The same, but the node OWNS the cell. RadioGroup needs one per option and has nowhere to
@@ -445,8 +445,8 @@ public:
     ToggleNode(std::string label, std::unique_ptr<State<bool>> own, bool as_switch,
                std::function<void(bool)> f)
         : l_(std::move(label)), owned_(std::move(own)), sw_(as_switch), f_(std::move(f)) {
-        on_ = owned_.get();
-        if (on_) on_->attach(this);
+        if (owned_) on_ = Binding<bool>(*owned_);
+        on_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints) override {
@@ -458,7 +458,7 @@ public:
     void SetStyle(const TextStyle& st) override { st_ = st; }
 
     void Draw(au_surface* s, const Env& e) override {
-        const bool on = on_ && on_->get();
+        const bool on = on_.live() && on_.get();
         const float cy = frame.y + frame.h * 0.5f;
         if (sw_) {
             // A track with a knob that slides. The knob is drawn at the end it is AT, with no
@@ -507,14 +507,14 @@ public:
 
 private:
     void flip() {
-        if (!on_) return;
-        on_->set(!on_->get());
-        if (f_) f_(on_->get());
+        if (!on_.live()) return;
+        on_.set(!on_.get());
+        if (f_) f_(on_.get());
     }
 
     std::string l_;
     std::unique_ptr<State<bool>> owned_;   // set only by the owning constructor
-    State<bool>* on_ = nullptr;
+    Binding<bool> on_;
     bool sw_;
     std::function<void(bool)> f_;
     TextStyle st_;
@@ -4212,12 +4212,12 @@ Desc Bold(std::string t) { return std::make_shared<TextNode>(std::move(t), true)
 Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));
 }
-Desc Button(std::string l, std::function<void()> f, State<bool>* enabled) {
+Desc Button(std::string l, std::function<void()> f, Binding<bool> enabled) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f), enabled);
 }
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
 
-Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled) {
+Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled) {
     return std::make_shared<GlyphButtonNode>(g, std::move(on_click), enabled);
 }
 
@@ -4225,11 +4225,11 @@ Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items) {
     return std::make_shared<GlyphButtonNode>(g, std::move(items));
 }
 
-Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> f) {
+Desc Checkbox(std::string label, Binding<bool> on, std::function<void(bool)> f) {
     return std::make_shared<ToggleNode>(std::move(label), on, false, std::move(f));
 }
 
-Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> f) {
+Desc Switch(std::string label, Binding<bool> on, std::function<void(bool)> f) {
     return std::make_shared<ToggleNode>(std::move(label), on, true, std::move(f));
 }
 
@@ -4239,17 +4239,17 @@ Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)>
 
 Desc Progress(Binding<float> fraction) { return std::make_shared<ProgressNode>(fraction); }
 
-Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+Desc RadioGroup(std::vector<std::string> labels, Binding<int> chosen,
                 std::function<void(int)> f, bool horizontal) {
     // A radio group is a STACK of toggles that agree to be exclusive, not a new widget. The
     // exclusivity is the only thing it adds, and it is one line per option.
     std::vector<Desc> items;
     for (size_t i = 0; i < labels.size(); i++) {
-        auto cell = std::make_unique<State<bool>>(chosen && chosen->get() == (int)i);
+        auto cell = std::make_unique<State<bool>>(chosen.live() && chosen.get() == (int)i);
         items.push_back(std::make_shared<ToggleNode>(labels[i], std::move(cell), false,
             [chosen, f, i](bool on) {
-                if (!on || !chosen) return;
-                chosen->set((int)i);
+                if (!on || !chosen.live()) return;
+                chosen.set((int)i);
                 if (f) f((int)i);
             }));
     }

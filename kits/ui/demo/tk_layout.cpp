@@ -724,7 +724,7 @@ int main() {
     {
         State<bool> on(false);
         int changes = 0;
-        Desc cb = Checkbox("Show hidden files", &on, [&](bool) { changes++; });
+        Desc cb = Checkbox("Show hidden files", on, [&](bool) { changes++; });
         lay(cb, e, Rect{0, 0, 300, 40});
 
         // A click toggles. Press-then-release, because a press alone must not commit: dragging
@@ -786,7 +786,7 @@ int main() {
         // A radio group is exclusive: choosing one is choosing it, not adding it.
         State<int> pick(0);
         int last = -1;
-        Desc rg = RadioGroup({"Name", "Size", "Date"}, &pick, [&](int i) { last = i; });
+        Desc rg = RadioGroup({"Name", "Size", "Date"}, pick, [&](int i) { last = i; });
         lay(rg, e, Rect{0, 0, 300, 200});
         std::vector<Node*> kids;
         rg->Children(&kids);
@@ -833,7 +833,7 @@ int main() {
     {
         int fired = 0;
         State<bool> on(false);
-        Desc b = Button("Grant", [&] { fired++; }, &on);
+        Desc b = Button("Grant", [&] { fired++; }, on);
 
         b->OnPress();
         b->OnRelease(true);

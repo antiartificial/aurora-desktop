@@ -463,16 +463,16 @@ static void sheet_controls(const std::string& dir, const std::string& suffix) {
 
     auto nop = [] {};
     Desc buttons = HStack({Button("Open", nop), Button("Rename", nop), Button("Move\xe2\x80\xa6", nop),
-                           Button("Delete", nop, &enabled_off), Spacer()}, 0.5f);
+                           Button("Delete", nop, enabled_off), Spacer()}, 0.5f);
     Desc glyphs = HStack({IconButton(Glyph::Back, nop), IconButton(Glyph::Forward, nop),
                           IconButton(Glyph::Up, nop), IconButton(Glyph::Sidebar, nop),
                           IconButton(Glyph::Preview, nop), IconButton(Glyph::View, nop),
                           IconButton(Glyph::Filter, nop), IconButton(Glyph::Refresh, nop),
                           Spacer()}, 0.5f);
-    Desc toggles = HStack({Checkbox("Show hidden files", &on_yes),
-                           Checkbox("Group folders first", &on_no), Spacer()}, 1.0f);
-    Desc switches = HStack({Switch("Preview pane", &sw), Spacer()}, 1.0f);
-    Desc radios = RadioGroup({"Name", "Size", "Modified"}, &radio, nullptr, true);
+    Desc toggles = HStack({Checkbox("Show hidden files", on_yes),
+                           Checkbox("Group folders first", on_no), Spacer()}, 1.0f);
+    Desc switches = HStack({Switch("Preview pane", sw), Spacer()}, 1.0f);
+    Desc radios = RadioGroup({"Name", "Size", "Modified"}, radio, nullptr, true);
     Desc slid = sized(Slider(slider, 0, 1), 220);
     Desc bar = sized(Progress(prog), 220);
     FieldOpts fo;

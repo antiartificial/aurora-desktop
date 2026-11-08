@@ -243,8 +243,9 @@ private:
 template <class T>
 class Binding {
 public:
+    Binding() : lit_() {}                                      // a default constant (false/empty)
     Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
-    Binding(T v) : lit_(std::move(v)) {}                       // a read-only constant
+    explicit Binding(T v) : lit_(std::move(v)) {}             // a read-only constant (explicit: no pointer/literal slips in)
 
     const T& get() const { return (s_ && *alive_) ? s_->get() : lit_; }
     void set(T v) const {
@@ -446,7 +447,7 @@ Desc Bold(std::string text);
 Desc Button(std::string label, std::function<void()> on_click);
 // A button that can be switched off by a State. Off, it draws dim, ignores a click and the
 // activation keys, and stays in the tree: a disabled action is shown with its absence, not hidden.
-Desc Button(std::string label, std::function<void()> on_click, State<bool>* enabled);
+Desc Button(std::string label, std::function<void()> on_click, Binding<bool> enabled);
 Desc Spacer();                                       // takes all the leftover space
 
 // ---- glyph buttons ------------------------------------------------------------------------------
@@ -461,7 +462,7 @@ enum class Glyph : uint8_t {
 // 28x28 by default (the toolbar's button), hover and press and focus like a Button, and the
 // same `enabled` cell -- a disabled button STAYS VISIBLE with its glyph in the tertiary ink,
 // because hiding what is unavailable teaches the wrong model.
-Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled = nullptr);
+Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled = Binding<bool>(true));
 
 // MenuButton is declared with the menus, below: it needs MenuItem.
 
@@ -472,8 +473,8 @@ Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled = 
 // thing is running". Both toggle on Space -- not Enter, which every toolkit reserves for
 // "accept the dialog", and a checkbox that swallowed it would make a form unsubmittable from
 // the keyboard.
-Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
-Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
+Desc Checkbox(std::string label, Binding<bool> on, std::function<void(bool)> changed = nullptr);
+Desc Switch(std::string label, Binding<bool> on, std::function<void(bool)> changed = nullptr);
 
 // A slider over [lo, hi]. It takes the width it is given, because a slider's width IS its
 // resolution: a narrow one cannot express the values it claims to. Arrows move a twentieth of
@@ -487,7 +488,7 @@ Desc Progress(Binding<float> fraction);
 
 // Exclusive choice. A stack of checkboxes that agree to be exclusive rather than a new widget --
 // exclusivity is the only thing it adds.
-Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+Desc RadioGroup(std::vector<std::string> labels, Binding<int> chosen,
                 std::function<void(int)> changed = nullptr, bool horizontal = false);
 Desc VStack(std::vector<Desc> children, float gap_units = 0.5f);
 Desc HStack(std::vector<Desc> children, float gap_units = 0.5f);

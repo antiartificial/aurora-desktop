@@ -592,7 +592,7 @@ no_font_done:
         // still THERE: hiding what is unavailable teaches the wrong model.
         State<bool> on(true);
         int fired = 0;
-        Desc b = IconButton(Glyph::Back, [&] { fired++; }, &on);
+        Desc b = IconButton(Glyph::Back, [&] { fired++; }, on);
         lay(b, e, Rect{0, 0, 28, 28});
         auto shot = [&]() {
             au_surface* s = au_surface_new(28, 28, 1.0);

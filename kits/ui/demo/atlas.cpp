@@ -1019,10 +1019,10 @@ int main() {
                                                  }
                                                  w.Invalidate();
                                              }),
-                                  IconButton(Glyph::Back, [&] { go_back(); }, &can_back),
-                                  IconButton(Glyph::Forward, [&] { go_forward(); }, &can_fwd),
+                                  IconButton(Glyph::Back, [&] { go_back(); }, can_back),
+                                  IconButton(Glyph::Forward, [&] { go_forward(); }, can_fwd),
                                   IconButton(Glyph::Up, [&] { go(parent_of(path.get()), true); },
-                                             &can_up),
+                                             can_up),
                               },
                               0.5f),
                        // The location, taking everything the two clusters do not.
