@@ -13,6 +13,50 @@ section 7 (the motion budget, which section 9 below amends), and `docs/bare-meta
 
 ---
 
+## 0a. Since this was written: what the measurements settled
+
+Added 2026-11-07, after the document's first week of items were attempted. Kept at the front
+because two of its predictions were right for the wrong reason and one recommendation was
+wrong, and a reader should know that before using the costings below.
+
+**The GPU fence waits were the frame, and batching was not needed.** Section 3.1 proposed
+collapsing the 20-pass blur chain into one submission, estimating -1.3 ms. What the chain
+actually cost was `Renderer::wait` after every pass and every composite step: 28 CPU-visible
+fence waits for a one-window scene, each an `eglCreateSync`, an `eglWaitSync` and two
+`eglMakeCurrent` calls, forcing the GPU to execute one frame as 28 serialised submissions.
+Consecutive passes read what the previous wrote on the same GL context, which GL already
+orders, so every wait was redundant. Removing them took a still frame from **24.0 ms to
+3.6 ms p50**, with no visual change and no caching. With the fences gone the whole chain
+submits in 0.8 ms and the blur's contribution to a frame is about 0.5 ms, so batching can now
+recover at most ~1 ms and has been dropped down the list rather than built.
+
+That also means the 3.5 ms figure this document opens with was an artefact: `--frame-stats`
+fenced six times a frame, so it described a frame that really cost 24 ms. `AURORA_STATS_FENCE=frame`
+now puts one fence after the last draw. **Anything measured without it is an upper bound on a
+mode production never runs.**
+
+**The buffer-age argument was a dead end.** `render_output` is the only consumer of the damage
+tracker and runs only when the effects pipeline is off, which it never is. The literal `0`
+accounted for none of the frame.
+
+**Section 2's damage model was the real prize, and the toolkit's version of it was broken
+outright.** The toolkit already clipped to the damaged union before drawing its tree, and it
+bought nothing: `Canvas::SetClip` intersected with the SURFACE rather than with the clip in
+force, and `au_clip_reset` opened back to the whole surface, so the first widget to set or
+reset its own clip discarded the damage clip for every widget after it. A frame with 9% of its
+area damaged did the work of a full one. Making clips nest, and then letting the list skip rows
+outside the clip, took Atlas from **10.9 ms p50 with 81 of 82 frames over the 8 ms budget to
+2.3 ms with 3 of 82 over**.
+
+**What did not pay.** A shaped-run cache in the text backend, on the theory that re-shaping
+dominated: p50 10.28 ms against a 9.84-10.96 ms baseline, inside the noise band, reverted. Row
+culling on its own, before the clip was trustworthy: no change, because the cull cannot fire
+against a clip that has already been widened back to the window.
+
+The method that found all of it is the one worth carrying forward: **measure the thing the
+story predicts, and disbelieve the story when the number disagrees.** If damage tracking were
+working, a 0.09-damage frame could not cost what a full frame costs.
+
 ## 0. Where the time goes today
 
 Facts first. Everything below is either a number taken from the code's own instrumentation or

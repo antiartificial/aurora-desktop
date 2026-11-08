@@ -87,7 +87,7 @@ demos/full-stack/run.sh
 
 | | |
 |---|---|
-| **Atlas** | The file manager. Details and icon views, multi-select, rename, trash, type-ahead, sort. Being rebuilt to a written [design spec](docs/atlas-design.md) in reviewable stages. |
+| **Atlas** | The file manager, being rebuilt to a written [design spec](docs/atlas-design.md) in reviewable stages. Stage 1 is in: an icon toolbar with the location in it, columns that drop rather than clip, right-aligned sizes, relative dates, zebra rows, and selection and focus that read as three different pictures. |
 | **aurora-chooser** | The powerbox picker: a graphical file chooser drawn outside the program asking for the file, sharing Atlas's browsing model. |
 | **Lumen** | The image app, and the worked example of a manifest app: verbs in, verbs out, provenance on everything. |
 | **The Haiku apps** | Haiku's real Interface Kit as Wayland clients: browser, controls, kitchen sink, layout, list, menu, text, ledger. |
@@ -158,10 +158,9 @@ A research prototype that demonstrates mechanisms and measures their limits.
 It is not a security boundary against a same-user attacker, and it does not
 boot. Both are on purpose, for now.
 
-Current test surface: **388 compositor tests** across 21 binaries, **28 kits
-suites** carrying about 1,240 Interface Kit checks, **47 Go packages** across
-13 modules, and **21 demos**. `make test` runs the first three; `make demos`
-the last.
+Current test surface: **389 compositor tests**, **29 kits suites** carrying
+about 11,400 checks, **50 Go packages** across 13 modules, and **21 demos**.
+`make test` runs the first three; `make demos` the last.
 
 ### Open questions
 

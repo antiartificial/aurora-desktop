@@ -40,7 +40,7 @@ judge it.
 | stage | what you get |
 |---|---|
 | ~~0. Foundations~~ | **Done.** Columns that drop rather than clip, an icon model, focus rings, motion as a table of values rather than constants at call sites. |
-| 1. The frame | A toolbar of icons with the location in it, columns that fit, right-aligned sizes, relative dates, zebra rows, selection and focus that read correctly. |
+| ~~1. The frame~~ | **Done.** A toolbar of icons with the location in it, columns that fit, right-aligned sizes with an em dash for folders, relative dates, zebra rows, and selection and focus drawn as three different pictures. |
 | 2. Every row has a face | Nine icon kinds, marks for the special folders, link and broken-link badges. The end of "every row is the same blue folder". |
 | 3. The sidebar is a map | Places flat with icons, Filesystem as a tree, and three width bands that collapse the right things in the right order. |
 | 4. The keyboard and the pointer | The full key map, type-ahead, rename in place with collisions answered in the row, natural sort, a path field that swaps in. |
@@ -56,6 +56,11 @@ Measured, not guessed. See [`docs/performance-architecture.md`](docs/performance
 
 - **Done:** a frame was waiting on the GPU 28 times and needed to wait once. 24 ms to 3.6 ms at
   1856x1160, no visual change. A drag cost 43 full window reallocations and now costs 2.
+- **Done:** clips did not nest in the toolkit, so damage tracking bought nothing and a frame
+  with 9% of its area damaged did the work of a full one. Atlas went from 10.9 ms a frame with
+  81 of 82 frames over the 8 ms budget, to 2.3 ms with 3 of 82 over. It also fixed a reported
+  sidebar "loop": the state was only ever toggling once, and the stale pixels of a discarded
+  damage clip were showing the panel open and closed at the same time.
 - **Next:** render on demand, so an idle desktop produces no frames at all. Blocked on a taste
   decision about the animated background, which dirties every glass surface every frame.
 - **After:** the Haiku app_server onto the pooled damage path, where one present measured
