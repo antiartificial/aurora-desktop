@@ -66,6 +66,11 @@ impl Aurora {
         kb.input::<(), _>(self, code, state, SERIAL_COUNTER.next_serial(), time, |st, mods, h| {
             if state == KeyState::Pressed {
                 st.last_keysym = Some(smithay::input::keyboard::xkb::keysym_get_name(h.modified_sym()));
+                // Super+Space: the keyboard way to the launcher, same as the System menu's row.
+                if mods.logo && h.modified_sym().raw() == k::KEY_space {
+                    st.shell.open_launcher();
+                    return FilterResult::Intercept(());
+                }
             }
             st.fx.switcher.filter(code, state, mods.alt, h.modified_sym().raw())
         });

@@ -140,6 +140,8 @@ pub struct Shell {
     /// `--freeze-time`: the background shader's `time` stays 0.
     pub freeze_time: bool,
     pub aurora_bin: String,
+    /// Where Atlas is, resolved at startup (or `--atlas`); None disables the menu row.
+    pub atlas_bin: Option<String>,
     pub deco: Decoration,
     /// Windows that are still arriving, keyed by surface id. An entry lives from the window's
     /// first real commit until its animation is done, and is read once per frame by the
@@ -208,6 +210,7 @@ impl Shell {
             legacy_scene: false,
             freeze_time: false,
             aurora_bin: "aurora".into(),
+            atlas_bin: None,
             deco: Decoration::default(),
             appearing: Default::default(),
             item_appear: Default::default(),
@@ -583,6 +586,37 @@ impl Shell {
                 });
             }
             Err(e) => tracing::error!("menu: cannot open terminal {term:?}: {e}"),
+        }
+    }
+
+    /// Open Atlas, the file explorer (the System menu row and its binary, resolved at startup).
+    pub fn open_atlas(&mut self) {
+        let Some(bin) = self.atlas_bin.clone() else {
+            tracing::error!("menu: no atlas to open");
+            return;
+        };
+        match std::process::Command::new(&bin).stdin(std::process::Stdio::null()).spawn() {
+            Ok(mut child) => {
+                tracing::info!("menu: opened atlas {bin:?}");
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => tracing::error!("menu: cannot open atlas {bin:?}: {e}"),
+        }
+    }
+
+    /// Start the launcher's picker (`aurora open --pick`): the powerbox chooses the input.
+    pub fn open_launcher(&mut self) {
+        let bin = self.aurora_bin.clone();
+        match std::process::Command::new(&bin).arg("open").arg("--pick").stdin(std::process::Stdio::null()).spawn() {
+            Ok(mut child) => {
+                tracing::info!("launcher: opened {bin:?} open --pick");
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => tracing::error!("launcher: cannot run {bin:?}: {e}"),
         }
     }
 
@@ -1017,6 +1051,33 @@ pub fn resolve_launcher(given: Option<&str>) -> String {
     "aurora".into()
 }
 
+/// Where Atlas is: `--atlas` wins, else PATH, else beside the compositor / the dev layout
+/// (`kits/build/ui/atlas`). None means the System menu row is disabled rather than failing on click.
+pub fn resolve_atlas(given: Option<&str>) -> Option<String> {
+    if let Some(a) = given {
+        if !std::path::Path::new(a).is_file() && !on_path(a) {
+            eprintln!("aurora-compositor: WARNING: --atlas {a}: not a file and not on PATH; the Atlas row will be disabled");
+            return None;
+        }
+        return Some(a.to_string());
+    }
+    if on_path("atlas") {
+        return Some("atlas".into());
+    }
+    let exe = std::env::current_exe().ok();
+    let candidates = exe.as_deref().and_then(|e| e.parent()).map(|d| {
+        vec![d.join("atlas"), d.join("../../../kits/build/ui/atlas"), d.join("../../../../kits/build/ui/atlas")]
+    }).unwrap_or_default();
+    for c in candidates {
+        if c.is_file() {
+            let c = c.canonicalize().unwrap_or(c);
+            tracing::info!("system: atlas is {}", c.display());
+            return Some(c.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 /// What choosing a verb runs: `aurora open --pick --app ID --verb NAME` (the
 /// powerbox picks the file; an interactive terminal flow), inside a terminal
 /// window when one is configured so the prompts have somewhere to appear.
@@ -1037,6 +1098,14 @@ pub fn launch_argv(aurora: &str, terminal: Option<&str>, app_id: &str, verb: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_atlas_accepts_a_real_file_and_refuses_a_missing_one() {
+        // A given path that is not a file resolves to None, so the System row is disabled, not a
+        // click that fails. A real file resolves to itself.
+        assert!(resolve_atlas(Some("/definitely/not/here/atlas")).is_none());
+        assert_eq!(resolve_atlas(Some("/bin/sh")).as_deref(), Some("/bin/sh"));
+    }
 
     #[test]
     fn launch_runs_the_launcher_directly_or_inside_a_terminal() {

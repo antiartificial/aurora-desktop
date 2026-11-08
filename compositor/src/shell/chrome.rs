@@ -110,10 +110,22 @@ impl Shell {
     pub fn open_menu(&mut self, at: (f64, f64), out: Out, windows: usize) {
         let term = resolve_terminal(&self.dock.terminal);
         let mut e = vec![];
+        // System: what this desktop itself can start. Binaries are resolved at startup, so a row
+        // whose binary is missing says so here instead of failing on the click.
+        e.push(Entry::Header("System".into()));
+        e.push(match &self.atlas_bin {
+            Some(a) => {
+                let name = std::path::Path::new(a).file_name().and_then(|s| s.to_str()).unwrap_or(a);
+                Entry::item("Atlas", Action::OpenAtlas).note(name)
+            }
+            None => Entry::item("Atlas", Action::OpenAtlas).disabled("atlas not found"),
+        });
         e.push(match &term {
             Some(t) => Entry::item("New Terminal", Action::OpenTerminal).note(t),
             None => Entry::item("New Terminal", Action::OpenTerminal).disabled("no terminal found"),
         });
+        e.push(Entry::item("Launcher\u{2026}", Action::OpenLauncher).note("Super+Space"));
+        e.push(Entry::Separator);
         e.push(Entry::item("Settings\u{2026}", Action::OpenSettings));
         e.push(if windows > 0 { Entry::item("Window Switcher", Action::WindowSwitcher).note("Alt+Tab") } else { Entry::item("Window Switcher", Action::WindowSwitcher).disabled("no windows") });
         e.push(self.desktop_entry(windows));

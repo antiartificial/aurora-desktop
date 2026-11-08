@@ -132,7 +132,12 @@ fn right_click_opens_the_menu_where_expected_and_hover_changes_only_that_item() 
         let open = c.capture("open.png");
         save(&open, &format!("menu-{s}.png"));
         // 1. It sits where the pointer was, in device pixels.
-        assert_eq!((m.panel[0], m.panel[1]), ((ax * scale).round() as i32, (ay * scale).round() as i32), "scale {s}");
+        let (px, py) = ((ax * scale).round() as i32, (ay * scale).round() as i32);
+        let (mw, mh) = (m.panel[2], m.panel[3]);
+        let (outw, outh) = (open.w as i32, open.h as i32);
+        let ex = if px + mw > outw { (px - mw).max(0) } else { px };
+        let ey = if py + mh > outh { (py - mh).max(0) } else { py };
+        assert_eq!((m.panel[0], m.panel[1]), (ex, ey), "scale {s}: opens at the pointer, or flips to stay inside the output");
         // 2. It is in the capture (ordinary chrome), and the capture changed nowhere else.
         let (inn, out, _) = diff_in(&before, &open, m.panel);
         println!("MENU scale {s}: panel {:?}; {inn} of {} pixels inside changed, {out} outside", m.panel, m.panel[2] * m.panel[3]);
@@ -391,8 +396,9 @@ fn keyboard_drives_the_settings_panel() {
     c.inject("rclick");
     wait_relayout(&c, "menu", 0);
     let m = parse(&c.log(), "menu").unwrap();
-    let terminal_enabled = !m.text.iter().any(|t| t.0 == "New_Terminal") || !c.log().contains("no_terminal_found");
-    let downs = if parse(&c.log(), "menu").unwrap().text.iter().any(|t| t.0.starts_with("no_terminal")) || !terminal_enabled { 1 } else { 2 };
+    // System section: Atlas, [New Terminal], Launcher, then Settings — the selectable rows before it.
+    let terminal_enabled = !c.log().contains("no_terminal_found");
+    let downs = if terminal_enabled { 4 } else { 3 };
     for _ in 0..downs { c.inject("key Down"); }
     c.inject("key Return");
     let l = wait_relayout(&c, "settings", 0);

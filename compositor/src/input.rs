@@ -33,6 +33,8 @@ impl Aurora {
                 self.shell.set_status(msg);
             }
             Action::OpenTerminal => self.shell.open_terminal(),
+            Action::OpenAtlas => self.shell.open_atlas(),
+            Action::OpenLauncher => self.shell.open_launcher(),
             Action::OpenSettings => self.shell.open_settings(),
             Action::WindowSwitcher => self.switch(crate::fx::switcher::Act::Open),
             Action::CloseSettings => self.shell.settings = None,

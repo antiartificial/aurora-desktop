@@ -21,6 +21,10 @@ pub enum Action {
     /// Write these settings to the theme file.
     Edit(Vec<Edit>),
     OpenTerminal,
+    /// Start Atlas, the file explorer built on aurora::ui.
+    OpenAtlas,
+    /// Start the launcher's picker (`aurora open --pick`).
+    OpenLauncher,
     OpenSettings,
     WindowSwitcher,
     CloseSettings,
