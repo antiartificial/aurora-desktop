@@ -8,11 +8,13 @@
 // worker, and only for the rows the list is actually looking at.
 //
 // ATLAS_DIR=path     where to start (default $HOME)
+// ATLAS_SIZE=WxH     the window size (default 960x640, the design's first-run size)
 // ATLAS_FRAMES=n     stop after n frames, for scripted runs
 // ATLAS_REPORT=1     print the first-frame timing and what the list drew
 
 #include "../ui.h"
 #include "../filebrowse.h"
+#include "atlas_chrome.h"
 
 #include <BusClient.h>
 
@@ -47,11 +49,32 @@ int main() {
     DirRows rows;
     const double readdir_ms = rows.Open(dir);
 
-    Window w("Atlas", 640, 420);
+    // 960x640 is the design's first-run size (section 2.1), and it is a measured number rather
+    // than a round one: it is what puts 24 rows of 24 px on screen with the 44 px toolbar, the
+    // 26 px header and the 26 px status bar, which is the density the whole spec is derived
+    // from. The 640x420 this opened at before showed eleven.
+    int win_w = 960, win_h = 640;
+    if (const char* sz = getenv("ATLAS_SIZE")) {
+        int a = 0, b = 0;
+        if (sscanf(sz, "%dx%d", &a, &b) == 2 && a >= 480 && b >= 320) { win_w = a; win_h = b; }
+    }
+    Window w("Atlas", win_w, win_h);
     if (!w.ok()) {
         fprintf(stderr, "atlas: no Wayland compositor reachable\n");
         return 2;
     }
+
+    // Counts, written the way section 6.3 writes them: thousands grouped with a THIN SPACE
+    // (U+2009) rather than a comma or a full space, because a comma is a decimal point in half
+    // of Europe and a full space breaks the number in two when the line wraps.
+    auto grouped = [](long long n) {
+        std::string d = std::to_string(n), out;
+        for (size_t i = 0; i < d.size(); i++) {
+            if (i && (d.size() - i) % 3 == 0) out += "\u2009";
+            out += d[i];
+        }
+        return out;
+    };
 
     int selected = -1;
     State<std::string> path(dir);
@@ -59,13 +82,26 @@ int main() {
     // reason the widget takes one: it is a setting, and it belongs to whatever the app persists.
     PlacesTree places(getenv("HOME") ? getenv("HOME") : "/");
     State<std::string> place(dir);
-    State<float> sidebar(0.28f);
-    Desc tree;                      // built below; `go` reveals into it, so it is named first
+    // The sidebar is 200 wide by the design and the split takes a RATIO, so the ratio is the one
+    // that makes it 200 at the size the window opened at. It is the honest approximation of a
+    // fixed-width pane with a draggable divider: growing the window grows the sidebar with it,
+    // which keeps it inside the design's 160..360 band at every size Atlas opens at but is not
+    // the same thing as a floor and a ceiling. Closing that gap means HSplit taking a width
+    // rather than a ratio, which is a change to the toolkit and not to this file.
+    State<float> sidebar(200.0f / (float)(win_w - 4));   // the split divides what is left after its 4 px divider
+    Desc tree;                     // built below; `go` reveals into it, so it is named first
     bool revealing = false;         // the tree selecting a folder calls go, which reveals: once
     std::vector<std::string> history, forward;
-    State<std::string> status(std::to_string(rows.Count()) + " items");
+    State<std::string> status(grouped(rows.Count()) + " items");
     State<std::string> filter("");
+    // The filter field is now permanently in the toolbar (section 2.1), so there is no bar to
+    // open: this records only whether the field is HOLDING something, which is what the report
+    // line and the status text mean by it.
     State<bool> filter_open(false);
+    // What the three navigation buttons may do. A disabled button stays visible with its glyph
+    // in the tertiary ink (6.9): the absence is shown, not hidden, so the toolbar does not
+    // change shape as you walk a tree.
+    State<bool> can_back(false), can_fwd(false), can_up(dir != "/");
     // The location bar: Ctrl+L, or a click past the last breadcrumb segment. Separate from the
     // filter because they mean opposite things -- one narrows what you are looking at, the other
     // leaves for somewhere else -- and a single box that did both would have to guess which.
@@ -82,6 +118,9 @@ int main() {
     filter.bind(&w);
     filter_open.bind(&w);
     path.bind(&w);
+    can_back.bind(&w);
+    can_fwd.bind(&w);
+    can_up.bind(&w);
 
     // The filter narrows as you type. It is not a search box and it does not open a mode: it is
     // one of the three distinct things docs/aurora-ui.md separates -- type-ahead moves the
@@ -89,9 +128,9 @@ int main() {
     auto refilter = [&](const std::string& f) {
         rows.SetFilter(f);
         selected = -1;
-        status.set(f.empty() ? std::to_string(rows.Count()) + " items"
-                             : std::to_string(rows.Count()) + " of " +
-                                   std::to_string(rows.Total()) + " match \"" + f + "\"");
+        status.set(f.empty() ? grouped(rows.Count()) + " items"
+                             : grouped(rows.Count()) + " of " + grouped(rows.Total()) +
+                                   " match \"" + f + "\"");
         if (Node* n = w.FindNamed("files")) w.Invalidate(n->frame);
     };
 
@@ -146,7 +185,7 @@ int main() {
         path.set(to);
         selected = -1;
         rows.SetFilter(filter.get());
-        status.set(std::to_string(rows.Count()) + " items");
+        status.set(grouped(rows.Count()) + " items");
         // Keep the sidebar on the directory the main pane is showing, whichever way we got here
         // -- a crumb, Up, a double-click, the tree itself. The guard is because the tree's own
         // selection calls go, and go reveals: without it that is a loop through the widget.
@@ -155,6 +194,9 @@ int main() {
             RevealInTree(tree, to);
             revealing = false;
         }
+        can_back.set(!history.empty());
+        can_fwd.set(!forward.empty());
+        can_up.set(to != "/");
         w.Invalidate();
     };
     auto parent_of = [](const std::string& p) {
@@ -175,7 +217,7 @@ int main() {
     auto apply_hidden = [&] {
         rows.SetShowHidden(show_hidden.get());
         selected = -1;
-        status.set(std::to_string(rows.Count()) + " items");
+        status.set(grouped(rows.Count()) + " items");
         w.Invalidate();
     };
 
@@ -353,14 +395,17 @@ int main() {
     // disagree about it.
     auto report_selection = [&](const std::vector<int>& v) {
         const int n = rows.Count();
-        if (v.size() > 1) {
-            off_t total = 0;
-            for (int r : v) total += rows.RowSize(r);
-            status.set(std::to_string(v.size()) + " of " + std::to_string(n) + " selected  " +
-                       human(total));
-        } else {
-            status.set(std::to_string(n) + " items");
+        if (v.empty()) {
+            status.set(grouped(n) + " items");
+            return;
         }
+        // "1 of 33 selected \u00b7 4.2 KB", for one row as for several: a count of one is still
+        // a count, and a status line that switched sentence shape at two would make the number
+        // harder to find than it is to compute.
+        off_t total = 0;
+        for (int r : v) total += rows.RowSize(r);
+        status.set(grouped((long long)v.size()) + " of " + grouped(n) + " selected \u00b7 " +
+                   human(total));
     };
     OnIconsSelect(icons, [&](int row) { load_preview(row); });
 
@@ -404,7 +449,7 @@ int main() {
         last_action.set("renamed " + from + " -> " + to);
         rows.Open(path.get());            // re-read: the listing and its order have changed
         rows.SetFilter(filter.get());
-        status.set(std::to_string(rows.Count()) + " items");
+        status.set(grouped(rows.Count()) + " items");
         w.Invalidate();
         return true;
     });
@@ -484,7 +529,7 @@ int main() {
             rows.Open(path.get());
             rows.SetShowHidden(show_hidden.get());
             rows.SetFilter(filter.get());
-            status.set(std::to_string(rows.Count()) + " items");
+            status.set(grouped(rows.Count()) + " items");
             selected = -1;
         }
         std::string msg;
@@ -527,7 +572,7 @@ int main() {
         rows.Open(path.get());
         rows.SetShowHidden(show_hidden.get());
         rows.SetFilter(filter.get());
-        status.set(std::to_string(rows.Count()) + " items");
+        status.set(grouped(rows.Count()) + " items");
         // Find it in the new listing and open its name for editing.
         for (int i = 0; i < rows.Count(); i++) {
             std::string n = rows.Cell(i, 0).text;
@@ -598,7 +643,7 @@ int main() {
         const std::vector<std::string> src = clip->paths;
         const bool cut = clip->cut;
         if (cut) clip->paths.clear();           // a cut pastes once
-        std::thread([&w, &rows, &path, &status, &last_action, &show_hidden, &filter, src, cut, dest_dir, copy_file] {
+        std::thread([&w, &rows, &path, &status, &last_action, &show_hidden, &filter, &grouped, src, cut, dest_dir, copy_file] {
             int done = 0;
             std::string err;
             for (const std::string& from : src) {
@@ -652,7 +697,7 @@ int main() {
                 rows.Open(path.get());
                 rows.SetShowHidden(show_hidden.get());
                 rows.SetFilter(filter.get());
-                status.set(std::to_string(rows.Count()) + " items");
+                status.set(grouped(rows.Count()) + " items");
             }
             w.InvalidateThreadsafe();
         }).detach();
@@ -700,7 +745,7 @@ int main() {
         if (moved) {
             rows.Open(path.get());        // the listing changed under us either way
             rows.SetFilter(filter.get());
-            status.set(std::to_string(rows.Count()) + " items");
+            status.set(grouped(rows.Count()) + " items");
             selected = -1;
         }
         // Both halves are reported. "3 moved, 1 refused" is the honest answer to a multi-file
@@ -869,100 +914,150 @@ int main() {
         });
     });
 
+    // ---- the frame (docs/atlas-design.md section 2.1) ---------------------------------------
+    //
+    // Toolbar 44, content, status bar 26, and nothing else at the top level. What this replaces
+    // was a 1.35x "Atlas" heading, five word buttons and a checkbox on one row, the breadcrumb
+    // on a second row, and two reveal-able field rows under that -- four bands of chrome above
+    // the listing, one of which repeated the window title the compositor already draws.
+    //
+    // The location lives IN the toolbar, and the path field swaps into the same slot with an
+    // Either rather than appearing on a row of its own: section 6.10 asks for the swap to be in
+    // place with no vertical motion, and a reveal under the toolbar is vertical motion by
+    // construction -- everything below it moved by 28 px every time Ctrl+L was pressed.
+    State<bool> sidebar_open(true);
+    sidebar_open.bind(&w);
+
+    // The view menu's items are built at PRESS time, which is the whole reason MenuButton takes
+    // a function: a tick decided when the tree was built shows the state the app started in.
+    auto view_items = [&]() -> std::vector<MenuItem> {
+        const char* tick = "\xe2\x9c\x93";
+        std::vector<MenuItem> it;
+        it.push_back(MenuItem{"View as list", list_view.get() ? tick : "", Effect::Read, true,
+                              false, false, [&] {
+                                  list_view.set(true);
+                                  w.Invalidate();
+                                  w.FocusNamed("files");
+                              }});
+        it.push_back(MenuItem{"View as icons", list_view.get() ? "" : tick, Effect::Read, true,
+                              false, false, [&] {
+                                  list_view.set(false);
+                                  w.Invalidate();
+                                  w.FocusNamed("icons");
+                              }});
+        it.push_back(MenuItem::sep());
+        const char* names[3] = {"Sort by name", "Sort by size", "Sort by date"};
+        for (int c = 0; c < 3; c++)
+            it.push_back(MenuItem{names[c], rows.SortColumn() == c ? tick : "", Effect::Read,
+                                  true, false, false, [&, c] {
+                                      rows.Sort(c, rows.SortColumn() == c ? !rows.SortAscending()
+                                                                          : true);
+                                      w.Invalidate();
+                                  }});
+        it.push_back(MenuItem::sep());
+        it.push_back(MenuItem{"Show hidden files", show_hidden.get() ? tick : "", Effect::Read,
+                              true, false, false, [&] {
+                                  show_hidden.set(!show_hidden.get());
+                                  apply_hidden();
+                              }});
+        return it;
+    };
+
+    // The listing and the preview, named once because the sidebar toggle holds them in both
+    // arms of an Either: with the sidebar open they are the split's second pane, with it closed
+    // they are the whole body. Only one arm is ever measured, placed, drawn or walked for focus,
+    // which is what makes sharing the subtree between them safe rather than clever.
+    Desc body = HStack({
+                           weight(Either(&list_view, list, icons), 2),
+                           named(Reveal(&preview_open,
+                                        // 280 wide, the design's default, and STATED: a pane
+                                        // that answers "all of it" beside a weighted sibling
+                                        // starves the sibling to zero, which is how the preview
+                                        // first opened over the listing instead of beside it.
+                                        // 16 px padding all round, and a hairline on its left
+                                        // edge: the separator between content and preview.
+                                        atlas::SideBand(VStack({
+                                                            styled(Label(&preview_head),
+                                                                   TextStyle{1.0f, true}),
+                                                            weight(named(TextView(&preview_text),
+                                                                         "preview"), 1),
+                                                        }, 0.5f),
+                                                        280, atlas::BandFill::Content,
+                                                        atlas::BandEdge::Left, Insets(16, 16)),
+                                        // RevealX: a side pane reveals by WIDTH. A height
+                                        // reveal here kept its full width while invisible and
+                                        // swallowed the list's hit test.
+                                        Transition{Motion::RevealX, 160, Curve::EaseOut}),
+                                 "previewpane"),
+                       },
+                       0);
+
     w.SetRoot(VStack({
-        padding(HStack({
-                    styled(Bold("Atlas"), TextStyle{1.35f, true}),
-                    Spacer(),
-                    Button("Back", [&] { go_back(); }),
-                    Button("Forward", [&] { go_forward(); }),
-                    Button("Up", [&] { go(parent_of(path.get()), true); }),
-                    Button("Preview", [&] {
-                        preview_open.set(!preview_open.get());
-                        if (preview_open.get()) load_preview(selected);
-                        w.Invalidate();
-                    }),
-                    Button("View", [&] {
-                        list_view.set(!list_view.get());
-                        w.Invalidate();
-                        w.FocusNamed(list_view.get() ? "files" : "icons");
-                    }),
-                    // The toolkit's own checkbox rather than another button: a toggle that
-                    // looks like a push button cannot show which way it is set.
-                    padding(Checkbox("Hidden", &show_hidden, [&](bool) { apply_hidden(); }), 0.4f),
-                }),
-                0.75f),
-        // NO weight: this is inside a VStack, so a weight would make the breadcrumb take a share
-        // of the leftover HEIGHT. It did, at 189px, and swallowed the area the list should have
-        // had -- a right-click meant for a row hit the breadcrumb instead. Weight is per-axis and
-        // the axis is the stack's, which is the kind of thing a layout API should make harder to
-        // get wrong than this one currently does.
-        padding(named(Breadcrumb(&path, [&](const std::string& to) { go(to, true); },
-                                 [&] { open_path_bar(); }),
-                      "crumbs"),
-                0.25f),
-        // The location bar, above the filter. Enter goes there; Escape leaves it alone.
-        named(Reveal(&path_edit,
-                     padding(named(TextField(&path_text, nullptr,
-                                             [&](const std::string& to) {
-                                                 path_edit.set(false);
-                                                 go(to, true);
-                                                 w.FocusNamed("files");
-                                             },
+        atlas::Band(
+            HStack({
+                       // Cluster one: the sidebar toggle and the navigation triplet, 4 apart.
+                       HStack({
+                                  IconButton(Glyph::Sidebar,
                                              [&] {
-                                                 path_edit.set(false);
-                                                 w.FocusNamed("files");
-                                             },
-                                             FieldOpts{"go to\u2026", false, 0, true}),
-                                   "pathbar"),
-                             0.5f),
-                     Transition{Motion::Reveal, 160, Curve::EaseOut}),
-              "pathbarreveal"),
-        // Reveal: height animates 0 <-> natural on a cubic ease-out, 160 ms. The child keeps its
-        // own layout and is clipped, so revealing never reflows the field's contents.
-        named(Reveal(&filter_open,
-                     padding(named(TextField(&filter, refilter, nullptr, close_filter,
-                                             FieldOpts{"filter files", false, 0, false}),
-                                   "filter"),
-                             0.5f),
-                     Transition{Motion::Reveal, 160, Curve::EaseOut}),
-              "filterbar"),
-        // The sidebar and the rest, with a divider the user drags. The preview pane stays a
-        // RevealX rather than becoming a second split, and the difference is real: appearing is
-        // not resizing. A pane you toggle wants a transition between absent and present; a pane
-        // you size wants a handle. Making the preview a split would have meant animating a ratio
-        // to fake the first, and making the sidebar a Reveal would have meant no handle at all.
-        weight(HSplit(tree,
-                      HStack({
-                   weight(Either(&list_view, list, icons), 2),
-                   named(Reveal(&preview_open,
-                                // 260 units wide, stated. Without it the TextView inside
-                                // answers with the whole offer and the file list is placed at
-                                // zero -- the pane opened OVER the list.
-                                sized(padding(VStack({
-                                            styled(Label(&preview_head),
-                                                   TextStyle{0.95f, true}),
-                                            weight(named(TextView(&preview_text), "preview"), 1),
-                                        }, 0.25f),
-                                        0.5f), 260),
-                                // RevealX: a side pane reveals by WIDTH. A height reveal here
-                                // kept its full width while invisible and swallowed the list's
-                                // hit test, which is how the axis mistake announced itself.
-                                Transition{Motion::RevealX, 160, Curve::EaseOut}),
-                         "previewpane"),
-                      }, 0),
-                      &sidebar, SplitOpts{9, 16, 0.5f, 3}),
+                                                 sidebar_open.set(!sidebar_open.get());
+                                                 w.Invalidate();
+                                             }),
+                                  IconButton(Glyph::Back, [&] { go_back(); }, &can_back),
+                                  IconButton(Glyph::Forward, [&] { go_forward(); }, &can_fwd),
+                                  IconButton(Glyph::Up, [&] { go(parent_of(path.get()), true); },
+                                             &can_up),
+                              },
+                              0.5f),
+                       // The location, taking everything the two clusters do not.
+                       weight(named(Either(&path_edit,
+                                           named(TextField(&path_text, nullptr,
+                                                           [&](const std::string& to) {
+                                                               path_edit.set(false);
+                                                               go(to, true);
+                                                               w.FocusNamed("files");
+                                                           },
+                                                           [&] {
+                                                               path_edit.set(false);
+                                                               w.FocusNamed("files");
+                                                           },
+                                                           FieldOpts{"go to…", false, 0, true}),
+                                                 "pathbar"),
+                                           named(Breadcrumb(&path,
+                                                            [&](const std::string& to) { go(to, true); },
+                                                            [&] { open_path_bar(); }),
+                                                 "crumbs")),
+                                    "location"),
+                              1),
+                       // Cluster two: the filter field at its stated 180, the view menu and the
+                       // preview toggle.
+                       HStack({
+                                  sized(named(TextField(&filter, refilter, nullptr, close_filter,
+                                                        FieldOpts{"filter files", false, 0, false}),
+                                              "filter"),
+                                        180),
+                                  MenuButton(Glyph::View, view_items),
+                                  IconButton(Glyph::Preview,
+                                             [&] {
+                                                 preview_open.set(!preview_open.get());
+                                                 if (preview_open.get()) load_preview(selected);
+                                                 w.Invalidate();
+                                             }),
+                              },
+                              0.5f),
+                   },
+                   1.5f),
+            44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom, Insets(8, 8)),
+        // The sidebar and the rest. The preview stays a RevealX rather than becoming a second
+        // split, and the difference is real: appearing is not resizing.
+        weight(Either(&sidebar_open,
+                      HSplit(tree, body, &sidebar, SplitOpts{20, 40, 0.5f, 3}),
+                      body),
                1),
-        // A status bar along the bottom, which is where Dolphin and Finder put it and where it
-        // has room. It used to sit beside the title, between a 1.35x heading and four buttons,
-        // and "3 of 4 selected 9.3 KB" came out as "3 of 4 s" -- a count you cannot read is
-        // worse than no count, because it looks like the program is confused rather than the
-        // label being short of room.
-        padding(HStack({
-                    styled(Label(&status), TextStyle{0.9f, false, true}),
-                    Spacer(),
-                    styled(Label(&last_action), TextStyle{0.85f, false, true}),
-                }),
-                Insets(0.75f, 0.35f)),
+        // The status bar, 26 tall with a hairline above: the count on the left and the last
+        // action on the right, in one node, because two halves of one line are never drawn
+        // without each knowing the other's width.
+        atlas::Band(named(atlas::StatusLine(&status, &last_action), "statusline"), 26,
+                    atlas::BandFill::Chrome, atlas::BandEdge::Top, Insets(8, 4)),
     }, 0));
 
     // Focus the LIST on open, by name. FocusFirst would focus the toolbar's button, because

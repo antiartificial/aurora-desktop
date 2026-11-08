@@ -51,12 +51,56 @@ inline std::string human(off_t n) {
     return b;
 }
 
-inline std::string when(time_t t) {
-    char b[32];
-    struct tm tm;
+// The Modified column's text, docs/atlas-design.md section 5.1: "Today 12:56", "Yesterday
+// 09:14", "3 Nov 14:02" for this year, "4 Mar 2025" for another -- and the time dropped when the
+// column is between 96 and 119 wide.
+//
+// "Today" and "Yesterday" are computed against LOCAL MIDNIGHT and not against "less than 24
+// hours ago", which are different claims: a file written at 23:50 is not "Today" at 00:10 the
+// next morning, and a window left open overnight must not go on saying it. Midnight is found by
+// taking today's broken-down time, zeroing the clock and letting mktime normalise -- subtracting
+// 86,400 would be an hour wrong on the two days a year the offset changes.
+//
+// `now` is a parameter rather than a call to time(), because a date formatter whose answer
+// depends on the wall clock is one a test can only check by waiting.
+inline std::string when_relative(time_t t, float col_width, time_t now) {
+    struct tm tm {};
     localtime_r(&t, &tm);
-    strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+    struct tm nt {};
+    localtime_r(&now, &nt);
+    struct tm mid = nt;
+    mid.tm_hour = mid.tm_min = mid.tm_sec = 0;
+    mid.tm_isdst = -1;
+    const time_t today0 = mktime(&mid);
+    mid = nt;
+    mid.tm_mday -= 1;
+    mid.tm_hour = mid.tm_min = mid.tm_sec = 0;
+    mid.tm_isdst = -1;
+    const time_t yesterday0 = mktime(&mid);
+
+    // At >= 120 the column holds the time as well; between 96 and 119 it does not, and the date
+    // is what survives. The column never grows beyond its stated width, so this is a step and
+    // not a continuum.
+    const bool with_time = col_width >= 120;
+    char clock[8];
+    snprintf(clock, sizeof clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    char mon[8];
+    strftime(mon, sizeof mon, "%b", &tm);
+    char b[48];
+    if (t >= today0)
+        snprintf(b, sizeof b, with_time ? "Today %s" : "Today", clock);
+    else if (t >= yesterday0)
+        snprintf(b, sizeof b, with_time ? "Yesterday %s" : "Yesterday", clock);
+    else if (tm.tm_year == nt.tm_year)
+        // "%e" pads the day with a space, which puts the 1st to the 9th of a month half a
+        // character out of line in a right-aligned column. The day is written by hand for that.
+        snprintf(b, sizeof b, with_time ? "%d %s %s" : "%d %s", tm.tm_mday, mon, clock);
+    else
+        snprintf(b, sizeof b, "%d %s %d", tm.tm_mday, mon, 1900 + tm.tm_year);
     return b;
+}
+inline std::string when_relative(time_t t, float col_width = 132) {
+    return when_relative(t, col_width, time(nullptr));
 }
 
 class DirRows : public Rows {
@@ -132,6 +176,25 @@ public:
         return c == 0 ? "Name" : (c == 1 ? "Size" : "Modified");
     }
 
+    // The columns of docs/atlas-design.md section 5.1, which is what makes "Modified cut off
+    // mid-value" -- the loudest defect in the frame this replaces -- impossible: Name is the
+    // only flexible column, so it absorbs every spare pixel; Size and Modified are fixed and are
+    // either drawn whole or dropped (SolveColumns); and Modified only appears once the list is
+    // 600 wide, rather than appearing as a sliver at 400.
+    //
+    // ColumnWidth() above is left alone deliberately. It is the input to Rows::Column's DEFAULT,
+    // which every other source still uses; this override is what the widget lays out from.
+    ColumnSpec Column(int c) const override {
+        ColumnSpec s;
+        s.title = ColumnTitle(c);
+        switch (c) {
+            case 0: s.width = 320; s.min = 160; s.flex = 1; break;
+            case 1: s.width = 84;  s.min = 72;  s.align = Align::Right; break;
+            default: s.width = 132; s.min = 96; s.align = Align::Right; s.visible_from = 600; break;
+        }
+        return s;
+    }
+
     CellValue Cell(int row, int col) const override {
         std::lock_guard<std::mutex> g(mu_);
         const int i = map(row);
@@ -143,10 +206,18 @@ public:
             v.text = en.dir ? en.name + "/" : en.name;
             return v;
         }
+        // A folder's size is KNOWN the moment readdir names it: it is an em dash, and it does
+        // not depend on an lstat. Waiting for the stat to draw it left a column of blanks beside
+        // every folder for as long as the worker took, which is a known value drawn as nothing
+        // (C1.3). The dash is U+2014 and not "--", which is the design's own distinction.
+        if (col == 1 && en.dir) return CellValue{CellState::Ready, "\xe2\x80\x94"};
         if (!en.stated.load(std::memory_order_acquire)) return CellValue{};   // Pending
         CellValue v;
         v.state = CellState::Ready;
-        v.text = col == 1 ? (en.dir ? std::string("--") : human(en.size)) : when(en.mtime);
+        // The Modified column is 132 wide or it is not drawn at all (a fixed column either fits
+        // whole or is dropped), so the format is the wide one. The width is passed rather than
+        // assumed so the step-down is reachable the day a column resize lands.
+        v.text = col == 1 ? human(en.size) : when_relative(en.mtime, 132);
         return v;
     }
 

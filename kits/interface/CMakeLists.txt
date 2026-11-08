@@ -194,6 +194,16 @@ if(ZLIB_FOUND)
 	target_link_libraries(ui_specimen PRIVATE aurora_ui_tk ZLIB::ZLIB)
 endif()
 
+# Atlas stage 1, "the frame": the column rule over Atlas's own ColumnSpecs, the em dash, the
+# Modified formats, the band heights and the status line's two halves. Headless, and every
+# drawing claim is checked at 1.0 and 1.45. The pixels that need a window -- zebra, hover, the
+# halo, the damage fraction -- are driven against the binary by harness/atlas-shots.
+add_executable(test_atlas_frame tests/test_atlas_frame.cpp)
+target_include_directories(test_atlas_frame PRIVATE ../aurora-ui)
+target_link_libraries(test_atlas_frame PRIVATE aurora_ui_tk)
+add_test(NAME atlas_frame COMMAND test_atlas_frame)
+set_tests_properties(atlas_frame PROPERTIES TIMEOUT 60)
+
 add_executable(atlas ../aurora-ui/demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)

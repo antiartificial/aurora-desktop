@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# atlas-shots: the stage-1 reference screenshots of docs/atlas-design.md section 12, and the
+# measurements taken off them.
+#
+# A review of Atlas takes the two reference frames (960x640 with nothing selected; 1280x800 with
+# the preview open and three rows selected), the 520x400 one, and one scripted run with
+# ATLAS_REPORT=1. This produces all of them, at scale 1.0 AND 1.45, against a fixture directory
+# it builds itself -- a reel of tmpXXXX names demonstrates the widget and none of the point --
+# and then reads the band heights, the sidebar width and the column edges back OFF the pixels,
+# because a number a program printed about itself is not a measurement of what it drew.
+#
+#   harness/atlas-shots                 writes harness/atlas-shots-out
+#   ATLAS_SHOTS_OUT=dir harness/atlas-shots
+#
+# Nothing here touches the host desktop: the compositor runs headless, WAYLAND_DISPLAY is
+# unset for it, and every process it starts is killed by PID on the way out.
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${ATLAS_SHOTS_OUT:-$ROOT/harness/atlas-shots-out}"
+ATLAS="$ROOT/kits/build/interface/atlas"
+COMP="$ROOT/compositor/target/release/aurora-compositor"
+CAP="$ROOT/harness/capture/target/release/aurora-capture"
+for b in "$ATLAS" "$COMP" "$CAP"; do
+  [ -x "$b" ] || { echo "atlas-shots: missing $b -- build it first" >&2; exit 2; }
+done
+command -v magick >/dev/null || { echo "atlas-shots: needs ImageMagick for the crops" >&2; exit 2; }
+rm -rf "$OUT"; mkdir -p "$OUT"
+
+# ---- the fixture -------------------------------------------------------------------------------
+# A short path, because the breadcrumb shows it and because a unix socket path is capped at 108
+# bytes. Dates are set so that every branch of the Modified format appears in one frame.
+FIX=$(mktemp -d /tmp/aushot.XXXXXX)
+mkdir -p "$FIX"/{Documents,Downloads,Pictures,Music,Projects/aurora}
+printf 'notes\n' > "$FIX/Documents/notes.txt"
+head -c 4096 /dev/urandom > "$FIX/archive.zip"
+head -c 1300000 /dev/urandom > "$FIX/big-video.mp4"
+printf 'x' > "$FIX/photo.png"
+printf 'Atlas, stage 1: the frame.\n' > "$FIX/README.md"
+printf 'x' > "$FIX/a-very-long-file-name-that-will-not-fit-in-the-name-column-at-all.tar.gz"
+printf 'h' > "$FIX/.hidden"
+touch -d '2025-03-04 09:30' "$FIX/archive.zip"
+touch -d 'yesterday 09:14' "$FIX/README.md"
+
+RUN=; CP=; AP=
+cleanup() {
+  [ -n "$AP" ] && kill $AP 2>/dev/null
+  [ -n "$CP" ] && kill $CP 2>/dev/null
+  sleep 0.3
+  [ -n "$RUN" ] && rm -rf "$RUN"
+  rm -rf "$FIX"
+}
+trap cleanup EXIT
+
+# shot NAME WxH SCALE OUTPUT_WxH [keys...] -- starts a compositor, runs Atlas in it, drives the
+# keys, captures the output and crops it to the window. Prints the window rect it cropped to.
+shot() {
+  local name=$1 size=$2 scale=$3 out=$4; shift 4
+  RUN=$(mktemp -d /tmp/aushot.XXXXXX)
+  env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$RUN" "$COMP" --headless="$out" --scale "$scale" \
+      --freeze-time --test-input "$RUN/ti" >"$RUN/comp.log" 2>&1 & CP=$!
+  for _ in $(seq 300); do [ -S "$RUN/ti" ] && grep -aq 'socket wayland' "$RUN/comp.log" && break; sleep 0.05; done
+  local sock
+  sock=$(grep -aoE 'socket wayland-[0-9]+' "$RUN/comp.log" | head -1 | awk '{print $2}')
+  [ -n "$sock" ] || { echo "atlas-shots: the compositor made no socket; see $RUN/comp.log" >&2; return 1; }
+  env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$sock" HOME="$FIX" ATLAS_DIR="$FIX" \
+      ATLAS_SIZE="$size" ATLAS_REPORT=1 ATLAS_MAX_MS="${MAXMS:-5000}" ${EXTRA:-} "$ATLAS" >"$RUN/atlas.out" 2>&1 & AP=$!
+  for _ in $(seq 300); do grep -aq 'deco: layout' "$RUN/comp.log" && break; sleep 0.05; done
+  sleep 1.6
+  # The window's own rect, read off the compositor's layout line rather than guessed: the
+  # decoration's height is the compositor's business and it has changed before.
+  local geom
+  geom=$(grep -a 'deco: layout' "$RUN/comp.log" | tail -1 | grep -oE 'window=[0-9]+,[0-9]+,[0-9]+,[0-9]+' | cut -d= -f2)
+  local x y w h; IFS=, read -r x y w h <<<"$geom"
+  # Pointer coordinates are written in WINDOW LOGICAL px -- the same numbers the design uses --
+  # and turned into the output's device px here. Both halves matter: the window's origin moves
+  # with the output size, and at scale 1.45 a y meant for the third row lands in the header.
+  export TI_OFFSET="$x,$y"
+  local keys=() a
+  for a in "$@"; do
+    case $a in
+      "pointer "*) keys+=("$(awk -v s="$scale" -v a="$a" \
+                             'BEGIN{split(a,p," ");printf "pointer %d %d",p[2]*s,p[3]*s}')");;
+      *) keys+=("$a");;
+    esac
+  done
+  [ ${#keys[@]} -gt 0 ] && python3 -I "$ROOT/demos/kitchen-sink/ti.py" "$RUN/ti" --pause 0.12 "${keys[@]}" >/dev/null 2>&1
+  sleep 0.5
+  env XDG_RUNTIME_DIR="$RUN" WAYLAND_DISPLAY="$sock" "$CAP" -o "$RUN/full.png" >/dev/null 2>&1
+  magick "$RUN/full.png" -crop "${w}x${h}+${x}+${y}" +repage "$OUT/$name.png"
+  echo "  $name: ${size} at scale ${scale} -> $OUT/$name.png (window ${w}x${h} device px)"
+  # The report is printed on the way out, so the copy waits for the process: taking it before
+  # the wait is how every .txt here came out holding one line about the bus and nothing else.
+  wait $AP 2>/dev/null; AP=
+  cp "$RUN/atlas.out" "$OUT/$name.txt"
+  kill $CP 2>/dev/null; CP=; sleep 0.2
+  rm -rf "$RUN"; RUN=
+}
+
+echo "atlas-shots: capturing"
+for sc in 1.0 1.45; do
+  tag=${sc/./_}
+  # The output is made larger than the window on purpose: the Deskbar's overlay lives at the
+  # top right of the OUTPUT, and a window that reaches it is captured with it on top.
+  case $sc in 1.0) big=1600x1100; wide=2000x1200; small=1200x900;; *) big=2400x1200; wide=2800x1600; small=1400x1000;; esac
+  shot "ref-960x640-$tag"   960x640   "$sc" "$big"
+  EXTRA=ATLAS_PREVIEW=1 shot "ref-1280x800-$tag" 1280x800 "$sc" "$wide" \
+       "key Down" "key Down" "down shift" "key Down" "key Down" "up shift"
+  unset EXTRA
+  shot "ref-520x400-$tag"   520x400   "$sc" "$small"
+  shot "sel-keyboard-$tag"  960x640   "$sc" "$big" \
+       "key Down" "key Down" "down shift" "key Down" "up shift"
+  # Row 3's centre is at 71 + 24*3 + 12 = 155, in window logical px.
+  shot "hover-$tag"         960x640   "$sc" "$big" "pointer 500 155"
+  # The same selection reached by the POINTER: accent fill, and no halo. Two states that have
+  # to be different pictures, which is why they are two files.
+  shot "sel-pointer-$tag"   960x640   "$sc" "$big" "key Down" "key Down" "pointer 400 155" "click"
+  # And the pane losing the keyboard without losing the selection: a click in the filter field,
+  # which focuses something else without navigating as a click in the sidebar would. The rows
+  # stay chosen and go to `selection-unfocused`, with the halo on nothing.
+  shot "sel-unfocused-$tag" 960x640   "$sc" "$big" \
+       "key Down" "key Down" "down shift" "key Down" "up shift" "pointer 788 22" "click"
+done
+
+# ---- the hover damage fraction (C6.2) ------------------------------------------------------------
+# Measured on a directory big enough to fill the list, with the pointer walked down it four
+# times: the first frame is a full repaint whatever happens, so a short run measures that and
+# not the hover.
+keys=()
+for _ in 1 2 3 4; do for i in $(seq 0 19); do keys+=("pointer 500 $((71 + 12 + 24 * i))"); done; done
+held=$FIX
+# /usr/bin, because the list has to be FULL: a hover over a directory of thirteen rows spends
+# most of its frames on the first one, which is a full repaint whatever the hint says.
+FIX=/usr/bin MAXMS=30000 shot "damage-hover" 960x640 1.0 1400x900 "${keys[@]}"
+FIX=$held
+grep -h '^ATLAS damage\|^ATLAS frames' "$OUT/damage-hover.txt" | sed 's/^/  C6.2 /'
+
+# ---- what the pixels say -------------------------------------------------------------------------
+python3 -I - "$OUT" <<'PY'
+import subprocess, sys, os
+out = sys.argv[1]
+def img(p):
+    w, h = [int(v) for v in subprocess.check_output(['magick', p, '-format', '%w %h', 'info:']).split()]
+    return w, h, subprocess.check_output(['magick', p, '-depth', '8', 'RGB:-'])
+def hx(c): return '#%02X%02X%02X' % c
+for name, scale in (('ref-960x640-1_0', 1.0), ('ref-960x640-1_45', 1.45)):
+    p = os.path.join(out, name + '.png')
+    if not os.path.exists(p): continue
+    w, h, raw = img(p)
+    def px(x, y):
+        i = (int(y * scale) * w + int(x * scale)) * 3
+        return (raw[i], raw[i + 1], raw[i + 2])
+    print('  %s  (%d x %d device px, %g x %g logical)' % (name, w, h, w / scale, h / scale))
+    # Vertical: where the chrome stops and the content starts, and the same at the bottom.
+    col, prev, edges = 600, None, []
+    for y in range(int(h / scale)):
+        c = px(col, y)
+        if c != prev: edges.append((y, hx(c))); prev = c
+    print('    toolbar/header/rows (logical y, colour): ' + ' '.join('%d:%s' % e for e in edges[:6]))
+    print('    status bar begins at logical y %s' % (edges[-1][0] if edges else '?'))
+    # Horizontal: the sidebar's width, off the fill change.
+    prev, row = None, int(h / scale) - 150
+    for x in range(int(w / scale)):
+        c = px(x, row)
+        if prev is not None and c != prev:
+            print('    sidebar ends at logical x %d (%s -> %s)' % (x, hx(prev), hx(c)))
+            break
+        prev = c
+    # The rightmost ink on the first row: the Modified column's own 8 px inset (C5.1).
+    best = -1
+    for y in range(int(72 * scale), int(94 * scale)):
+        for x in range(w - 1, 0, -1):
+            i = (y * w + x) * 3
+            if raw[i] + raw[i + 1] + raw[i + 2] > 190:
+                best = max(best, x); break
+    print('    rightmost ink on row 0 is %.1f logical px inside the pane (C5.1 wants >= 8)'
+          % (w / scale - best / scale - 1))
+PY
+echo "atlas-shots: $OUT"

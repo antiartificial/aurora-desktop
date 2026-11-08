@@ -53,3 +53,4 @@ harness/atlas-demo-out/
 # aurora-up writes its logs here.
 harness/aurora-up-out/
 harness/present-pool/out/
+harness/atlas-shots-out/

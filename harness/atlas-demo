@@ -85,17 +85,30 @@ fi
 # ---- headless: run, drive, capture -------------------------------------------------------------
 [ -x "$CAP" ] || { echo "atlas-demo: missing $CAP (cargo build --release in harness/capture)" >&2; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT"
+# The output is bigger than the window on purpose: Atlas opens at the design's 960x640 now,
+# and the Deskbar's overlay lives at the top right of the OUTPUT -- a window that reaches it is
+# recorded with it on top.
 env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$R" \
-  "$COMP" --headless=1280x800 --test-input "$R/ti" >"$R/comp.log" 2>&1 & CP=$!
+  "$COMP" --headless=1600x1000 --test-input "$R/ti" >"$R/comp.log" 2>&1 & CP=$!
 for _ in $(seq 200); do [ -S "$R/ti" ] && grep -aq 'socket wayland' "$R/comp.log" && break; sleep 0.05; done
 sock=$(grep -aoE 'socket wayland-[0-9]+' "$R/comp.log" | head -1 | awk '{print $2}')
 [ -n "$sock" ] || { echo "atlas-demo: the compositor created no socket; see $R/comp.log" >&2; exit 1; }
 
-env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" HOME="$D" ATLAS_DIR="$D" "$ATLAS" >"$R/atlas.out" 2>&1 & AP=$!
+env XDG_RUNTIME_DIR="$R" WAYLAND_DISPLAY="$sock" HOME="$D" ATLAS_DIR="$D" ATLAS_SIZE=960x640 \
+  "$ATLAS" >"$R/atlas.out" 2>&1 & AP=$!
 for _ in $(seq 200); do grep -aq 'deco: layout' "$R/comp.log" && break; sleep 0.05; done
 sleep 1.0
 
 n=0
+# Where the window landed, from the compositor's own layout line. Every pointer coordinate
+# below is then WINDOW-relative (ti.py's TI_OFFSET), which is what stops this script from
+# clicking on a decoration the day the title bar changes height. The previous version held
+# absolute numbers with a comment saying they had been read off a capture, and adding one
+# toolbar control silently turned its "View" click into a click on something else -- the reel
+# went on looking plausible while testing the wrong things.
+geom=$(grep -a 'deco: layout' "$R/comp.log" | tail -1 | grep -oE 'window=[0-9]+,[0-9]+,[0-9]+,[0-9]+' | cut -d= -f2)
+IFS=, read -r WX WY WW WH <<<"$geom"
+export TI_OFFSET="$WX,$WY"
 ti() { python3 -I "$ROOT/demos/kitchen-sink/ti.py" "$R/ti" --pause 0.08 "$@" >/dev/null 2>&1; }
 # Each beat is captured several times so it HOLDS in the reel. Capturing is the slow part, so
 # the hold is frames rather than a sleep: a reel that flashes each state for 40 ms shows nothing.
@@ -109,33 +122,41 @@ beat() {
   echo "  beat: $1 (through frame $n)"
 }
 
+# The toolbar of docs/atlas-design.md 2.1, in window coordinates. The left cluster starts at
+# 8 and is four 28 px buttons 4 apart (the sidebar toggle, Back, Forward, Up); the right one is
+# counted back from the right edge: the preview toggle, then the 38-wide view menu button.
+TB_Y=22
+PREVIEW_X=$((WW - 22)); VIEW_X=$((WW - 59))
+# The list: rows are 24 tall and start under the 44 px toolbar and the 26 px header.
+row_y() { echo $((71 + 24 * $1 + 12)); }
+# The fixture's own order: folders first, then the files case-insensitively -- Documents,
+# Music, Pictures, Projects, archive.zip, photo.png, README.md. Guessing it the other way round
+# previewed the zip and called it the README in the log, which is the sort of thing a reel
+# states confidently and nobody checks.
+PNG_Y=$(row_y 5); README_Y=$(row_y 6)
+
 echo "atlas-demo: recording"
-beat "Atlas opens: sidebar, breadcrumb, list, scrollbars"
-ti "pointer 41 135" click;            beat "the twisty expands Home in place, without navigating"
-# Toolbar positions, read off a capture rather than guessed: Back 326, Forward 391, Up 450,
-# Preview 508, View 570, Hidden 610, all at y=75. They move whenever the toolbar gains a
-# control -- adding Forward and the Hidden checkbox silently turned the "View" click in this
-# script into a click on something else, and the reel went on looking plausible while testing
-# the wrong things.
-ti "pointer 570 75" click;            beat "the icon grid, over the same rows"
-ti "pointer 570 75" click;            beat "back to the list"
-ti "pointer 508 75" click;            beat "the preview pane reveals"
-ti "pointer 300 287" click;           beat "README.md previews in process: text needs no decoder"
-ti "pointer 300 265" rclick;          beat "the plumber says what can be done with a PNG"
-ti "key Escape";                      beat "dismissed" 3
-ti "pointer 90 215" click;            beat "clicking a place in the sidebar navigates"
-ti "pointer 212 300" press "pointer 330 300" "sleep 0.2" "pointer 330 300" release
-                                      beat "and the divider is yours to drag"
+beat "Atlas opens: the toolbar is icons with the location in it"
+ti "pointer 16 57" click;                    beat "the twisty expands Home in place, without navigating"
+ti "pointer $VIEW_X $TB_Y" click;            beat "the view menu, under the button it belongs to"
+ti "key Escape";                             beat "dismissed" 3
+ti "pointer $PREVIEW_X $TB_Y" click;         beat "the preview pane reveals"
+ti "pointer 300 $README_Y" click;            beat "README.md previews in process: text needs no decoder"
+ti "pointer 300 $PNG_Y" rclick;              beat "the plumber says what can be done with a PNG"
+ti "key Escape";                             beat "dismissed" 3
+ti "pointer 60 57" click;                    beat "clicking a place in the sidebar navigates"
+ti "pointer 202 300" press "pointer 320 300" "sleep 0.2" "pointer 320 300" release
+                                             beat "and the divider is yours to drag"
 
 kill $AP 2>/dev/null
 
 # ---- assemble -----------------------------------------------------------------------------------
 if command -v ffmpeg >/dev/null 2>&1; then
-  ffmpeg -y -framerate 6 -i "$OUT/f%04d.png" -vf "crop=700:470:20:14,scale=1050:-2:flags=lanczos" \
+  ffmpeg -y -framerate 6 -i "$OUT/f%04d.png" -vf "crop=$WW:$WH:$WX:$WY,scale=1050:-2:flags=lanczos" \
     -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$OUT/atlas.mp4" >/dev/null 2>&1 \
     && echo "atlas-demo: $OUT/atlas.mp4"
   ffmpeg -y -framerate 6 -i "$OUT/f%04d.png" \
-    -vf "crop=700:470:20:14,scale=700:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse" \
+    -vf "crop=$WW:$WH:$WX:$WY,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse" \
     "$OUT/atlas.gif" >/dev/null 2>&1 && echo "atlas-demo: $OUT/atlas.gif"
 else
   echo "atlas-demo: no ffmpeg; the frames are in $OUT"
