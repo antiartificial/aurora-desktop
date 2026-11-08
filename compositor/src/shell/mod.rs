@@ -143,7 +143,7 @@ pub struct Shell {
     /// Where Atlas is, resolved at startup (or `--atlas`); None disables the menu row.
     pub atlas_bin: Option<String>,
     /// Where the aurora-launcher inventory app is (or `--launcher-app`); None disables the row.
-    pub launcher_bin: Option<String>,
+    pub inventory_bin: Option<String>,
     pub deco: Decoration,
     /// Windows that are still arriving, keyed by surface id. An entry lives from the window's
     /// first real commit until its animation is done, and is read once per frame by the
@@ -213,7 +213,7 @@ impl Shell {
             freeze_time: false,
             aurora_bin: "aurora".into(),
             atlas_bin: None,
-            launcher_bin: None,
+            inventory_bin: None,
             deco: Decoration::default(),
             appearing: Default::default(),
             item_appear: Default::default(),
@@ -575,66 +575,54 @@ impl Shell {
         }
     }
 
-    /// Open a terminal (the dock's configured one) with no command.
+    /// Start a program detached: stdin null and, when `give_bus`, pointed at the compositor's own
+    /// bus socket. One place owns the bus handoff, so a new System program cannot silently dial the
+    /// default and draw a different daemon's inventory.
+    fn spawn_detached(&self, bin: &str, give_bus: bool, what: &str) {
+        let mut cmd = std::process::Command::new(bin);
+        if give_bus {
+            if let Some(s) = &self.registry.sock {
+                cmd.env("AURORA_BUS_SOCK", s);
+            }
+        }
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                tracing::info!("{what}: opened {bin:?}");
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => tracing::error!("{what}: cannot run {bin:?}: {e}"),
+        }
+    }
+
+    /// Open a terminal (the dock's configured one) with no command. Not bus-biased: a terminal is
+    /// the user's, not a client of the desktop's registry.
     pub fn open_terminal(&mut self) {
         let Some(term) = resolve_terminal(&self.dock.terminal) else {
             tracing::error!("menu: no terminal to open");
             return;
         };
-        match std::process::Command::new(&term).stdin(std::process::Stdio::null()).spawn() {
-            Ok(mut child) => {
-                tracing::info!("menu: opened terminal {term:?}");
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
-            Err(e) => tracing::error!("menu: cannot open terminal {term:?}: {e}"),
-        }
+        self.spawn_detached(&term, false, "menu");
     }
 
-    /// Open Atlas, the file explorer (the System menu row and its binary, resolved at startup).
+    /// Open Atlas, the file explorer (resolved at startup; its context menu uses the bus).
     pub fn open_atlas(&mut self) {
         let Some(bin) = self.atlas_bin.clone() else {
             tracing::error!("menu: no atlas to open");
             return;
         };
-        let mut cmd = std::process::Command::new(&bin);
-        if let Some(s) = &self.registry.sock { cmd.env("AURORA_BUS_SOCK", s); }
-        cmd.stdin(std::process::Stdio::null());
-        match cmd.spawn() {
-            Ok(mut child) => {
-                tracing::info!("menu: opened atlas {bin:?}");
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
-            Err(e) => tracing::error!("menu: cannot open atlas {bin:?}: {e}"),
-        }
+        self.spawn_detached(&bin, true, "menu: atlas");
     }
 
-    /// Start the launcher's picker (`aurora open --pick`): the powerbox chooses the input.
+    /// Start the inventory app (aurora-launcher), which draws the whole app list.
     pub fn open_launcher(&mut self) {
-        let Some(bin) = self.launcher_bin.clone() else {
-            tracing::error!("launcher: no aurora-launcher binary (the row is disabled)");
+        let Some(bin) = self.inventory_bin.clone() else {
+            tracing::error!("launcher: no inventory app (the row is disabled)");
             return;
         };
-        let mut cmd = std::process::Command::new(&bin);
-        // The launcher must draw the SAME registry the compositor is attached to. Inheritance is
-        // not a contract: a --bus-socket compositor has to hand the socket over, else the child
-        // dials the default and shows a different daemon's inventory with no error.
-        if let Some(s) = &self.registry.sock {
-            cmd.env("AURORA_BUS_SOCK", s);
-        }
-        cmd.stdin(std::process::Stdio::null());
-        match cmd.spawn() {
-            Ok(mut child) => {
-                tracing::info!("launcher: opened {bin:?}");
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-            }
-            Err(e) => tracing::error!("launcher: cannot run {bin:?}: {e}"),
-        }
+        self.spawn_detached(&bin, true, "launcher");
     }
 
     // ---- GPU resources ---------------------------------------------------
@@ -1070,56 +1058,48 @@ pub fn resolve_launcher(given: Option<&str>) -> String {
 
 /// Where Atlas is: `--atlas` wins, else PATH, else beside the compositor / the dev layout
 /// (`kits/build/ui/atlas`). None means the System menu row is disabled rather than failing on click.
-pub fn resolve_atlas(given: Option<&str>) -> Option<String> {
+/// Find a program: the `--flag` value first, then PATH, then beside the compositor or in the dev
+/// layout. A given path that is not a file and not on PATH is warned about and treated as absent,
+/// so a System row greys instead of failing on the click.
+fn resolve_near(given: Option<&str>, name: &str, dev: &[&str], flag: &str, what: &str) -> Option<String> {
     if let Some(a) = given {
         if !std::path::Path::new(a).is_file() && !on_path(a) {
-            eprintln!("aurora-compositor: WARNING: --atlas {a}: not a file and not on PATH; the Atlas row will be disabled");
+            eprintln!("aurora-compositor: WARNING: {flag} {a}: not a file and not on PATH; {what} will not start");
             return None;
         }
         return Some(a.to_string());
     }
-    if on_path("atlas") {
-        return Some("atlas".into());
+    if on_path(name) {
+        return Some(name.into());
     }
     let exe = std::env::current_exe().ok();
     let candidates = exe.as_deref().and_then(|e| e.parent()).map(|d| {
-        vec![d.join("atlas"), d.join("../../../kits/build/ui/atlas"), d.join("../../../../kits/build/ui/atlas")]
+        let mut v = vec![d.join(name)];
+        v.extend(dev.iter().map(|p| d.join(p)));
+        v
     }).unwrap_or_default();
     for c in candidates {
         if c.is_file() {
             let c = c.canonicalize().unwrap_or(c);
-            tracing::info!("system: atlas is {}", c.display());
+            tracing::info!("system: {name} is {}", c.display());
             return Some(c.to_string_lossy().into_owned());
         }
     }
     None
 }
 
-/// Where the launcher inventory app is: `--launcher-app`, else PATH, else beside the compositor
-/// / the dev layout (`kits/build/ui/aurora-launcher`). None disables the System row.
-pub fn resolve_launcher_app(given: Option<&str>) -> Option<String> {
-    if let Some(a) = given {
-        if !std::path::Path::new(a).is_file() && !on_path(a) {
-            eprintln!("aurora-compositor: WARNING: --launcher-app {a}: not a file and not on PATH; the Launcher row will be disabled");
-            return None;
-        }
-        return Some(a.to_string());
-    }
-    if on_path("aurora-launcher") {
-        return Some("aurora-launcher".into());
-    }
-    let exe = std::env::current_exe().ok();
-    let candidates = exe.as_deref().and_then(|e| e.parent()).map(|d| {
-        vec![d.join("aurora-launcher"), d.join("../../../kits/build/ui/aurora-launcher"), d.join("../../../../kits/build/ui/aurora-launcher")]
-    }).unwrap_or_default();
-    for c in candidates {
-        if c.is_file() {
-            let c = c.canonicalize().unwrap_or(c);
-            tracing::info!("system: launcher is {}", c.display());
-            return Some(c.to_string_lossy().into_owned());
-        }
-    }
-    None
+/// Where Atlas is: `--atlas`, else PATH, else the dev layout. None disables the row.
+pub fn resolve_atlas(given: Option<&str>) -> Option<String> {
+    resolve_near(given, "atlas",
+        &["../../../kits/build/ui/atlas", "../../../../kits/build/ui/atlas"],
+        "--atlas", "the Atlas row")
+}
+
+/// Where the inventory app is: `--launcher-app`, else PATH, else the dev layout. None disables the row.
+pub fn resolve_inventory(given: Option<&str>) -> Option<String> {
+    resolve_near(given, "aurora-launcher",
+        &["../../../kits/build/ui/aurora-launcher", "../../../../kits/build/ui/aurora-launcher"],
+        "--launcher-app", "the Launcher row")
 }
 
 /// What choosing a verb runs: `aurora open --pick --app ID --verb NAME` (the

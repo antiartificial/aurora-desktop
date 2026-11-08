@@ -32,7 +32,6 @@ struct App {
     std::string launch_problem;  // only when launchable is false with a reason
     bool windowed = false;       // absent on the wire means false
     bool launchable = false;
-    std::vector<std::string> verbs;
 };
 
 struct Row {
@@ -43,6 +42,7 @@ struct Row {
 };
 
 struct Section {
+    std::string id;      // the category token (or "other"); row identity, not the label
     std::string label;
     std::vector<Row> rows;
 };
@@ -56,14 +56,14 @@ inline Row row_for(const App& a) {
         // Prefer the controller's own reason; otherwise say why a row cannot be actioned.
         if (!a.launch_problem.empty()) r.note = a.launch_problem;
         else if (!a.windowed) r.note = "needs a file";
-        else r.note = "cannot launch";
+        else r.note = "cannot launch";   // defence: the controller always sends a reason for this case
     }
     return r;
 }
 
 inline void sort_by_name(std::vector<App>& v) {
     std::sort(v.begin(), v.end(), [](const App& a, const App& b) {
-        return a.name == b.name ? a.id < b.id : a.name < b.name;   // stable, deterministic
+        return a.name == b.name ? a.id < b.id : a.name < b.name;   // total order on (name, id): repeatable, equal names fixed
     });
 }
 
@@ -77,6 +77,7 @@ inline std::vector<Section> build_sections(const std::vector<App>& apps, const s
         if (bucket.empty()) continue;                 // skip an empty section rather than draw a bare header
         sort_by_name(bucket);
         Section s;
+        s.id = c.id;
         s.label = c.label;
         for (const App& a : bucket) s.rows.push_back(row_for(a));
         out.push_back(std::move(s));
@@ -87,6 +88,7 @@ inline std::vector<Section> build_sections(const std::vector<App>& apps, const s
     if (!other.empty()) {
         sort_by_name(other);
         Section s;
+        s.id = "other";
         s.label = "Other";
         for (const App& a : other) s.rows.push_back(row_for(a));
         out.push_back(std::move(s));

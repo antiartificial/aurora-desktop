@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.shell.registry = shell::apps::Registry::new(args.bus_socket.clone());
     state.shell.aurora_bin = crate::shell::resolve_launcher(args.aurora_bin.as_deref());
     state.shell.atlas_bin = crate::shell::resolve_atlas(args.atlas_bin.as_deref());
-    state.shell.launcher_bin = crate::shell::resolve_launcher_app(args.launcher_bin.as_deref());
+    state.shell.inventory_bin = crate::shell::resolve_inventory(args.inventory_bin.as_deref());
     state.apply_input_config();
     state.trusted.dump_path = args.dump_overlay.clone();
     if let Some(uids) = args.trusted_uids.clone() {
@@ -331,7 +331,7 @@ struct Args {
     /// `--atlas PATH`: where Atlas is (else resolved from PATH / the dev layout).
     atlas_bin: Option<String>,
     /// `--launcher-app PATH`: the aurora-launcher inventory app.
-    launcher_bin: Option<String>,
+    inventory_bin: Option<String>,
     /// `--frame-stats PATH`: write per-frame timings (diagnostic; makes the effects pass block on the GPU at phase ends).
     frame_stats: Option<std::path::PathBuf>,
     /// `--xwayland`: start Xwayland and export `DISPLAY`.
@@ -377,7 +377,7 @@ fn parse_args() -> Args {
         extra_outputs: vec![],
         headless: None, drm: None, quit_after: None, dump_frame: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
         deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
-        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, atlas_bin: None, launcher_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
+        legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, atlas_bin: None, inventory_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -404,7 +404,7 @@ fn parse_args() -> Args {
             "--scale" => args.scale = it.next().and_then(|v| v.parse().ok()).filter(|s: &f64| s.is_finite() && *s >= 0.5 && *s <= 8.0),
             "--aurora" => args.aurora_bin = it.next(),
             "--atlas" => args.atlas_bin = it.next(),
-            "--launcher-app" => args.launcher_bin = it.next(),
+            "--launcher-app" => args.inventory_bin = it.next(),
             "--state-file" => args.state_file = it.next().map(Into::into),
             "--display-file" => args.display_file = it.next().map(Into::into),
             "--frame-stats" => args.frame_stats = it.next().map(Into::into),

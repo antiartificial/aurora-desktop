@@ -124,9 +124,9 @@ impl Shell {
             Some(t) => Entry::item("New Terminal", Action::OpenTerminal).note(t),
             None => Entry::item("New Terminal", Action::OpenTerminal).disabled("no terminal found"),
         });
-        e.push(match &self.launcher_bin {
+        e.push(match &self.inventory_bin {
             Some(_) => Entry::item("Launcher\u{2026}", Action::OpenLauncher).note("Super+Space"),
-            None => Entry::item("Launcher\u{2026}", Action::OpenLauncher).disabled("launcher not built"),
+            None => Entry::item("Launcher\u{2026}", Action::OpenLauncher).disabled("launcher not found"),
         });
         e.push(Entry::Separator);
         e.push(Entry::item("Settings\u{2026}", Action::OpenSettings));

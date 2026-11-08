@@ -3619,11 +3619,9 @@ public:
                 chevron(s, ind + e.unit * 0.5f, ry + row_h_ * 0.5f, open_.count(r.id) != 0,
                         is_sel && focused_ ? ink : e.dim);
             const float tx = ind + e.unit * 1.5f;
-            // A note is right-aligned at the small size, so the label is clipped before it
-            // rather than allowed to run under it.
-            TextStyle ns;
-            ns.size = (e.size - 2) / e.size;
-            const float note_w = r.note.empty() ? 0.0f : au_text_width(e.face(ns), e.sized(ns), r.note.c_str(), -1) + e.unit;
+            // A note is right-aligned at the small size, so the label is clipped before it rather
+            // than allowed to run under it. Measured with the same face and size it is drawn at.
+            const float note_w = r.note.empty() ? 0.0f : au_text_width(e.font, e.size - 2, r.note.c_str(), -1) + e.unit;
             au_clip_set(s, au_rect{tx, ry, frame.x + frame.w - 2 - note_w, ry + row_h_ - 1});
             // Never bold on selection: a bolder label changes its width, so the row's text
             // would shift as the selection moved over it (3.1).
@@ -3863,7 +3861,7 @@ private:
         // A heading is not a stop. Step past it in the direction of travel, so Down from the
         // last Place lands on the first Filesystem row and not on the word "Filesystem".
         const int dir = to > cur_ ? 1 : -1;
-        while (to >= 0 && to < (int)flat_.size() && (flat_[(size_t)to].section || !flat_[(size_t)to].enabled)) to += dir;
+        while (to >= 0 && to < (int)flat_.size() && flat_[(size_t)to].section) to += dir;   // disabled rows are cursor-reachable
         if (to < 0 || to >= (int)flat_.size() || to == cur_) return;
         dirty_rows_.push_back(cur_);
         dirty_rows_.push_back(to);

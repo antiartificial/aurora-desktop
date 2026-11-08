@@ -33,7 +33,7 @@ public:
         if (!id.empty()) return true;   // every row is flat: nothing is ever expanded
         for (const launcher::Section& s : sections) {
             TreeItem h;
-            h.id = "section:" + s.label;
+            h.id = "section:" + s.id;
             h.label = s.label;
             h.section = true;
             h.flat = true;
@@ -97,11 +97,25 @@ int main() {
 
     InventorySource src;
 
-    auto name_of = [&](const std::string& id) -> std::string {
+    auto request = [&](const char* verb, Json payload, int timeout_us, BusEnvelope& rep) -> status_t {
+        BusEnvelope req;
+        req.kind = "request";
+        req.to = "registry";
+        req.verb = verb;
+        req.payload = std::move(payload);
+        return bus.Call(req, &rep, timeout_us);
+    };
+
+    auto find_row = [&](const std::string& id) -> const launcher::Row* {
         for (const launcher::Section& s : src.sections)
             for (const launcher::Row& r : s.rows)
-                if (r.id == id) return r.label;
-        return id;
+                if (r.id == id) return &r;
+        return nullptr;
+    };
+
+    auto name_of = [&](const std::string& id) -> std::string {
+        const launcher::Row* r = find_row(id);
+        return r ? r->label : id;
     };
 
     std::function<void()> refresh;
@@ -110,58 +124,47 @@ int main() {
     // A refusal is a structured error envelope (kind:"error", payload.message); say what it said
     // rather than swallowing it, which is how Atlas's "rc != B_OK -> empty" would hide the reason.
     launch = [&](const std::string& id) {
-        BusEnvelope req;
-        req.kind = "request";
-        req.to = "registry";
-        req.verb = "registry.launch@v1";
         Json p = Json::MakeObject();
         p.set("app", Json::MakeString(id));
-        req.payload = p;
         BusEnvelope rep;
-        const status_t rc = bus.Call(req, &rep, 3000000);
+        const status_t rc = request("registry.launch@v1", std::move(p), 3000000, rep);
         if (rc != B_OK) {
             const std::string msg = rep.payload.getString("message", rep.payload.getString("detail", ""));
             status.set(msg.empty() ? ("cannot launch " + name_of(id))
                                    : ("cannot launch " + name_of(id) + ": " + msg));
             return;
         }
+        // Refresh first (a launch that failed within the grace window becomes a launch_problem), then
+        // say so: refresh clears the status, so setting it here is what keeps the confirmation seen.
+        refresh();
         status.set("launched " + name_of(id));
-        refresh();   // a launch that failed within the grace window shows as a launch_problem
     };
 
     std::function<Desc()> make_root = [&]() -> Desc {
         Desc tree = TreeView(&src, sel);
         OnTreeActivate(tree, [&](const std::string& id) {
-            for (const launcher::Section& s : src.sections)
-                for (const launcher::Row& r : s.rows)
-                    if (r.id == id) {
-                        if (r.enabled) w.Defer([&, id] { launch(id); });   // not during a node event
-                        return;
-                    }
+            // The widget only activates enabled rows, so a disabled row never reaches here.
+            w.Defer([&, id] { launch(id); });   // not during a node event
         });
-        return VStack({weight(tree, 1.0f), sized(Label(status), -1, 30)}, 0.0f);
+        // TextView wraps: a controller refusal can be a whole sentence and the strip must show it.
+        return VStack({weight(tree, 1.0f), sized(TextView(status, true), -1, 46)}, 0.0f);
     };
 
     refresh = [&] {
-        src.sections.clear();
         if (!bus_up) {
             status.set("no bus: start the desktop with aurora-up");
         } else {
-            BusEnvelope req;
-            req.kind = "request";
-            req.to = "registry";
-            req.verb = "registry.apps@v1";
-            req.payload = Json::MakeObject();
             BusEnvelope rep;
-            const status_t rc = bus.Call(req, &rep, 2000000);
             std::vector<launcher::App> apps;
             std::vector<launcher::Category> cats;
+            const status_t rc = request("registry.apps@v1", Json::MakeObject(), 2000000, rep);
             if (rc != B_OK) {
+                // Keep whatever inventory is on screen: a timeout must not wipe a good list.
                 status.set("the registry did not answer");
             } else if (!parse_inventory(rep.payload, apps, cats)) {
                 status.set("unexpected reply from the registry");
             } else {
-                src.sections = launcher::build_sections(apps, cats);
+                src.sections = launcher::build_sections(apps, cats);   // swap only on success
                 status.set(apps.empty() ? "no apps installed" : "");
             }
         }

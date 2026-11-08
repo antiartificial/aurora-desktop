@@ -100,7 +100,7 @@ target_link_libraries(atlas PRIVATE aurora_ui_tk)
 
 # aurora-launcher: the app inventory (decision 0025), started by the compositor's System row and
 # Super+Space. Same shape as Atlas: an aurora::ui window + a BusClient request/reply.
-add_executable(aurora-launcher demo/launcher.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
+add_executable(aurora-launcher launcher.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(aurora-launcher PRIVATE ../include/bus ../include)
 target_link_libraries(aurora-launcher PRIVATE aurora_ui_tk)
 

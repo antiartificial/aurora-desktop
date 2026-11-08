@@ -1,14 +1,15 @@
 // The launcher model's rules, each pinned by a fixture shaped like the REAL registry.apps@v1 reply
 // (probed live during the interrogate pass): empty sections, omitempty fields, verb-only apps that
 // still report launchable=true, a launch_problem, and an app with no category.
-#include "../demo/launcher_model.h"
+#include "../launcher_model.h"
 
 #include <cstdio>
 
 using namespace launcher;
 
-static int fails = 0;
+static int fails = 0, checks = 0;
 static void check(bool ok, const char* what) {
+    ++checks;
     if (!ok) { std::printf("FAIL %s\n", what); ++fails; }
 }
 
@@ -23,7 +24,7 @@ int main() {
     // windowed + launchable: actionable
     { App a; a.id = "org.aurora.haiku.text"; a.name = "Haiku Text"; a.category = "haiku"; a.windowed = true; a.launchable = true; apps.push_back(a); }
     // verb-only but launchable=true (proven: build/ffmpeg/lumen/magick): NOT actionable
-    { App a; a.id = "org.aurora.ffmpeg"; a.name = "FFmpeg"; a.category = "media"; a.windowed = false; a.launchable = true; a.verbs = {"extract_audio@v1"}; apps.push_back(a); }
+    { App a; a.id = "org.aurora.ffmpeg"; a.name = "FFmpeg"; a.category = "media"; a.windowed = false; a.launchable = true; apps.push_back(a); }
     // windowed but a launch_problem (a failed launch): greyed with the controller's reason
     { App a; a.id = "org.aurora.haiku.menu"; a.name = "Haiku Menu"; a.category = "haiku"; a.windowed = true; a.launchable = false; a.launch_problem = "last launch failed: nope"; apps.push_back(a); }
     // no category at all (omitempty): must land in Other, not vanish
@@ -35,9 +36,9 @@ int main() {
 
     // 1. Empty sections are skipped: only Media, Haiku and Other remain, in vocabulary order.
     check(s.size() == 3, "three non-empty sections");
-    check(s.size() == 3 && s[0].label == "Media", "Media first (files skipped, media first with apps)");
+    check(s.size() == 3 && s[0].label == "Media" && s[0].id == "media", "Media first, id is the token not the label");
     check(s.size() == 3 && s[1].label == "Haiku", "Haiku second");
-    check(s.size() == 3 && s[2].label == "Other", "Other last");
+    check(s.size() == 3 && s[2].label == "Other" && s[2].id == "other", "Other last, keyed \"other\"");
 
     // 2. Within Media, name order: FFmpeg before Lumen.
     check(s.size() == 3 && s[0].rows.size() == 2 && s[0].rows[0].label == "FFmpeg" && s[0].rows[1].label == "Lumen", "rows sorted by name");
@@ -61,10 +62,19 @@ int main() {
     // 5. An app with no category lands in Other, still actionable.
     check(s[2].rows.size() == 1 && s[2].rows[0].id == "org.test.nocat" && s[2].rows[0].enabled, "no-category app in Other, actionable");
 
-    // 6. An all-empty inventory yields no sections (the window shows "no apps", not bare headers).
+    // 6. Defence: windowed + not launchable + no reason still greys, it does not go silent.
+    {
+        std::vector<App> one;
+        App a; a.id = "org.x.y"; a.name = "Y"; a.category = "media"; a.windowed = true; a.launchable = false;
+        one.push_back(a);
+        auto r = build_sections(one, cats);
+        check(r.size() == 1 && !r[0].rows[0].enabled && r[0].rows[0].note == "cannot launch", "unexplained unlaunchable windowed app greys with a fallback");
+    }
+
+    // 7. An all-empty inventory yields no sections (the window shows "no apps", not bare headers).
     std::vector<App> none;
     check(build_sections(none, cats).empty(), "no apps -> no sections");
 
-    std::printf(fails ? "launcher_model: %d FAILED\n" : "launcher_model: ok (%d checks)\n", fails ? fails : 15);
+    std::printf(fails ? "launcher_model: %d of %d FAILED\n" : "launcher_model: ok (%d checks)\n", fails ? fails : checks);
     return fails ? 1 : 0;
 }
