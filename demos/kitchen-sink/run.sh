@@ -9,7 +9,7 @@
 # compositor or aurora-capture are not built), python3.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
-KITS=$ROOT/kits; BUILD=$KITS/build/interface
+KITS=$ROOT/kits; BUILD=$KITS/build/compat
 COMP=$ROOT/compositor/target/release/aurora-compositor
 CAP=$ROOT/harness/capture/target/release/aurora-capture
 PIX="python3 -I $HERE/pix.py"; TI="python3 -I $HERE/ti.py"

@@ -15,7 +15,7 @@
 # aurora-capture are not built.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
-KITS=$ROOT/kits; BUILD=$KITS/build/interface
+KITS=$ROOT/kits; BUILD=$KITS/build/compat
 KSD=$ROOT/demos/kitchen-sink
 COMP=$ROOT/compositor/target/release/aurora-compositor
 CAP=$ROOT/harness/capture/target/release/aurora-capture

@@ -17,7 +17,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 COMP=$ROOT/compositor/target/debug/aurora-compositor
-CHOOSER=$ROOT/kits/build/interface/aurora-chooser
+CHOOSER=$ROOT/kits/build/ui/aurora-chooser
 for f in "$COMP" "$CHOOSER"; do
     [ -x "$f" ] || { echo "powerbox-demo: no $f; build it first" >&2; exit 77; }
 done

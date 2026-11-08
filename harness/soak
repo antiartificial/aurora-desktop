@@ -18,7 +18,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYCLES=${1:-6}
 COMP="$ROOT/compositor/target/debug/aurora-compositor"
-APP="$ROOT/kits/build/interface/iface_kitchensink"   # a BApplication: it uses the port table
+APP="$ROOT/kits/build/compat/iface_kitchensink"   # a BApplication: it uses the port table
 for f in "$COMP" "$APP"; do [ -x "$f" ] || { echo "soak: no $f; build it first" >&2; exit 77; }; done
 
 W=$(mktemp -d /tmp/soak.XXXXXX)

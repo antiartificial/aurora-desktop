@@ -15,7 +15,7 @@
 # Needs: cmake, ninja, g++, cargo (offline: the compositor's own crates), python3.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
-KITS=$ROOT/kits; BUILD=$KITS/build/interface
+KITS=$ROOT/kits; BUILD=$KITS/build/compat
 COMP=$ROOT/compositor/target/release/aurora-compositor
 CAP=$ROOT/harness/capture/target/release/aurora-capture
 ORACLE=$ROOT/harness/theme-oracle/target/release/theme-oracle

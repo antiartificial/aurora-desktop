@@ -19,7 +19,7 @@ OUT="${ATLAS_DEMO_OUT:-$ROOT/harness/atlas-demo-out}"
 LIVE=0
 [ "${1:-}" = "--live" ] && LIVE=1
 
-ATLAS="$ROOT/kits/build/interface/atlas"
+ATLAS="$ROOT/kits/build/ui/atlas"
 COMP="$ROOT/compositor/target/release/aurora-compositor"
 CAP="$ROOT/harness/capture/target/release/aurora-capture"
 for b in "$ATLAS" "$COMP"; do
