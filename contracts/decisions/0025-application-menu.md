@@ -41,9 +41,11 @@ its own comments, and this record follows that argument rather than reopening it
 the same clause as `Verb.Group`: no policy reads it. The vocabulary is one closed list in
 `contracts/`, validated when the manifest loads, where `parse.go` already rejects unknown keys.
 
-The controller sends each app's category and the list's order. The compositor orders rows by the
-index it is given and never learns a category's name. To add a category, edit one file in
-`contracts/`. No Rust changes. A mirrored enum on the Rust side would be two lists to keep in step.
+The controller sends each app's category token and the vocabulary in display order, each entry
+carrying its token and its label. The compositor reads only the tokens, so it orders rows without
+depending on any label text. The labels travel for the launcher, which is what draws them. To add
+a category, edit one file in `contracts/`. No Rust changes. A mirrored enum on the Rust side would
+be two lists to keep in step.
 
 What a row can do is derived from the fields `registry.apps@v1` already carries, and never
 declared. A windowed app opens. A verb-only app runs its verbs and is never launched. An
@@ -115,16 +117,32 @@ installed.
 
 ## Verification
 
-Not run. This record is proposed, and no code has landed. The evidence it owes, in landing order:
+The contract unit has landed. Items 1 and 2 are done. Items 3 and 4 are outstanding, because no
+launcher and no System rows exist yet.
 
-1. Go tests that an unknown category lands in `Skipped` with a reason naming the known values,
-   that `category` is refused outside `[app]`, and that the controller sends the list's order.
-2. Rust tests that the compositor parses `category` and the order, and that a reply from an older
-   controller without the field still parses.
-3. A headless compositor test that the System rows start a host process, that a missing binary
-   greys its row, and that a verb-only app never gets a launch row.
-4. A demo under `demos/` that starts Atlas from the launcher against the real stack and asserts a
-   window arrives.
+1. **Done.** `contracts/manifest`: `TestCategoryTableIsUniqueAndNeverSystem`,
+   `TestCategoryAcceptedOnWindowedAndVerbOnlyApps` and `TestUnknownCategoryNamesTheKnownOnes`
+   pass. The last one checks that `system`, `Files`, `games` and the empty string each fail with
+   `app.category` and the known values. `controller`:
+   `TestCategoryLoadsOrSkipsWithKnownValues` puts an unknown category in `Skipped` with a reason
+   naming it, and `TestAppsReplyCarriesCategoryAndOrder` checks the per-app token and the order
+   `files, media, development, utilities, haiku` over a real bus. `go build ./...` and
+   `go test ./...` are green in `contracts/manifest`, `controller` and `shell`.
+2. **Done.** `compositor`: `parses_category_and_order`,
+   `an_older_registry_without_either_field_still_parses` and `caps_bound_an_oversized_reply`
+   pass. 7 of 7 in `shell::apps`. The older-reply test yields no category, so a controller
+   predating this change still works.
+3. Outstanding. A headless compositor test that the System rows start a host process, that a
+   missing binary greys its row, and that a verb-only app never gets a launch row.
+4. Outstanding. A demo under `demos/` that starts Atlas from the launcher against the real stack
+   and asserts a window arrives.
+
+The full suite is 388 passed, 2 failed, 2 ignored. The two failures are
+`a_client_in_a_real_domain_cgroup_gets_the_figures` in `tests/deskbar.rs` and
+`a_fullscreen_client_cannot_cover_it` in `tests/indicator.rs`, and both fail identically with this
+change stashed, so neither is caused by it. That run and that stash check were made by the agent
+that wrote the unit, not reproduced here. 0021's figure of 277 is two days old and no longer the
+baseline: the suite has grown since it was written.
 
 ## Open questions
 
@@ -138,10 +156,13 @@ Not run. This record is proposed, and no code has landed. The evidence it owes, 
 ## Consequences
 
 - `contracts/manifest` gains a `Category` field and one closed vocabulary file.
-- `registry.apps@v1` gains a per-app `category` and a top-level order. Both are additive, so an
-  older compositor and the `aurora` CLI keep working.
-- `MAX_APPS` in `shell/apps.rs` rises, as a bound on an untrusted reply. The dock is unaffected,
-  because `layout.rs` already draws one pill per item that fits. No second constant.
+- `registry.apps@v1` gains a per-app `category` token and a top-level `categories` list, each
+  entry carrying a token and a label. Both are additive, so an older compositor and the `aurora`
+  CLI keep working.
+- `MAX_APPS` is 256 and a new `MAX_CATEGORIES` is 32. Category tokens are bounded to 32
+  characters.
+- `MAX_APPS` in `shell/apps.rs` rises from 24, as a bound on an untrusted reply. The dock is
+  unaffected, because `layout.rs` already draws one pill per item that fits. No second constant.
 - Twelve files under `apps/` gain one `category` line. `apps/browser` is renamed "Haiku Browser",
   so two rows never both read "Files".
 - `harness/aurora-up` loses the paragraph that tells the reader to start Atlas by hand.
