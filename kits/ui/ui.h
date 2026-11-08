@@ -965,6 +965,12 @@ struct TreeItem {
     // A leaf that is a destination, not a branch: no chevron, no children asked for, no
     // expansion remembered. Places are flat; the Filesystem tree is not.
     bool flat = false;
+
+    // A row that is shown but cannot be actioned (an app with no window, or one whose launch is
+    // blocked). It draws dim, takes no hover fill, and neither click nor Return activates it;
+    // `note` says why, right-aligned at the small size. An empty note means no note.
+    bool enabled = true;
+    std::string note;
 };
 
 // Demand-driven, the same bargain as Rows: the widget asks only for the children of what is

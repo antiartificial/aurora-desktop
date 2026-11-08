@@ -68,6 +68,14 @@ target_link_options(test_derived PRIVATE -fsanitize=address)
 add_test(NAME derived COMMAND test_derived)
 set_tests_properties(derived PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 
+# Launcher inventory model: section order, empty-section skipping, and the enabled/note rules.
+# Pure header, ASan, no window.
+add_executable(test_launcher_model tests/test_launcher_model.cpp)
+target_compile_options(test_launcher_model PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_launcher_model PRIVATE -fsanitize=address)
+add_test(NAME launcher_model COMMAND test_launcher_model)
+set_tests_properties(launcher_model PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)
@@ -89,6 +97,12 @@ set_tests_properties(atlas_frame PROPERTIES TIMEOUT 60)
 add_executable(atlas demo/atlas.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
 target_include_directories(atlas PRIVATE ../include/bus ../include)
 target_link_libraries(atlas PRIVATE aurora_ui_tk)
+
+# aurora-launcher: the app inventory (decision 0025), started by the compositor's System row and
+# Super+Space. Same shape as Atlas: an aurora::ui window + a BusClient request/reply.
+add_executable(aurora-launcher demo/launcher.cpp ../src/bus/BusClient.cpp ../src/bus/Json.cpp)
+target_include_directories(aurora-launcher PRIVATE ../include/bus ../include)
+target_link_libraries(aurora-launcher PRIVATE aurora_ui_tk)
 
 # aurora-chooser: the graphical file picker the capability model asks for (argv in, one JSON line
 # out; see chooser_model.h for the contract). A shipped binary, so it lives here and not in demo.

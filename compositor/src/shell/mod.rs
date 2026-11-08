@@ -142,6 +142,8 @@ pub struct Shell {
     pub aurora_bin: String,
     /// Where Atlas is, resolved at startup (or `--atlas`); None disables the menu row.
     pub atlas_bin: Option<String>,
+    /// Where the aurora-launcher inventory app is (or `--launcher-app`); None disables the row.
+    pub launcher_bin: Option<String>,
     pub deco: Decoration,
     /// Windows that are still arriving, keyed by surface id. An entry lives from the window's
     /// first real commit until its animation is done, and is read once per frame by the
@@ -211,6 +213,7 @@ impl Shell {
             freeze_time: false,
             aurora_bin: "aurora".into(),
             atlas_bin: None,
+            launcher_bin: None,
             deco: Decoration::default(),
             appearing: Default::default(),
             item_appear: Default::default(),
@@ -595,7 +598,10 @@ impl Shell {
             tracing::error!("menu: no atlas to open");
             return;
         };
-        match std::process::Command::new(&bin).stdin(std::process::Stdio::null()).spawn() {
+        let mut cmd = std::process::Command::new(&bin);
+        if let Some(s) = &self.registry.sock { cmd.env("AURORA_BUS_SOCK", s); }
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
             Ok(mut child) => {
                 tracing::info!("menu: opened atlas {bin:?}");
                 std::thread::spawn(move || {
@@ -608,10 +614,21 @@ impl Shell {
 
     /// Start the launcher's picker (`aurora open --pick`): the powerbox chooses the input.
     pub fn open_launcher(&mut self) {
-        let bin = self.aurora_bin.clone();
-        match std::process::Command::new(&bin).arg("open").arg("--pick").stdin(std::process::Stdio::null()).spawn() {
+        let Some(bin) = self.launcher_bin.clone() else {
+            tracing::error!("launcher: no aurora-launcher binary (the row is disabled)");
+            return;
+        };
+        let mut cmd = std::process::Command::new(&bin);
+        // The launcher must draw the SAME registry the compositor is attached to. Inheritance is
+        // not a contract: a --bus-socket compositor has to hand the socket over, else the child
+        // dials the default and shows a different daemon's inventory with no error.
+        if let Some(s) = &self.registry.sock {
+            cmd.env("AURORA_BUS_SOCK", s);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        match cmd.spawn() {
             Ok(mut child) => {
-                tracing::info!("launcher: opened {bin:?} open --pick");
+                tracing::info!("launcher: opened {bin:?}");
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
@@ -1072,6 +1089,33 @@ pub fn resolve_atlas(given: Option<&str>) -> Option<String> {
         if c.is_file() {
             let c = c.canonicalize().unwrap_or(c);
             tracing::info!("system: atlas is {}", c.display());
+            return Some(c.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Where the launcher inventory app is: `--launcher-app`, else PATH, else beside the compositor
+/// / the dev layout (`kits/build/ui/aurora-launcher`). None disables the System row.
+pub fn resolve_launcher_app(given: Option<&str>) -> Option<String> {
+    if let Some(a) = given {
+        if !std::path::Path::new(a).is_file() && !on_path(a) {
+            eprintln!("aurora-compositor: WARNING: --launcher-app {a}: not a file and not on PATH; the Launcher row will be disabled");
+            return None;
+        }
+        return Some(a.to_string());
+    }
+    if on_path("aurora-launcher") {
+        return Some("aurora-launcher".into());
+    }
+    let exe = std::env::current_exe().ok();
+    let candidates = exe.as_deref().and_then(|e| e.parent()).map(|d| {
+        vec![d.join("aurora-launcher"), d.join("../../../kits/build/ui/aurora-launcher"), d.join("../../../../kits/build/ui/aurora-launcher")]
+    }).unwrap_or_default();
+    for c in candidates {
+        if c.is_file() {
+            let c = c.canonicalize().unwrap_or(c);
+            tracing::info!("system: launcher is {}", c.display());
             return Some(c.to_string_lossy().into_owned());
         }
     }

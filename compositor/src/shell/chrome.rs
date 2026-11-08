@@ -124,7 +124,10 @@ impl Shell {
             Some(t) => Entry::item("New Terminal", Action::OpenTerminal).note(t),
             None => Entry::item("New Terminal", Action::OpenTerminal).disabled("no terminal found"),
         });
-        e.push(Entry::item("Launcher\u{2026}", Action::OpenLauncher).note("Super+Space"));
+        e.push(match &self.launcher_bin {
+            Some(_) => Entry::item("Launcher\u{2026}", Action::OpenLauncher).note("Super+Space"),
+            None => Entry::item("Launcher\u{2026}", Action::OpenLauncher).disabled("launcher not built"),
+        });
         e.push(Entry::Separator);
         e.push(Entry::item("Settings\u{2026}", Action::OpenSettings));
         e.push(if windows > 0 { Entry::item("Window Switcher", Action::WindowSwitcher).note("Alt+Tab") } else { Entry::item("Window Switcher", Action::WindowSwitcher).disabled("no windows") });

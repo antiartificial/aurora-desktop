@@ -3603,7 +3603,7 @@ public:
             const bool cursor = i == cur_ && focused_;
             if (is_sel) {
                 au_fill_round_rect(s, in, 6, 6, focused_ ? e.accent : e.sel_unfocused);
-            } else if (i == hover_ && !(cursor && halo_)) {
+            } else if (i == hover_ && !(cursor && halo_) && r.enabled) {
                 au_fill_round_rect(s, in, 6, 6, e.hover);
             }
             // The keyboard cursor, distinct from the selection. They are usually the same row;
@@ -3612,18 +3612,29 @@ public:
             if (cursor && (halo_ || !is_sel)) draw_halo(s, in, 6, e.focus_ring, e.sidebar);
 
             const float ind = frame.x + e.unit * 1.5f + r.depth * e.unit * 2;
-            const au_color ink = is_sel && focused_ ? e.accent_ink : e.fg;
+            const au_color ink = is_sel && focused_ ? e.accent_ink : (r.enabled ? e.fg : e.dim);
             // A flat item has no chevron and no children: Places are destinations, the
             // Filesystem is a tree, and one widget draws both.
             if (r.expandable && !r.flat)
                 chevron(s, ind + e.unit * 0.5f, ry + row_h_ * 0.5f, open_.count(r.id) != 0,
                         is_sel && focused_ ? ink : e.dim);
             const float tx = ind + e.unit * 1.5f;
-            au_clip_set(s, au_rect{tx, ry, frame.x + frame.w - 2, ry + row_h_ - 1});
+            // A note is right-aligned at the small size, so the label is clipped before it
+            // rather than allowed to run under it.
+            TextStyle ns;
+            ns.size = (e.size - 2) / e.size;
+            const float note_w = r.note.empty() ? 0.0f : au_text_width(e.face(ns), e.sized(ns), r.note.c_str(), -1) + e.unit;
+            au_clip_set(s, au_rect{tx, ry, frame.x + frame.w - 2 - note_w, ry + row_h_ - 1});
             // Never bold on selection: a bolder label changes its width, so the row's text
             // would shift as the selection moved over it (3.1).
             au_text_draw(s, e.font, e.size, r.label.c_str(), -1, tx, ry + row_h_ * 0.74f, ink);
             au_clip_reset(s);
+            if (!r.note.empty()) {
+                const float nx = std::max(tx, frame.x + frame.w - e.unit - (note_w - e.unit));
+                au_clip_set(s, au_rect{nx, ry, frame.x + frame.w - 2, ry + row_h_ - 1});
+                au_text_draw(s, e.font, e.size - 2, r.note.c_str(), -1, nx, ry + row_h_ * 0.74f, e.dim);
+                au_clip_reset(s);
+            }
             // A node whose children are not here yet says so, rather than looking like a leaf.
             if (r.expandable && open_.count(r.id) && pending_.count(r.id))
                 au_text_draw(s, e.font, e.size - 2, "...", -1, frame.x + frame.w - e.unit * 2,
@@ -3687,6 +3698,7 @@ public:
         if (i < 0 || i >= (int)flat_.size()) return;
         halo_ = false;                               // a pointer press puts the halo away
         if (flat_[(size_t)i].section) return;        // a heading is not a row to press
+        if (!flat_[(size_t)i].enabled) return;       // a disabled row says why in its note; it is not pressed
         cur_ = i;
         const Row& r = flat_[i];
         // Hitting the twisty toggles without selecting. Clicking the row selects. These are
@@ -3743,7 +3755,7 @@ public:
             }
             case 0x0a:
             case 0x0d:
-                if (cur >= 0 && on_act_) on_act_(flat_[cur].id);
+                if (cur >= 0 && flat_[cur].enabled && on_act_) on_act_(flat_[cur].id);
                 return true;
             default: break;
         }
@@ -3836,6 +3848,8 @@ private:
         bool expandable = false;
         bool section = false;
         bool flat = false;
+        bool enabled = true;
+        std::string note;
     };
 
     int visible() const { return std::max(1, (int)(frame.h / row_h_)); }
@@ -3849,7 +3863,7 @@ private:
         // A heading is not a stop. Step past it in the direction of travel, so Down from the
         // last Place lands on the first Filesystem row and not on the word "Filesystem".
         const int dir = to > cur_ ? 1 : -1;
-        while (to >= 0 && to < (int)flat_.size() && flat_[(size_t)to].section) to += dir;
+        while (to >= 0 && to < (int)flat_.size() && (flat_[(size_t)to].section || !flat_[(size_t)to].enabled)) to += dir;
         if (to < 0 || to >= (int)flat_.size() || to == cur_) return;
         dirty_rows_.push_back(cur_);
         dirty_rows_.push_back(to);
@@ -3859,7 +3873,7 @@ private:
     }
 
     void select(int i) {
-        if (i < 0 || i >= (int)flat_.size() || flat_[(size_t)i].section) return;
+        if (i < 0 || i >= (int)flat_.size() || flat_[(size_t)i].section || !flat_[(size_t)i].enabled) return;
         dirty_rows_.push_back(i);
         cur_ = i;
         const std::string& id = flat_[i].id;
@@ -3924,6 +3938,8 @@ private:
             r.expandable = k.expandable && !k.flat && !k.section;
             r.section = k.section;
             r.flat = k.flat;
+            r.enabled = k.enabled;
+            r.note = k.note;
             flat_.push_back(r);
             // A flat item is a destination and a section is a heading: neither is ever asked
             // for children, which is the whole cost bargain of the tree kept for both.
