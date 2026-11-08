@@ -191,15 +191,41 @@ float default_base_size();
 
 class Window;
 class Node;      // State holds Node* to invalidate what reads it; the class comes below
+class DerivedBase;                    // a derived value; defined after Node, used as a pointer before
+template <class T> class Derived;
 
 // Symmetric attachment. A state records the nodes that read it (so set() invalidates them), and a
 // node records the states it bound to (so its destructor can detach itself). Without the second
 // direction, SetRoot frees the old tree while cells still hold raw Node* and the next set() walks
 // freed memory -- the heap-use-after-free ADR 0009 records.
-class StateBase {
+// Something a Derived can be computed from: a State or another Derived. Dependents are named at
+// construction, so the graph is fixed after the tree is built and needs no tracker or scheduler.
+class SourceBase {
+public:
+    virtual ~SourceBase() = default;
+    void addDependent(DerivedBase* d) { dependents_.push_back(d); }
+protected:
+    std::vector<DerivedBase*> dependents_;
+};
+
+class StateBase : public SourceBase {
 public:
     virtual ~StateBase() = default;
     virtual void detach(Node* n) = 0;
+};
+
+// The commit protocol (markDirty/readers) is internal to the window: a widget never calls it, and a
+// derived never registers itself with a reader -- Binding::attach does that.
+class DerivedBase : public StateBase {
+public:
+    void addReader(Node* n) { readers_.push_back(n); }
+    void removeReader(Node* n);
+    void detach(Node* n) override { removeReader(n); }   // ~Node undoes a derived reader too (ADR 0009)
+    // A source changed: this is stale, its readers repaint, and deriveds that read it follow.
+    void markDirty(Window* w);
+protected:
+    std::vector<Node*> readers_;
+    mutable bool dirty_ = true;
 };
 
 // Set() invalidates exactly the nodes that read this cell: no diffing and no tree walk, because
@@ -232,6 +258,7 @@ private:
     std::vector<Node*> nodes_;
     std::shared_ptr<std::atomic<bool>> alive_{std::make_shared<std::atomic<bool>>(true)};
     void invalidate_bound();         // invalidate the nodes that read this cell (loop thread only)
+    void notify_dependents();        // mark derived values computed from this cell dirty
 };
 
 // Binding<T> — the one way a widget takes state: no overload set to get wrong. Reads through a
@@ -245,27 +272,58 @@ class Binding {
 public:
     Binding() : lit_() {}                                      // a default constant (false/empty)
     Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
+    Binding(Derived<T>& d) : d_(&d) {}                         // a derived: read-only
     explicit Binding(T v) : lit_(std::move(v)) {}             // a read-only constant (explicit: no pointer/literal slips in)
 
     // The one place that decides what an unbound/dead binding reads as, so a widget cannot forget
-    // the guard: live -> the cell's value, otherwise the caller's fallback.
-    T get_or(T fallback) const { return live() ? s_->get() : std::move(fallback); }
-    const T& get() const { return live() ? s_->get() : lit_; }
+    // the guard: a derived or a live cell -> its value, otherwise the caller's fallback.
+    T get_or(T fallback) const { return d_ ? d_->get() : (cell() ? s_->get() : std::move(fallback)); }
+    const T& get() const { return d_ ? d_->get() : (cell() ? s_->get() : lit_); }
     void set(T v) const {
-        if (live()) s_->set(std::move(v));
+        if (d_) return;                                        // a derived is read-only
+        if (cell()) s_->set(std::move(v));
         else lit_ = std::move(v);                              // a constant writes its own copy
     }
-    bool live() const { return s_ && alive_->load(std::memory_order_acquire); }
-    bool writable() const { return live(); }
-    bool alive() const { return !s_ || alive_->load(std::memory_order_acquire); }
-    // A node built from a live binding attaches to the cell so set() invalidates it; a constant
-    // binding has nothing to attach to.
-    void attach(Node* n) const { if (live()) s_->attach(n); }
+    bool live() const { return d_ != nullptr || cell(); }      // a derived, or a live cell
+    bool writable() const { return !d_ && cell(); }
+    bool alive() const { return d_ != nullptr || !s_ || alive_->load(std::memory_order_acquire); }
+    // A node built from a live binding attaches to the cell so set() invalidates it; a derived gets
+    // it as a reader (so a source change repaints through the derived); a constant has neither.
+    void attach(Node* n) const { if (d_) { d_->addReader(n); n->addCell(d_); } else if (cell()) s_->attach(n); }
 
 private:
+    bool cell() const { return s_ && alive_->load(std::memory_order_acquire); }
     State<T>* s_ = nullptr;
+    Derived<T>* d_ = nullptr;
     std::shared_ptr<std::atomic<bool>> alive_;
     mutable T lit_{};
+};
+
+// ---- derived values ---------------------------------------------------------------------------
+//
+// A cell computed from cells declared before it (docs 04-runtime §1). Declaration order is
+// topological order, so one pass in construction order is enough: no graph sort, no cycle
+// detection, no scheduler, and no ambient observer -- which would have to be correct across the
+// set()-from-any-thread boundary 8.2b opened. Read-only, and it reads as a Binding<T>, so it can
+// feed Either, Reveal, a split ratio or a label without the widget knowing the difference.
+template <class T>
+class Derived : public DerivedBase {
+public:
+    // Sources must be declared before this (they are captured by reference and outlived by it).
+    template <class F, class... S>
+    Derived(F&& f, S&... sources)
+        : f_([fn = std::forward<F>(f), &sources...]() { return fn(sources.get()...); }) {
+        (sources.addDependent(this), ...);   // each source marks this dirty when it changes
+    }
+    const T& get() const {                    // window thread; recomputes once if stale
+        if (dirty_) { value_ = f_(); dirty_ = false; }
+        return value_;
+    }
+    Binding<T> as_binding() const { return Binding<T>(const_cast<Derived<T>&>(*this)); }
+
+private:
+    std::function<T()> f_;
+    mutable T value_{};
 };
 
 // ---- drag and drop ----------------------------------------------------------------------------
@@ -1348,6 +1406,13 @@ void State<T>::invalidate_bound() {
 }
 
 template <class T>
+void State<T>::notify_dependents() {
+    // Declared sources are named at construction, so this is a fixed list, not a walk. markDirty
+    // cascades to derived-of-derived; win_ may be null (an unbound cell), which markDirty tolerates.
+    for (DerivedBase* d : dependents_) d->markDirty(win_);
+}
+
+template <class T>
 void State<T>::set(T n) {
     // v_ is the loop thread's to write. On the loop thread (~ or with no window at all) apply now;
     // off it, post the whole apply to the deferred queue, which is thread-safe and drained on the
@@ -1356,6 +1421,7 @@ void State<T>::set(T n) {
     if (!win_ || win_->on_loop_thread()) {
         v_ = std::move(n);
         invalidate_bound();
+        notify_dependents();
         return;
     }
     auto tok = alive_;
@@ -1363,6 +1429,7 @@ void State<T>::set(T n) {
         if (!*tok) return;             // the cell died before the loop drained this
         v_ = std::move(n);
         invalidate_bound();
+        notify_dependents();
     });
 }
 

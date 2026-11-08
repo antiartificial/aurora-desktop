@@ -59,6 +59,15 @@ target_link_options(test_threadsafe_set PRIVATE -fsanitize=thread)
 add_test(NAME threadsafe_set COMMAND test_threadsafe_set)
 set_tests_properties(threadsafe_set PROPERTIES TIMEOUT 120)
 
+# 8.2e: Derived<T> — declared sources, topological (declaration) order, lazy recompute, read-only
+# Binding. ASan, because a derived holds the sources it reads.
+add_executable(test_derived tests/test_derived.cpp)
+target_link_libraries(test_derived PRIVATE aurora_ui_tk)
+target_compile_options(test_derived PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_derived PRIVATE -fsanitize=address)
+add_test(NAME derived COMMAND test_derived)
+set_tests_properties(derived PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

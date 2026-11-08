@@ -17,6 +17,17 @@
 namespace aurora {
 namespace ui {
 
+void DerivedBase::markDirty(Window* w) {
+    dirty_ = true;
+    if (w) for (Node* n : readers_) w->Invalidate(n->frame);
+    for (DerivedBase* d : dependents_) d->markDirty(w);   // derived-of-derived follows in one pass
+}
+
+void DerivedBase::removeReader(Node* n) {
+    readers_.erase(std::remove(readers_.begin(), readers_.end(), n), readers_.end());
+}
+
+
 namespace {
 
 float text_h(const Env& e) {
