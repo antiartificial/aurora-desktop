@@ -159,13 +159,13 @@ struct Scroller {
 
 class TextNode : public Node {
 public:
-    TextNode(std::string t, bool bold) : t_(std::move(t)) { st_.bold = bold; }
-    TextNode(State<std::string>* s, bool bold) : s_(s) {
+    TextNode(std::string t, bool bold) : b_(std::move(t)) { st_.bold = bold; }
+    TextNode(Binding<std::string> b, bool bold) : b_(std::move(b)) {
         st_.bold = bold;
-        if (s_) s_->attach(this);     // the binding the design promises, made here
+        b_.attach(this);              // attach to the cell so set() invalidates this node
     }
 
-    const std::string& str() const { return s_ ? s_->get() : t_; }
+    const std::string& str() const { return b_.get(); }
 
     Size Measure(const Env& e, Constraints) override {
         laid_ = str();
@@ -182,7 +182,7 @@ public:
     //
     // The same mistake as Split, Either and Reveal: a state change that alters the LAYOUT and
     // only asks for a repaint.
-    bool Animating() const override { return s_ && str() != laid_; }
+    bool Animating() const override { return b_.live() && str() != laid_; }
     void Draw(au_surface* s, const Env& e) override {
         const Rect in = inner();
         au_text_draw(s, e.face(st_), e.sized(st_), str().c_str(), -1, in.x,
@@ -196,9 +196,8 @@ public:
     Node* HitTest(float, float) override { return nullptr; }   // text is not a target
 
 private:
-    std::string t_;
     std::string laid_;            // the text the last layout measured
-    State<std::string>* s_ = nullptr;
+    Binding<std::string> b_;
     TextStyle st_;
 };
 
@@ -4208,7 +4207,7 @@ Desc styled(Desc d, TextStyle st) { d->SetStyle(st); return d; }
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string t) { return std::make_shared<TextNode>(std::move(t), false); }
-Desc Label(State<std::string>* s) { return std::make_shared<TextNode>(s, false); }
+Desc Label(Binding<std::string> b) { return std::make_shared<TextNode>(std::move(b), false); }
 Desc Bold(std::string t) { return std::make_shared<TextNode>(std::move(t), true); }
 Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));

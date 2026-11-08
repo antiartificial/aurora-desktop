@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
                                                                 FieldOpts{"file name", false, 0, true}),
                                                       "name"), 1)}, 0.75f),
                                  Insets(1, 0.35f)));
-    column.push_back(padding(styled(Label(&message), TextStyle{0.9f, false, true}), Insets(1, 0.35f)));
+    column.push_back(padding(styled(Label(message), TextStyle{0.9f, false, true}), Insets(1, 0.35f)));
     column.push_back(padding(HStack({styled(Label("Enter opens a folder or grants a file   Ctrl+Enter grants   Esc cancels"),
                                             TextStyle{0.8f}),
                                      Spacer(),

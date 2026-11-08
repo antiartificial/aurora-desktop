@@ -654,7 +654,7 @@ int main() {
     // being short of room.
     {
         State<std::string> text("short");
-        Desc label = Label(&text);
+        Desc label = Label(text);
         lay(label, e, box);
         eq("settled after layout", !label->Animating());
         const float narrow = label->Measure(e, Constraints{1000, 600}).w;

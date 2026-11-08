@@ -977,7 +977,7 @@ int main() {
                                         // 16 px padding all round, and a hairline on its left
                                         // edge: the separator between content and preview.
                                         atlas::SideBand(VStack({
-                                                            styled(Label(&preview_head),
+                                                            styled(Label(preview_head),
                                                                    TextStyle{1.0f, true}),
                                                             weight(named(TextView(&preview_text),
                                                                          "preview"), 1),

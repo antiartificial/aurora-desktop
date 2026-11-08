@@ -29,7 +29,7 @@ int main() {
         State<std::string> cell("a");
         CHECK(cell.bound_count() == 0, "a fresh cell has no bound nodes, got %zu", cell.bound_count());
         {
-            Desc node = Label(&cell);
+            Desc node = Label(cell);
             CHECK(cell.bound_count() == 1, "a Label built from a cell attaches it, got %zu",
                   cell.bound_count());
         }
@@ -45,7 +45,7 @@ int main() {
         State<std::string> cell("first");
         cell.bind(&win);
 
-        win.SetRoot(Label(&cell));                     // the node attaches to cell in its constructor
+        win.SetRoot(Label(cell));                     // the node attaches to cell in its constructor
         CHECK(cell.bound_count() == 1, "the first root bound the cell, got %zu", cell.bound_count());
 
         win.SetRoot(Label(std::string("second")));     // dropping the first tree frees its node
@@ -62,7 +62,7 @@ int main() {
     // ~Node must find no dangling cell to call.
     {
         auto* cell = new State<std::string>("x");
-        Desc node = Label(cell);
+        Desc node = Label(*cell);
         CHECK(cell->bound_count() == 1, "the node bound the heap cell, got %zu", cell->bound_count());
         delete cell;      // ~State removes itself from node->cells_
         node.reset();     // ~Node: cells_ is empty, nothing dangling

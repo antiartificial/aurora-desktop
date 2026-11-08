@@ -244,7 +244,7 @@ template <class T>
 class Binding {
 public:
     Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
-    Binding(const T& v) : lit_(v) {}                           // a read-only constant
+    Binding(T v) : lit_(std::move(v)) {}                       // a read-only constant
 
     const T& get() const { return (s_ && *alive_) ? s_->get() : lit_; }
     void set(T v) const {
@@ -253,6 +253,10 @@ public:
     }
     bool writable() const { return s_ && *alive_; }
     bool alive() const { return !s_ || *alive_; }
+    bool live() const { return s_ && *alive_; }                // backed by a cell (vs a constant)
+    // A node built from a live binding attaches to the cell so set() invalidates it; a constant
+    // binding has nothing to attach to.
+    void attach(Node* n) const { if (s_ && *alive_) s_->attach(n); }
 
 private:
     State<T>* s_ = nullptr;
@@ -437,7 +441,7 @@ Desc styled(Desc d, TextStyle st);
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string text);
-Desc Label(State<std::string>* bound);
+Desc Label(Binding<std::string> bound);
 Desc Bold(std::string text);
 Desc Button(std::string label, std::function<void()> on_click);
 // A button that can be switched off by a State. Off, it draws dim, ignores a click and the
