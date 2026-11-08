@@ -58,6 +58,15 @@ struct au_surface {
     Canvas canvas;
     int layout_w = 0, layout_h = 0;
     double scale = 1.0;
+    // The clip every widget's own clip is bounded by, and the one `au_clip_reset` goes back to.
+    //
+    // Without it clips do not nest: `Canvas::SetClip` intersects with the SURFACE, so a widget
+    // setting its own frame widens the clip again, and `au_clip_reset` opened it to the whole
+    // window. The first widget to do either threw away the damage clip the window had just set,
+    // and every widget after it drew in full. That is why a frame with 9% of its area damaged
+    // cost almost as much as a whole one.
+    aurora::DRect base{0, 0, 0, 0};
+    bool has_base = false;
 };
 
 // ---- surface ----------------------------------------------------------------------------------
@@ -108,10 +117,34 @@ void au_clear(au_surface* s, au_color c) { if (s) s->canvas.Clear(C(c)); }
 
 void au_clip_set(au_surface* s, au_rect r) {
     if (!s) return;
-    s->canvas.SetClip(s->canvas.ToDevice(R(r)));
+    aurora::DRect d = s->canvas.ToDevice(R(r));
+    if (s->has_base) d = aurora::Canvas::Intersect(d, s->base);
+    s->canvas.SetClip(d);
 }
+
+void au_clip_base(au_surface* s, au_rect r) {
+    if (!s) return;
+    s->base = s->canvas.ToDevice(R(r));
+    s->has_base = true;
+    s->canvas.SetClip(s->base);
+}
+
+void au_clip_base_clear(au_surface* s) {
+    if (!s) return;
+    s->has_base = false;
+    au_clip_reset(s);
+}
+au_rect au_clip_get(const au_surface* s) {
+    if (!s) return au_rect{0, 0, 0, 0};
+    const aurora::DRect c = s->canvas.Clip();
+    const double k = s->canvas.Scale() > 0 ? s->canvas.Scale() : 1.0;
+    return au_rect{(float)(c.x0 / k), (float)(c.y0 / k), (float)(c.x1 / k), (float)(c.y1 / k)};
+}
+
 void au_clip_reset(au_surface* s) {
-    if (s) s->canvas.SetClip(DRect{0, 0, s->canvas.Width(), s->canvas.Height()});
+    if (!s) return;
+    // Back to the enclosing clip, not to the whole surface.
+    s->canvas.SetClip(s->has_base ? s->base : DRect{0, 0, s->canvas.Width(), s->canvas.Height()});
 }
 
 void au_fill_rect(au_surface* s, au_rect r, au_color c) { if (s) s->canvas.FillRect(R(r), C(c)); }

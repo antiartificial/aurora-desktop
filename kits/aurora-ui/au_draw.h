@@ -60,6 +60,14 @@ uint32_t* au_surface_pixels_mut(au_surface*);
 
 void au_clear(au_surface*, au_color);
 void au_clip_set(au_surface*, au_rect);      /* layout units; intersected with the surface */
+/* The clip as it stands, in layout units. A node that can cheaply tell it is outside this can
+   skip its work entirely; without it the clip only rejects at the raster stage, so a frame
+   costs what it would cost undamaged. */
+au_rect au_clip_get(const au_surface*);
+/* The clip that bounds every other clip for this frame, and the one au_clip_reset returns to.
+   The window sets it to the damaged union; clearing it restores whole-surface behaviour. */
+void au_clip_base(au_surface*, au_rect);
+void au_clip_base_clear(au_surface*);
 void au_clip_reset(au_surface*);
 void au_fill_rect(au_surface*, au_rect, au_color);
 void au_fill_round_rect(au_surface*, au_rect, float rx, float ry, au_color);

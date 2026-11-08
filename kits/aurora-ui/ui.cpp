@@ -909,8 +909,18 @@ public:
         const int last = std::min(n - 1, first + vis);
         if (n > 0) r_->Want(std::max(0, first - 8), std::min(n - 1, last + 16));
 
+        // Rows the clip would throw away are not drawn at all.
+        //
+        // `Want` above has already told the stat worker the whole visible range, so skipping
+        // here costs it nothing. Without this a hover that damages two rows still pays for
+        // every visible row -- the fills, the icon lookups, the text -- and the clip discards
+        // the result at the raster stage, which is the reason a 0.09-damage frame cost almost
+        // as much as a full one. The edit row is never skipped: its field is PLACED here, and
+        // hit-testing needs that whether or not it is on screen this frame.
+        const au_rect clip = au_clip_get(s);
         for (int i = first; i <= last; i++) {
             const float ry = frame.y + head_h_ + 1 + (i - first) * row_h_;
+            if (!(i == edit_row_ && edit_field_) && (ry + row_h_ < clip.t || ry > clip.b)) continue;
             if (i == edit_row_ && edit_field_) {
                 // The field replaces the row's first cell. Placed every frame because the row
                 // moves when the list scrolls, and measured once here rather than in Measure:
@@ -4745,9 +4755,12 @@ void Window::Draw() {
     // of them intersect: the clip rejects their pixels cheaply, and an intersection test per
     // node would cost more than it saves at this tree size. That stops being true for a tree
     // with thousands of nodes, which is what the list's virtualisation already prevents.
-    au_clip_set(sf_, clip.box());
+    // The damaged union bounds every clip the tree sets, so a widget cannot widen past it and
+    // `au_clip_reset` cannot open the window back up.
+    au_clip_base(sf_, clip.box());
     au_fill_rect(sf_, clip.box(), au_color{24, 26, 34, 255});
     if (root_) root_->Draw(sf_, env_);
+    au_clip_base_clear(sf_);
     // Last, and by the window: a ghost has to be able to leave the widget it came from, and a
     // node can only draw inside its own frame.
     draw_ghost();
