@@ -22,7 +22,7 @@ COMP=$!
 trap 'kill $COMP 2>/dev/null; kill ${APP:-0} 2>/dev/null; rm -rf "$R"' EXIT
 for i in $(seq 200); do [ -S "$TI" ] && break; sleep 0.05; done
 DISP=$(ls "$R" | grep -m1 '^wayland-[0-9]*$')
-AURORA_APPSERVER_TRACE=1 WAYLAND_DISPLAY=$DISP ./kits/build/interface/iface_controls \
+AURORA_APPSERVER_TRACE=1 WAYLAND_DISPLAY=$DISP ./kits/build/compat/iface_controls \
   > "$R/app.log" 2>"$R/app.err" &
 APP=$!
 sleep 3

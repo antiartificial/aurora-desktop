@@ -70,12 +70,17 @@ else()
   add_test(NAME bus_bridge COMMAND test_bus)   # busd tests skip without Go
 endif()
 
+# The shared substrate (render) and the aurora::ui toolkit (ui) build WITHOUT the Haiku checkout.
+# That is the point of ADR 0003: a clean checkout builds the toolkit, atlas and the chooser.
+add_subdirectory(render)
+add_subdirectory(ui)
+
 # Real Haiku kit code (Vitruvian's src/kits/app, compiled in place, read-only): haiku_ledger_real and the
-# haiku-compat tests. Off when the Haiku source or Go (for busd) is absent. See haiku-compat/README.md.
+# haiku-compat + compat tests. Off when the Haiku source or Go (for busd) is absent. See haiku-compat/README.md.
 set(HAIKU_SRC "/home/arti/projects/Vitruvian" CACHE PATH "Vitruvian/Haiku checkout (read-only)")
 if(EXISTS ${HAIKU_SRC}/src/kits/app/Message.cpp)
   add_subdirectory(haiku-compat)
-  add_subdirectory(interface)
+  add_subdirectory(compat)
   add_test(NAME haiku_real_flat COMMAND test_flat)
   add_test(NAME haiku_real_looper COMMAND test_looper)
   if(GO_EXE)

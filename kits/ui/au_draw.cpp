@@ -6,8 +6,8 @@
 
 #include "au_draw.h"
 
-#include "../interface/appserver/canvas.h"
-#include "../interface/appserver/text_backend.h"
+#include "../render/canvas.h"
+#include "../render/text_backend.h"
 
 #include <cmath>
 #include <cstdio>

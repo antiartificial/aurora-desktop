@@ -19,9 +19,9 @@ export TI="$R/ti"
 BIN="$OUT/pool-client"
 echo "== build"
 cc -O1 -g -o "$BIN" "$HERE/client.c" \
-   kits/build/interface/libaurora_wl_present.a \
+   kits/build/render/libaurora_wl_present.a \
    $(pkg-config --cflags --libs wayland-client xkbcommon) \
-   -Ikits/build/interface/gen -lm || { echo "BUILD FAILED"; exit 2; }
+   -Ikits/build/render/gen -lm || { echo "BUILD FAILED"; exit 2; }
 
 ./compositor/target/release/aurora-compositor --headless=800x600 --freeze-time --scale 1 \
   --test-input "$TI" > "$R/comp.log" 2>&1 &

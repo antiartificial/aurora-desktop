@@ -28,7 +28,7 @@
  *
  * POOL_STEPS=n stops after n frames. POOL_RESIZE=WxH asks for a resize before frame 2.
  */
-#include "../../kits/interface/appserver/present.h"
+#include "../../kits/render/present.h"
 
 #include <stdio.h>
 #include <stdlib.h>

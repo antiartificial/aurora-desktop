@@ -10,8 +10,8 @@
 // trash, no rename, no paste, no context menu, no drag. DirRows and PlacesTree come from the file manager's own model and
 // the list is made single-select, so what is highlighted is exactly what Grant would bind.
 
-#include "../aurora-ui/ui.h"
-#include "../aurora-ui/filebrowse.h"
+#include "ui.h"
+#include "filebrowse.h"
 #include "chooser_model.h"
 
 #include <unistd.h>

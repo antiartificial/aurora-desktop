@@ -16,7 +16,7 @@
 // SPIKE_FRAMES=n quits after n frames. SPIKE_RESIZE=WxH resizes once, at frame 3.
 
 #include "../au_draw.h"
-#include "../../interface/appserver/present.h"
+#include "../../render/present.h"
 
 #include <algorithm>
 #include <chrono>
