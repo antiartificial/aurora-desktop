@@ -999,7 +999,24 @@ int main() {
                        HStack({
                                   IconButton(Glyph::Sidebar,
                                              [&] {
-                                                 sidebar_open.set(!sidebar_open.get());
+                                                 const bool was = sidebar_open.get();
+                                                 sidebar_open.set(!was);
+                                                 // A toggle that fires more than once per
+                                                 // gesture is a bug nobody can diagnose from
+                                                 // "it flickers". ATLAS_TRACE makes each one
+                                                 // say when it happened, so a loop reported
+                                                 // from a live session arrives as a timestamped
+                                                 // count rather than an impression.
+                                                 if (getenv("ATLAS_TRACE")) {
+                                                     static int n = 0;
+                                                     static auto t0 = std::chrono::steady_clock::now();
+                                                     const double ms = std::chrono::duration<double, std::milli>(
+                                                         std::chrono::steady_clock::now() - t0).count();
+                                                     fprintf(stderr, "ATLAS sidebar toggle #%d at %.1f ms: %s -> %s\n",
+                                                             ++n, ms, was ? "open" : "closed",
+                                                             was ? "closed" : "open");
+                                                     fflush(stderr);
+                                                 }
                                                  w.Invalidate();
                                              }),
                                   IconButton(Glyph::Back, [&] { go_back(); }, &can_back),
