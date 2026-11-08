@@ -28,6 +28,7 @@ DOCS = [
     ("performance-architecture.md", "performance-architecture.html", "Architecture specification"),
     ("visual-system.md", "visual-system.html", "The glass design system"),
     ("aurora-ui.md", "aurora-ui.html", "Toolkit design notes"),
+    ("future-directions.md", "future-directions.html", "Research note"),
 ]
 
 TEMPLATE = """<!doctype html>
