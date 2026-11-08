@@ -35,6 +35,11 @@ pub struct AppEntry {
     /// window and has no verb to pick. `exec` is the resolved binary.
     pub windowed: bool,
     pub exec: String,
+    /// The section token the manifest filed this app under, or `None` for an
+    /// older registry or an app that names none. Presentation only. Its
+    /// position is `Registry::categories`; this side never learns what a
+    /// token means.
+    pub category: Option<String>,
 }
 
 /// One verb as `registry.verbs@v1` describes it. Text here is untrusted
@@ -60,8 +65,10 @@ pub enum Status {
 }
 
 const REFRESH: Duration = Duration::from_secs(5);
-const MAX_APPS: usize = 24;
+/// Bound on an untrusted reply, not on the dock: `layout.rs` draws one pill per item that fits.
+const MAX_APPS: usize = 256;
 const MAX_VERBS: usize = 256;
+const MAX_CATEGORIES: usize = 32;
 
 /// Untrusted display text: control characters out, length bounded.
 pub fn display_name(s: &str) -> String {
@@ -88,6 +95,15 @@ pub fn parse_verbs(reply: &Value) -> Result<Vec<VerbEntry>, String> {
         .collect())
 }
 
+/// The category tokens in the order the registry sent them; an app's position in this list is
+/// its section's sort key. A reply without the list (an older registry) yields none.
+pub fn parse_categories(reply: &Value) -> Vec<String> {
+    reply["categories"]
+        .as_array()
+        .map(|c| c.iter().filter_map(|c| c["id"].as_str().filter(|i| !i.is_empty())).map(|i| display_text(i, 32)).take(MAX_CATEGORIES).collect())
+        .unwrap_or_default()
+}
+
 pub fn parse(reply: &Value) -> Result<Vec<AppEntry>, String> {
     let apps = reply["apps"].as_array().ok_or("reply has no apps list")?;
     Ok(apps
@@ -100,7 +116,8 @@ pub fn parse(reply: &Value) -> Result<Vec<AppEntry>, String> {
             let problem = display_text(a["launch_problem"].as_str().unwrap_or(""), 90);
             let windowed = a["windowed"].as_bool().unwrap_or(false);
             let exec = a["exec"].as_str().unwrap_or("").to_string();
-            Some(AppEntry { id: id.to_string(), name: display_name(name), verbs, launchable, problem, windowed, exec })
+            let category = a["category"].as_str().filter(|c| !c.is_empty()).map(|c| display_text(c, 32));
+            Some(AppEntry { id: id.to_string(), name: display_name(name), verbs, launchable, problem, windowed, exec, category })
         })
         .take(MAX_APPS)
         .collect())
@@ -109,11 +126,13 @@ pub fn parse(reply: &Value) -> Result<Vec<AppEntry>, String> {
 /// One finished ask. `verbs` is `None` when `registry.verbs@v1` failed: the
 /// apps are still good, but their effect classes are then unknown, and the
 /// picker says so rather than guessing.
-type Snapshot = (Vec<AppEntry>, Option<Vec<VerbEntry>>);
+type Snapshot = (Vec<AppEntry>, Vec<String>, Option<Vec<VerbEntry>>);
 
 pub struct Registry {
     pub sock: Option<PathBuf>,
     pub apps: Vec<AppEntry>,
+    /// Category tokens in display order, from `registry.apps@v1`.
+    pub categories: Vec<String>,
     /// Details for the verbs in `apps`; `None` until `registry.verbs@v1` has answered.
     pub verbs: Option<Vec<VerbEntry>>,
     pub status: Status,
@@ -132,7 +151,7 @@ pub struct Registry {
 impl Registry {
     pub fn new(sock: Option<PathBuf>) -> Self {
         let status = if sock.is_some() { Status::Pending } else { Status::NoBus };
-        Registry { sock, apps: vec![], verbs: None, status, generation: 0, audio: None, audio_rx: None, rx: None, last: None, refresh_now: Arc::new(AtomicBool::new(false)) }
+        Registry { sock, apps: vec![], categories: vec![], verbs: None, status, generation: 0, audio: None, audio_rx: None, rx: None, last: None, refresh_now: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Collect a finished ask and start the next one when due. Cheap; call per frame.
@@ -147,13 +166,14 @@ impl Registry {
             match rx.try_recv() {
                 Ok(r) => {
                     self.rx = None;
-                    let (apps, verbs, status) = match r {
-                        Ok((a, v)) => (a, v, Status::Ok),
-                        Err(e) => (self.apps.clone(), self.verbs.clone(), Status::Failed(e)),
+                    let (apps, categories, verbs, status) = match r {
+                        Ok((a, c, v)) => (a, c, v, Status::Ok),
+                        Err(e) => (self.apps.clone(), self.categories.clone(), self.verbs.clone(), Status::Failed(e)),
                     };
-                    if apps != self.apps || verbs != self.verbs || status != self.status {
+                    if apps != self.apps || categories != self.categories || verbs != self.verbs || status != self.status {
                         tracing::info!("dock: registry.apps@v1 -> {status:?}, {} app(s): {:?}", apps.len(), apps.iter().map(|a| a.id.as_str()).collect::<Vec<_>>());
                         self.apps = apps;
+                        self.categories = categories;
                         self.verbs = verbs;
                         self.status = status;
                         self.generation += 1;
@@ -178,12 +198,12 @@ impl Registry {
             // late is visible -- but a thread of its own, dialling the bus on its own clock,
             // would be a second moving part for a number in a status line.
             let audio = call_to(&sock, "registry", "system.audio@v1", Some(json!({}))).ok().and_then(|v| parse_audio(&v));
-            let r = call_to(&sock, "registry", "registry.apps@v1", Some(json!({}))).and_then(|v| parse(&v)).map(|apps| {
+            let r = call_to(&sock, "registry", "registry.apps@v1", Some(json!({}))).and_then(|v| Ok((parse(&v)?, parse_categories(&v)))).map(|(apps, categories)| {
                 let verbs = call_to(&sock, "registry", "registry.verbs@v1", Some(json!({}))).and_then(|v| parse_verbs(&v));
                 if let Err(e) = &verbs {
                     tracing::warn!("dock: registry.verbs@v1 failed ({e}); verb effects are unknown");
                 }
-                (apps, verbs.ok())
+                (apps, categories, verbs.ok())
             });
             let _ = atx.send(audio);
             let _ = tx.send(r);
@@ -247,12 +267,45 @@ mod tests {
                 problem: String::new(),
                 windowed: false,
                 exec: String::new(),
+                category: None,
             }
         );
         assert!(a[1].verbs.is_empty());
         assert_eq!(a[1].name, "bad?name");
         assert!(parse(&json!({})).is_err());
         assert!(display_name(&"x".repeat(100)).chars().count() <= 28);
+    }
+
+    #[test]
+    fn parses_category_and_order() {
+        let v = json!({
+            "apps": [{"id": "a.b", "name": "Ab", "category": "media"}, {"id": "c.d", "category": ""}],
+            "categories": [{"id": "files", "label": "Files"}, {"id": "media", "label": "Media"}, {"label": "no id"}],
+        });
+        let a = parse(&v).unwrap();
+        assert_eq!(a[0].category.as_deref(), Some("media"));
+        assert_eq!(a[1].category, None);
+        assert_eq!(parse_categories(&v), vec!["files".to_string(), "media".to_string()]);
+    }
+
+    #[test]
+    fn an_older_registry_without_either_field_still_parses() {
+        let v = json!({"apps": [{"id": "a.b", "name": "Ab", "verbs": ["x@v1"]}]});
+        let a = parse(&v).unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].category, None);
+        assert!(parse_categories(&v).is_empty());
+    }
+
+    #[test]
+    fn caps_bound_an_oversized_reply() {
+        let apps: Vec<Value> = (0..MAX_APPS * 2).map(|i| json!({"id": format!("a.b{i}"), "category": "x".repeat(500)})).collect();
+        let cats: Vec<Value> = (0..MAX_CATEGORIES * 2).map(|i| json!({"id": format!("c{i}")})).collect();
+        let v = json!({"apps": apps, "categories": cats});
+        let a = parse(&v).unwrap();
+        assert_eq!(a.len(), MAX_APPS);
+        assert!(a[0].category.as_ref().unwrap().chars().count() <= 32);
+        assert_eq!(parse_categories(&v).len(), MAX_CATEGORIES);
     }
 
     #[test]
