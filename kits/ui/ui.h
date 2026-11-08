@@ -1042,7 +1042,20 @@ public:
     ~Window();
 
     bool ok() const { return win_ != nullptr; }
-    void SetRoot(Desc root) { root_ = std::move(root); dirty_ = true; }
+    // A tree swap. The old tree is dropped here; attachment is symmetric (ADR 0009) so the CELLS
+    // are safe, but the window's own node lists still named the freed nodes, so clear them and force
+    // a fresh layout. Before this, a swap mid-run (preview, hot reload) let Run's tick scan and
+    // event routing walk freed Node*; SetRoot was only safe before the first Run.
+    void SetRoot(Desc root) {
+        root_ = std::move(root);
+        all_.clear();
+        focusables_.clear();
+        hover_ = pressed_ = focus_ = last_node_ = nullptr;
+        drag_src_ = drag_tgt_ = nullptr;
+        laid_ = false;
+        damage_.all();
+        dirty_ = true;
+    }
     Env& env() { return env_; }
     void Invalidate() { dirty_ = true; damage_.all(); }
     // Mark one rectangle dirty. This is what a State<T> set and a hover should call: a hover that
