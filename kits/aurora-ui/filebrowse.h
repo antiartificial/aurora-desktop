@@ -112,6 +112,9 @@ public:
             std::lock_guard<std::mutex> g(mu_);
             generation_++;
             e_.clear();
+            // The view indexes into `e_`, so it cannot outlive it. Leaving it behind is what
+            // gave the worker a stale index to follow while the new listing was being read.
+            view_.clear();
         }
         DIR* d = opendir(path.c_str());
         if (!d) return 0;
@@ -230,10 +233,21 @@ public:
     }
 
     // Row index to entry index. Called with the lock held.
+    // A row number to an index into `e_`, or -1. TOTAL: it never returns an index that is not
+    // valid in `e_` right now.
+    //
+    // It used to check `view_` only against its own length and hand the stored index back
+    // unchecked, which is a different vector's bounds. `Open` clears `e_` and bumps the
+    // generation before readdir, so between the clear and the refill `e_` is empty while
+    // `view_` still holds the previous directory's indices -- and the stat worker, which maps
+    // rows off the main thread, read `e_[i]` straight off the end and aborted the process.
+    // Opening a directory was enough to do it, because `show_hidden_` is false by default, so
+    // the unchecked branch is the one that always runs.
     int map(int row) const {
         if (filter_.empty() && show_hidden_) return (row >= 0 && row < (int)e_.size()) ? row : -1;
         if (row < 0 || row >= (int)view_.size()) return -1;
-        return view_[row];
+        const int i = view_[row];
+        return (i >= 0 && i < (int)e_.size()) ? i : -1;
     }
 
     // Called from the WORKER thread when stat results land. Must be safe to call off the main
