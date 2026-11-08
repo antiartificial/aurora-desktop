@@ -57,6 +57,11 @@ func (v *validator) app() {
 	case strings.ContainsRune(a.Exec, 0):
 		v.add("app.exec", "app", 0, "exec", "contains a NUL byte")
 	}
+	if a.Category != "" || v.m.lines.has("app", 0, "category") {
+		if !KnownCategory(a.Category) {
+			v.add("app.category", "app", 0, "category", "%q is not a known category (want one of: %s)", a.Category, categoryIDs())
+		}
+	}
 }
 
 func (v *validator) runtimes() {

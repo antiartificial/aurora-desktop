@@ -41,6 +41,12 @@ type App struct {
 	// directory. Exec is required when Windowed is true and refused otherwise.
 	Windowed bool   `toml:"windowed,omitempty"`
 	Exec     string `toml:"exec,omitempty"`
+
+	// Category is ADVISORY, PRESENTATION ONLY, like Verb.Group: the section of
+	// the application menu this app is listed under. It must be one of
+	// Categories. Nothing may make an access decision, an approval decision or
+	// any other policy choice from it (decision 0025).
+	Category string `toml:"category,omitempty"`
 }
 
 // ExecPath resolves App.Exec: an absolute path is cleaned, a relative one is
