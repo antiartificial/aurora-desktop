@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
     DirRows rows;
     rows.Open(start);
 
-    int selected = -1;
+    State<int> selected(-1);
     State<std::string> path(start), place(start), name(args.suggest), message("");
     State<float> sidebar(0.27f);
     State<bool> can_grant(false), show_hidden(false);
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
         const std::string leaf = row_leaf(row);
         return leaf.empty() ? std::string() : join_path(path.get(), leaf);
     };
-    auto pick = [&] { return make_pick(path.get(), row_path(selected), name.get()); };
+    auto pick = [&] { return make_pick(path.get(), row_path(selected.get()), name.get()); };
 
     // The one place the screen learns what the selection is worth. The button and the sentence both come from here.
     auto refresh = [&] {
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
         if (presence_of(to) != Presence::Dir) return;
         rows.Open(to);
         path.set(to);
-        selected = -1;
+        selected.set(-1);
         if (tree && !revealing) {
             revealing = true;
             RevealInTree(tree, to);
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
     OnTreeSelect(tree, [&](const std::string& id) { if (!revealing) go(id); });
     OnTreeActivate(tree, [&](const std::string& id) { if (!revealing) go(id); });
 
-    Desc list = named(ListView(&rows, &selected), "files");
+    Desc list = named(ListView(&rows, selected), "files");
     ListIcons(list);   // a folder should look like a folder, not like a name with a slash
     ListSingleSelect(list);
     OnListSelect(list, [&](int row) {
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
     column.push_back(padding(HStack({Button("Up", [&] { go(parent_path(path.get())); }),
                                      padding(Checkbox("Hidden files", &show_hidden, [&](bool on) {
                                                  rows.SetShowHidden(on);
-                                                 selected = -1;
+                                                 selected.set(-1);
                                                  refresh();
                                                  w.Invalidate();
                                              }), 0.4f),

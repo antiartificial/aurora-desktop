@@ -657,7 +657,7 @@ public:
     virtual void Sort(int col, bool ascending) { (void)col; (void)ascending; }
 };
 
-Desc ListView(Rows* rows, int* selected);
+Desc ListView(Rows* rows, Binding<int> selected);
 
 // ---- icon view --------------------------------------------------------------------------------
 
@@ -670,7 +670,7 @@ Desc ListView(Rows* rows, int* selected);
 // untrusted file is a verb that runs in a domain), and a grid of identical generic glyphs would
 // be worse than a list. A procedural icon per class carries real information at zero risk.
 // HVIF, when it lands, replaces the drawing and not the widget.
-Desc IconView(Rows* rows, int* selected);
+Desc IconView(Rows* rows, Binding<int> selected);
 void OnIconsActivate(const Desc& icons, std::function<void(int)> f);
 void OnIconsContext(const Desc& icons, std::function<void(int, float, float)> f);
 // A right-click on a row calls this with (row, x, y) in window coordinates, so the app can open

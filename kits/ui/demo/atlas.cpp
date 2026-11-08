@@ -76,7 +76,7 @@ int main() {
         return out;
     };
 
-    int selected = -1;
+    State<int> selected(-1);
     State<std::string> path(dir);
     // The sidebar. `place` is the tree's selected id and the split's ratio is a State for the
     // reason the widget takes one: it is a setting, and it belongs to whatever the app persists.
@@ -127,7 +127,7 @@ int main() {
     // selection, the filter narrows the listing, and a query opens its own window.
     auto refilter = [&](const std::string& f) {
         rows.SetFilter(f);
-        selected = -1;
+        selected.set(-1);
         status.set(f.empty() ? grouped(rows.Count()) + " items"
                              : grouped(rows.Count()) + " of " + grouped(rows.Total()) +
                                    " match \"" + f + "\"");
@@ -183,7 +183,7 @@ int main() {
         const double ms = rows.Open(to);
         (void)ms;
         path.set(to);
-        selected = -1;
+        selected.set(-1);
         rows.SetFilter(filter.get());
         status.set(grouped(rows.Count()) + " items");
         // Keep the sidebar on the directory the main pane is showing, whichever way we got here
@@ -216,7 +216,7 @@ int main() {
     // keeping an index that now names a different file is how a Delete goes to the wrong place.
     auto apply_hidden = [&] {
         rows.SetShowHidden(show_hidden.get());
-        selected = -1;
+        selected.set(-1);
         status.set(grouped(rows.Count()) + " items");
         w.Invalidate();
     };
@@ -349,9 +349,9 @@ int main() {
     State<bool> preview_open(false);
     list_view.bind(&w);
     preview_open.bind(&w);
-    auto list = named(ListView(&rows, &selected), "files");
+    auto list = named(ListView(&rows, selected), "files");
     ListIcons(list);   // a folder should look like a folder, not like a name with a slash
-    auto icons = named(IconView(&rows, &selected), "icons");
+    auto icons = named(IconView(&rows, selected), "icons");
     State<std::string> last_action("");
     last_action.bind(&w);
 
@@ -530,7 +530,7 @@ int main() {
             rows.SetShowHidden(show_hidden.get());
             rows.SetFilter(filter.get());
             status.set(grouped(rows.Count()) + " items");
-            selected = -1;
+            selected.set(-1);
         }
         std::string msg;
         if (done) msg = "moved " + std::to_string(done) + (done == 1 ? " item" : " items") + " to the trash";
@@ -546,7 +546,7 @@ int main() {
         const std::string base = path.get() == "/" ? "" : path.get();
         std::vector<int> rowsel = ListSelection(list);
         if (rowsel.empty() && !list_view.get()) rowsel = IconsSelection(icons);
-        if (rowsel.empty() && selected >= 0) rowsel.push_back(selected);
+        if (rowsel.empty() && selected.get() >= 0) rowsel.push_back(selected.get());
         for (int r : rowsel) {
             std::string n = rows.Cell(r, 0).text;
             if (n.empty()) continue;
@@ -578,7 +578,7 @@ int main() {
             std::string n = rows.Cell(i, 0).text;
             if (!n.empty() && n.back() == '/') n.pop_back();
             if (n == name) {
-                selected = i;
+                selected.set(i);
                 w.Defer([&, i] { BeginListRename(list, i); });
                 break;
             }
@@ -746,7 +746,7 @@ int main() {
             rows.Open(path.get());        // the listing changed under us either way
             rows.SetFilter(filter.get());
             status.set(grouped(rows.Count()) + " items");
-            selected = -1;
+            selected.set(-1);
         }
         // Both halves are reported. "3 moved, 1 refused" is the honest answer to a multi-file
         // drop, and silence about the refusal is how a user loses track of a file.
@@ -1056,7 +1056,7 @@ int main() {
                                   IconButton(Glyph::Preview,
                                              [&] {
                                                  preview_open.set(!preview_open.get());
-                                                 if (preview_open.get()) load_preview(selected);
+                                                 if (preview_open.get()) load_preview(selected.get());
                                                  w.Invalidate();
                                              }),
                               },
@@ -1096,7 +1096,7 @@ int main() {
     }
     if (getenv("ATLAS_PREVIEW")) {
         preview_open.set(true);
-        load_preview(selected);
+        load_preview(selected.get());
     }
     if (getenv("ATLAS_OPEN_FILTER")) {
         filter_open.set(true);
@@ -1200,8 +1200,8 @@ int main() {
         printf("ATLAS preview open=%s head=\"%s\" bytes=%zu first=\"%.48s\"\n",
                preview_open.get() ? "yes" : "no", preview_head.get().c_str(),
                preview_text.get().size(), preview_text.get().c_str());
-        printf("ATLAS selected=%d name=%s\n", selected,
-               selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
+        printf("ATLAS selected=%d name=%s\n", selected.get(),
+               selected.get() >= 0 ? rows.Cell(selected.get(), 0).text.c_str() : "(none)");
         fflush(stdout);
     }
     return 0;

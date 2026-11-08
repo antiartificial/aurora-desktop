@@ -826,7 +826,7 @@ void draw_halo(au_surface* s, au_rect fill, float fill_radius, au_color ring, au
 
 class ListNode : public Node {
 public:
-    ListNode(Rows* r, int* sel) : r_(r), sel_(sel), edit_text_("") {}
+    ListNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)), edit_text_("") {}
 
     Size Measure(const Env& e, Constraints c) override {
         // Whole pixels. The design's row is round(text_h + 6) = 24 at the base size of 13 with
@@ -846,7 +846,7 @@ public:
         // The list's own set of highlighted rows has to follow, or the old row NUMBERS stay lit in the new listing
         // while nothing is selected: the screen would show a choice that the app does not hold. The list itself never
         // leaves the cursor at -1 with rows highlighted (set_only(-1) clears both), so this state is only ever the app's.
-        if (sel_ && *sel_ < 0 && !multi_.empty()) {
+        if (sel_.live() && sel_.get() < 0 && !multi_.empty()) {
             multi_.clear();
             anchor_ = -1;
         }
@@ -932,7 +932,7 @@ public:
                 continue;
             }
             const bool picked = is_selected(i);
-            const bool cursor = sel_ && *sel_ == i;
+            const bool cursor = sel_.live() && sel_.get() == i;
             const au_rect band{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1};
             // Zebra first: it is the row's own colour, and everything else sits on it. Odd
             // rows, by absolute index, so the stripes do not swap when the list scrolls.
@@ -998,7 +998,7 @@ public:
         }
         // The halo last, over every row, because it overlaps the rows either side (6.3).
         // Cursor-only ALWAYS shows it: it is the only thing marking a row that has no fill.
-        const int cur = sel_ ? *sel_ : -1;
+        const int cur = sel_.live() ? sel_.get() : -1;
         if (focused_ && cur >= first && cur <= last && (halo() || !is_selected(cur))) {
             const float ry = frame.y + head_h_ + 1 + (cur - first) * row_h_;
             draw_halo(s, au_rect{frame.x + 4, ry + 1, frame.x + frame.w - 5, ry + row_h_ - 2}, 5,
@@ -1075,7 +1075,7 @@ public:
         header_press_ = false;
         on_bar_ = false;
         sb_.dragging = false;
-        if (was_header || was_bar || !inside || !sel_) return;
+        if (was_header || was_bar || !inside || !sel_.live()) return;
         const int i = row_at(click_y_);
         if (i < 0) return;
         if (clicks_ >= 2 && on_act_ && !(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
@@ -1124,7 +1124,7 @@ public:
         // was not selected: by the time the pointer has moved 6 px the row is already the
         // selection, so the drag carries what the person pointed at. On release it was always
         // one frame late, and a drag from an unselected row carried the previous selection.
-        if (!sel_) return;
+        if (!sel_.live()) return;
         const int i = row_at(y);
         if (i < 0) {
             // Empty space below the rows clears the selection, the way every file manager does.
@@ -1267,7 +1267,7 @@ public:
     // Every path that moves the selection goes through here, so a listener cannot miss one.
     // ---- selection ----
     //
-    // `*sel_` stays what it always was: the CURSOR, the row the keyboard is on and the one a
+    // `sel_.get()` stays what it always was: the CURSOR, the row the keyboard is on and the one a
     // preview pane follows. The set is what is highlighted. They are usually the same single
     // row, and they come apart exactly when a file manager needs them to -- Ctrl-click adds a
     // row without moving the cursor's meaning, Shift-click sweeps a range from the anchor.
@@ -1285,7 +1285,7 @@ public:
     void SetCursorOnly(int row) {
         mark_all_dirty();
         multi_.clear();
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         anchor_ = row;
         dirty_ = true;
         if (on_sel_) on_sel_(row);
@@ -1293,14 +1293,14 @@ public:
     }
 
     void set_only(int row) {
-        const bool same = sel_ && *sel_ == row && multi_.size() == 1 && multi_.count(row);
+        const bool same = sel_.live() && sel_.get() == row && multi_.size() == 1 && multi_.count(row);
         if (same) return;
         mark_all_dirty();
         multi_.clear();
         if (row >= 0) multi_.insert(row);
-        if (sel_) {
-            const int before = *sel_;
-            *sel_ = row;
+        if (sel_.live()) {
+            const int before = sel_.get();
+            sel_.set(row);
             rows_dirty_.push_back(before);
         }
         rows_dirty_.push_back(row);
@@ -1316,7 +1316,7 @@ public:
         else multi_.insert(row);
         // The cursor follows the row you touched even when you have just DESELECTED it, because
         // the next Shift-click has to sweep from somewhere and that somewhere is here.
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         anchor_ = row;
         rows_dirty_.push_back(row);
         dirty_ = true;
@@ -1333,7 +1333,7 @@ public:
         const int lo = std::min(anchor_, row), hi = std::max(anchor_, row);
         for (int i = lo; i <= hi && i < r_->Count(); i++)
             if (i >= 0) multi_.insert(i);
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         dirty_ = true;
         if (on_sel_) on_sel_(row);
         if (on_multi_) on_multi_(selection());
@@ -1366,10 +1366,10 @@ public:
         // While renaming, the field has the keyboard. Everything below is the list's bindings and
         // must not fire: typing a name should not also jump the selection via type-ahead.
         if (renaming()) return edit_field_->OnKey(k);
-        if (!sel_) return false;
+        if (!sel_.live()) return false;
         const int n = r_->Count();
         if (n == 0) return false;
-        const int cur = *sel_ < 0 ? -1 : *sel_;
+        const int cur = sel_.get() < 0 ? -1 : sel_.get();
         // F2 by its evdev code, not by raw_char. raw_char carries what a key TYPES, and a
         // function key types nothing -- BeOS reports B_FUNCTION_KEY for all of them and
         // distinguishes by scancode, so a raw_char test for F2 is meaningless. KEY_F2 is 60.
@@ -1455,7 +1455,7 @@ public:
             // halo's top and bottom edges behind as two hairlines that never go away. A hovered
             // row has no halo, so paying for the overhang on every hovered row would be a
             // measurable waste -- it took the damage fraction of a hover from 0.078 to 0.097.
-            const bool has_halo = sel_ && *sel_ == row;
+            const bool has_halo = sel_.live() && sel_.get() == row;
             const float pad = has_halo ? 3.0f : 0.0f;
             out->push_back(Rect{frame.x, std::max(frame.y, ry - pad), frame.w, row_h_ + pad * 2});
         }
@@ -1483,7 +1483,7 @@ public:
             return false;
         }
         ctx_row_ = row;
-        if (sel_ && *sel_ < 0) select(row);
+        if (sel_.live() && sel_.get() < 0) select(row);
         if (on_ctx_) on_ctx_(row, x, y);
         return true;
     }
@@ -1498,7 +1498,7 @@ public:
 
 private:
     Rows* r_;
-    int* sel_;
+    Binding<int> sel_;
     int top_ = 0, rows_drawn_ = 0;
     Scroller sb_;
     bool on_bar_ = false;
@@ -2576,7 +2576,7 @@ private:
 
 class IconsNode : public Node {
 public:
-    IconsNode(Rows* r, int* sel) : r_(r), sel_(sel) {}
+    IconsNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)) {}
 
     Size Measure(const Env& e, Constraints c) override {
         env_ = e;
@@ -2607,7 +2607,7 @@ public:
             const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
             if (t.y > frame.y + frame.h) break;
             const bool is_sel = is_selected(i);
-            const bool cursor = sel_ && *sel_ == i;
+            const bool cursor = sel_.live() && sel_.get() == i;
             // Inset 3, radius 8 (3.3). The same three states as a row, drawn as three different
             // pictures: the fill says selected, WHICH fill says whether this pane has the
             // keyboard, and a ring with no fill says the cursor is here and nothing is chosen.
@@ -2734,7 +2734,7 @@ public:
     bool OnContext(float x, float y) override {
         const int i = index_at(x, y);
         if (i < 0) return false;
-        if (sel_ && *sel_ < 0) select(i);
+        if (sel_.live() && sel_.get() < 0) select(i);
         if (on_ctx_) on_ctx_(i, x, y);
         return true;
     }
@@ -2780,7 +2780,7 @@ public:
 
     bool band_active() const { return band_; }
     bool OnKey(const au_key& k) override {
-        if (!k.pressed || !sel_) return false;
+        if (!k.pressed || !sel_.live()) return false;
         const int n = r_->Count();
         if (n == 0) return false;
         // Before the switch: the switch's default returns, so anything checked after it is
@@ -2792,7 +2792,7 @@ public:
             return true;
         }
         const int c = cols();
-        const int cur = *sel_ < 0 ? -1 : *sel_;
+        const int cur = sel_.get() < 0 ? -1 : sel_.get();
         int next = cur;
         switch (k.raw_char) {
             case 0x1c: next = std::max(0, cur - 1); break;          // left
@@ -2824,7 +2824,7 @@ public:
     void SetDragPaths(std::function<std::vector<std::string>(int)> f) { drag_paths_ = std::move(f); }
 
     // The same model the list uses, for the same reason: a grid you cannot rubber-band or
-    // Ctrl-click is a grid you have to leave to do anything with more than one file. `*sel_`
+    // Ctrl-click is a grid you have to leave to do anything with more than one file. `sel_.get()`
     // stays the cursor; the set is what is highlighted.
     bool is_selected(int i) const { return multi_.count(i) != 0; }
     std::vector<int> selection() const { return std::vector<int>(multi_.begin(), multi_.end()); }
@@ -2835,10 +2835,10 @@ public:
     }
 
     void set_only(int i) {
-        if (sel_ && *sel_ == i && multi_.size() == 1 && multi_.count(i)) return;
+        if (sel_.live() && sel_.get() == i && multi_.size() == 1 && multi_.count(i)) return;
         multi_.clear();
         if (i >= 0) multi_.insert(i);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
     }
@@ -2847,7 +2847,7 @@ public:
         if (i < 0) return;
         if (multi_.count(i)) multi_.erase(i);
         else multi_.insert(i);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         anchor_ = i;
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
@@ -2862,7 +2862,7 @@ public:
         // does. A rectangular block would be a different gesture (a rubber band).
         for (int k = std::min(anchor_, i); k <= std::max(anchor_, i) && k < r_->Count(); k++)
             if (k >= 0) multi_.insert(k);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
     }
@@ -2896,7 +2896,7 @@ public:
 
 private:
     Rows* r_;
-    int* sel_;
+    Binding<int> sel_;
     Env env_;
     std::function<void(int)> on_sel_;
     Scroller sb_;
@@ -4261,7 +4261,7 @@ Desc VStack(std::vector<Desc> c, float gap) {
 Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
-Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
+Desc ListView(Rows* r, Binding<int> sel) { return std::make_shared<ListNode>(r, sel); }
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
 }
@@ -4397,7 +4397,7 @@ Desc TextView(Binding<std::string> t, bool wrap) {
     return std::make_shared<TextViewNode>(t, wrap);
 }
 
-Desc IconView(Rows* r, int* sel) { return std::make_shared<IconsNode>(r, sel); }
+Desc IconView(Rows* r, Binding<int> sel) { return std::make_shared<IconsNode>(r, sel); }
 void OnIconsActivate(const Desc& d, std::function<void(int)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetActivateHandler(std::move(f));
 }

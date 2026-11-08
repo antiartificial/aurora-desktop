@@ -254,8 +254,8 @@ int main() {
         // And the list's own two: a 24 px row and a 26 px header at the base size of 13.
         DirRows rows;
         rows.Open(dir);
-        int sel = -1;
-        Desc list = ListView(&rows, &sel);
+        State<int> sel(-1);
+        Desc list = ListView(&rows, sel);
         lay(list, e, Rect{0, 44, 756, 570});
         CHECK(ListRowHeight(list) == 24, "a details row is 24 at base 13, got %g",
               (double)ListRowHeight(list));

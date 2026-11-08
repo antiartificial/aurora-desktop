@@ -225,8 +225,8 @@ int main() {
                     IconSpec Icon(int) const override { return sp; }
                 } one;
                 one.sp = sp;
-                int selected = -1;
-                Desc list = ListView(&one, &selected);
+                State<int> selected(-1);
+                Desc list = ListView(&one, selected);
                 ListIcons(list);
                 lay(list, e, Rect{0, 0, 300, 200});
                 list->Draw(s, e);
@@ -262,8 +262,8 @@ int main() {
             IconSpec Icon(int) const override { return sp; }
         } one;
         one.sp = sp;
-        int selected = -1;
-        Desc list = ListView(&one, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&one, selected);
         ListIcons(list);
         lay(list, e, Rect{0, 0, 300, 200});
         list->Draw(a, e);
@@ -321,8 +321,8 @@ int main() {
             one.sp.format = IconFormat::Vector;
             one.sp.path = ok;
             one.sp.kind = IconKind::Generic;
-            int selected = -1;
-            Desc list = ListView(&one, &selected);
+            State<int> selected(-1);
+            Desc list = ListView(&one, selected);
             ListIcons(list);
             lay(list, e, Rect{0, 0, 300, 100});
             list->Draw(s, e);
@@ -342,7 +342,7 @@ int main() {
             au_surface* s2 = au_surface_new(300, 100, sc);
             au_clear(s2, au_color{0, 0, 0, 255});
             one.sp.path = bad;
-            Desc l2 = ListView(&one, &selected);
+            Desc l2 = ListView(&one, selected);
             ListIcons(l2);
             lay(l2, e, Rect{0, 0, 300, 100});
             l2->Draw(s2, e);
@@ -358,7 +358,7 @@ int main() {
             au_clear(s3, au_color{0, 0, 0, 255});
             one.sp.format = IconFormat::Bitmap;
             one.sp.path = ppm;
-            Desc l3 = ListView(&one, &selected);
+            Desc l3 = ListView(&one, selected);
             ListIcons(l3);
             lay(l3, e, Rect{0, 0, 300, 100});
             l3->Draw(s3, e);
@@ -383,8 +383,8 @@ int main() {
         for (double sc : {1.0, 1.45}) {
             if (!have_font) break;
             FileRows src(10);
-            int selected = -1;
-            Desc list = ListView(&src, &selected);
+            State<int> selected(-1);
+            Desc list = ListView(&src, selected);
             lay(list, e, Rect{0, 0, 600, 400});
             au_key down{};
             down.pressed = 1;
@@ -478,7 +478,7 @@ int main() {
                 list->OnKey(d2);              // a selected row that is also the cursor
                 list->Draw(s, e);
                 const float head = ListHeaderHeight(list), row = ListRowHeight(list);
-                const int cur = selected;
+                const int cur = selected.get();
                 const float ry = head + 1 + cur * row;
                 const uint32_t surface = (uint32_t)((cur & 1) ? e.content_alt.r : e.content.r)
                                              << 16 |
@@ -501,8 +501,8 @@ int main() {
     // ---- zebra and hover --------------------------------------------------------------------
     {
         FileRows src(40);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 600, 400});
         au_surface* s = au_surface_new(600, 400, 1.0);
         au_clear(s, au_color{0, 0, 0, 255});
@@ -543,18 +543,18 @@ no_font_done:
     // selected, because by the time the pointer has moved 6 px the row is already the selection.
     {
         FileRows src(40);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 600, 400});
         list->Draw(nullptr, e);
         const float head = ListHeaderHeight(list);
         const float row = ListRowHeight(list);
         list->OnPressAt(100, head + 1 + row * 2.5f, 1);
-        CHECK(selected == 2, "the press did not select (selected=%d)", selected);
+        CHECK(selected.get() == 2, "the press did not select (selected=%d)", selected.get());
         CHECK(ListSelection(list).size() == 1, "the press selected %zu rows",
               ListSelection(list).size());
         list->OnRelease(true);
-        CHECK(selected == 2, "the release changed the selection");
+        CHECK(selected.get() == 2, "the release changed the selection");
     }
 
     // ---- glyph buttons -------------------------------------------------------------------------

@@ -338,35 +338,35 @@ int main() {
     // lands on a row too, so dragging the thumb would also select whatever was behind it.
     {
         ManyRows src(500);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);              // the bar is laid out during Draw
 
         // x = 395 is inside the bar (9 px wide, at the right edge of a 400 px frame).
         list->OnPressAt(395, 300, 1);
         list->OnRelease(true);
-        eq("pressing the scrollbar selects nothing", selected == -1);
+        eq("pressing the scrollbar selects nothing", selected.get() == -1);
 
         // The same press away from the bar does select.
         list->OnPressAt(100, 300, 1);
         list->OnRelease(true);
-        eq("pressing a row does select", selected >= 0);
+        eq("pressing a row does select", selected.get() >= 0);
     }
 
     // ---- the bar appears only when there is somewhere to go -----------------------------------
     // A track with a full-length thumb is furniture that says nothing.
     {
         ManyRows few(3);
-        int selected = -1;
-        Desc list = ListView(&few, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&few, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         // Just inside the first row. Not y = 12: that is the column header with a real font
         // loaded, and it only ever "passed" because the negative row index truncated to zero.
         list->OnPressAt(395, list->frame.y + 40, 1);
         list->OnRelease(true);
-        eq("with nothing to scroll the press reaches the rows", selected >= 0);
+        eq("with nothing to scroll the press reaches the rows", selected.get() >= 0);
     }
 
     // ---- switching views is a layout, not a repaint -------------------------------------------
@@ -482,8 +482,8 @@ int main() {
     // passed only because integer truncation turned a negative row index into zero.
     {
         ManyRows src(20);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -546,8 +546,8 @@ int main() {
     // how a listing ends up with 10 B after 9 KB. So what is tested here is the ASK.
     {
         ManyRows src(30);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -556,7 +556,7 @@ int main() {
         eq("a header click sorts by that column", src.sorts == 1 && src.col == 0);
         eq("and ascending first", src.asc);
         list->OnRelease(true);
-        eq("a header click does not select a row", selected == -1);
+        eq("a header click does not select a row", selected.get() == -1);
 
         list->OnPressAt(50, list->frame.y + 1, 1);
         list->OnRelease(true);
@@ -582,8 +582,8 @@ int main() {
     // model: what ends up selected, and where the cursor is left.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -594,7 +594,7 @@ int main() {
         au_key down{}; down.pressed = 1; down.raw_char = 0x1f;
         list->OnKey(down);                       // row 0
         eq("one row selected", ListSelection(list).size() == 1);
-        eq("and it is the cursor", selected == 0 && ListSelection(list)[0] == 0);
+        eq("and it is the cursor", selected.get() == 0 && ListSelection(list)[0] == 0);
         eq("the app heard about it", calls > 0 && last.size() == 1);
 
         // Shift+Down sweeps from the anchor rather than moving a single selection.
@@ -604,13 +604,13 @@ int main() {
         const std::vector<int> three = ListSelection(list);
         eq("shift+arrow extends the range", three.size() == 3);
         eq("the range runs from the anchor", !three.empty() && three.front() == 0 && three.back() == 2);
-        eq("and the cursor is at the far end", selected == 2);
+        eq("and the cursor is at the far end", selected.get() == 2);
 
         // A plain arrow collapses back to one, which is what makes shift feel like a mode you
         // leave rather than one you are stuck in.
         list->OnKey(down);
         eq("a plain arrow collapses the selection", ListSelection(list).size() == 1);
-        eq("to where the cursor now is", selected == 3 && ListSelection(list)[0] == 3);
+        eq("to where the cursor now is", selected.get() == 3 && ListSelection(list)[0] == 3);
 
         // Ctrl+A takes everything.
         // A REAL Ctrl+A as present_wl delivers it: raw_char is the layout's letter, utf8 is
@@ -626,8 +626,8 @@ int main() {
     // loses files on the way to a folder.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         OnListDragPaths(list, [](int row) {
@@ -676,8 +676,8 @@ int main() {
     // ---- the grid selects like the list ---------------------------------------------------------
     {
         ManyRows src(12);
-        int selected = -1;
-        Desc grid = IconView(&src, &selected);
+        State<int> selected(-1);
+        Desc grid = IconView(&src, selected);
         lay(grid, e, Rect{0, 0, 400, 600});
         grid->Draw(nullptr, e);
 
@@ -801,8 +801,8 @@ int main() {
     // The gesture people reach for in a grid before they reach for Ctrl-click.
     {
         ManyRows src(12);
-        int selected = -1;
-        Desc grid = IconView(&src, &selected);
+        State<int> selected(-1);
+        Desc grid = IconView(&src, selected);
         lay(grid, e, Rect{0, 0, 400, 600});
         grid->Draw(nullptr, e);
         std::vector<int> last;
@@ -864,16 +864,16 @@ int main() {
     // leave exactly one row, or what is highlighted would not be what a picker grants.
     {
         ManyRows src(10);
-        int multi_sel = -1, single_sel = -1;
-        Desc multi = ListView(&src, &multi_sel);
-        Desc single = ListView(&src, &single_sel);
+        State<int> multi_sel(-1), single_sel(-1);
+        Desc multi = ListView(&src, multi_sel);
+        Desc single = ListView(&src, single_sel);
         // Row icons are opt-in and are drawn, not laid out, so what a headless test can check
         // is that turning them on changes no geometry and that the draw path survives a null
         // surface the way every other node here does. tk_layout calls Draw(nullptr), so a
         // widget that dereferenced the surface would take the whole suite down.
         {
-            int icon_sel = -1;
-            Desc icony = ListView(&src, &icon_sel);
+            State<int> icon_sel(-1);
+            Desc icony = ListView(&src, icon_sel);
             const Size before = icony->Measure(e, Constraints{400, 600});
             ListIcons(icony);
             const Size after = icony->Measure(e, Constraints{400, 600});
@@ -907,7 +907,7 @@ int main() {
 
         single->OnKey(shift_down);
         single->OnKey(shift_down);
-        eq("a single-select list moves on Shift+Down", single_sel == 2);
+        eq("a single-select list moves on Shift+Down", single_sel.get() == 2);
         eq("and keeps one row selected", ListSelection(single) == std::vector<int>{2});
         single->OnKey(ctrl_a);
         eq("Ctrl+A selects nothing more", ListSelection(single) == std::vector<int>{2});
@@ -918,19 +918,19 @@ int main() {
     // highlighted must not stay highlighted in a listing they were never chosen from.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         list->OnKey(pressing(0x1f));
         list->OnKey(pressing(0x1f));
-        eq("a row is selected", selected == 1 && ListSelection(list) == std::vector<int>{1});
+        eq("a row is selected", selected.get() == 1 && ListSelection(list) == std::vector<int>{1});
 
-        selected = -1;                       // the app opens another directory
+        selected.set(-1);                       // the app opens another directory
         list->Draw(nullptr, e);
         eq("the highlight goes with it", ListSelection(list).empty());
         list->OnKey(pressing(0x1f));
-        eq("and the next selection starts clean", selected == 0 && ListSelection(list) == std::vector<int>{0});
+        eq("and the next selection starts clean", selected.get() == 0 && ListSelection(list) == std::vector<int>{0});
     }
 
     if (fails == 0) printf("tk_layout: ok\n");

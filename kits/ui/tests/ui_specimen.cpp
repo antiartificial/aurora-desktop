@@ -267,12 +267,12 @@ struct Details : Rows {
 static void sheet_icons(const std::string& dir, const std::string& suffix) {
     const float W = 896;
     Listing grid_src(family()), list_src(family());
-    int sel_a = -1, sel_b = -1;
+    State<int> sel_a(-1), sel_b(-1);
 
-    Desc grid = IconView(&grid_src, &sel_a);
+    Desc grid = IconView(&grid_src, sel_a);
     au_surface* gs = render(grid, W - 32, 330, g_env.content);
 
-    Desc list = ListView(&list_src, &sel_b);
+    Desc list = ListView(&list_src, sel_b);
     ListIcons(list);
     const float list_h = 27 + 20 * 24 + 4;
     au_surface* ls = render(list, W - 32, list_h, g_env.content);
@@ -333,14 +333,15 @@ static void sheet_states(const std::string& dir, const std::string& suffix) {
     // mean the last one drawn is the only one that is true.
     std::vector<Listing*> srcs;
     std::vector<Desc> lists;
-    std::vector<int> sels((size_t)n_strips, -1);
+    std::vector<State<int>> sels; sels.reserve((size_t)n_strips);
+    for (size_t k = 0; k < (size_t)n_strips; k++) sels.emplace_back(-1);
     std::vector<au_surface*> shots;
     float row_h = 0, head_h = 0;
     for (int i = 0; i < n_strips; i++) {
         Listing* src = new Listing(rows);
         src->with_kind = false;
         srcs.push_back(src);
-        Desc l = ListView(src, &sels[(size_t)i]);
+        Desc l = ListView(src, sels[(size_t)i]);
         ListIcons(l);
         lists.push_back(l);
         lay(l, Rect{0, 0, strip_w, 200});
@@ -414,11 +415,12 @@ static void sheet_columns(const std::string& dir, const std::string& suffix) {
     const float widths[] = {520, 760, 1000};
     const float pad = 16, W = 1000 + pad * 2;
     Details src(5);
-    std::vector<int> sels(3, -1);
+    std::vector<State<int>> sels; sels.reserve(3);
+    for (int k = 0; k < 3; k++) sels.emplace_back(-1);
     std::vector<au_surface*> shots;
     float total = 0, head = 0, row = 0;
     for (int i = 0; i < 3; i++) {
-        Desc l = ListView(&src, &sels[(size_t)i]);
+        Desc l = ListView(&src, sels[(size_t)i]);
         ListIcons(l);
         lay(l, Rect{0, 0, widths[i], 300});
         head = ListHeaderHeight(l);
