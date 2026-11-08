@@ -40,7 +40,7 @@ set -u
 ROOT=/home/arti/projects/aurora
 COMP=$ROOT/compositor/target/release/aurora-compositor
 TI="python3 -I $ROOT/demos/kitchen-sink/ti.py"
-APP=${APP:-$ROOT/kits/build/interface/iface_controls}
+APP=${APP:-$ROOT/kits/build/compat/iface_controls}
 N=${N:-10}
 STACKS=${STACKS:-0}
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT

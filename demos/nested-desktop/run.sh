@@ -80,7 +80,7 @@ command -v make  >/dev/null || unproven "make is not installed: the Makefile's d
 grep -q "^$(id -un):" /etc/subuid 2>/dev/null || unproven "no subuid range for $(id -un): domains cannot be created"
 "$ROOT/aurora-up" --build-only >"$WORK/build.log" 2>&1 || { cat "$WORK/build.log"; unproven "aurora-up --build-only failed"; }
 (cd "$ROOT/compositor" && cargo build --release >"$WORK/cargo.log" 2>&1) || { tail -20 "$WORK/cargo.log"; unproven "the compositor did not build"; }
-[ -x "$ROOT/kits/build/interface/iface_controls" ] || unproven "kits/build/interface/iface_controls is not built (HAIKU_SRC, cmake, ninja): there is no windowed Haiku app to launch, and this demo will not fake one"
+[ -x "$ROOT/kits/build/compat/iface_controls" ] || unproven "kits/build/compat/iface_controls is not built (HAIKU_SRC, cmake, ninja): there is no windowed Haiku app to launch, and this demo will not fake one"
 [ -x "$CAP" ] || (cd "$ROOT/harness/capture" && cargo build --release >"$WORK/cap.log" 2>&1) || unproven "aurora-capture did not build"
 ok "bwrap, socat, make, subuid, the compositor, the kits and the capture tool are all present"
 

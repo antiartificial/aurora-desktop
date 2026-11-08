@@ -24,7 +24,7 @@ COMP=$!
 trap 'kill $COMP 2>/dev/null; kill ${APP:-0} 2>/dev/null; rm -rf "$R"' EXIT
 for i in $(seq 200); do [ -S "$TI" ] && break; sleep 0.05; done
 DISP=$(ls "$R" | grep -m1 '^wayland-[0-9]*$')
-WAYLAND_DISPLAY=$DISP ./kits/build/interface/$APPBIN > "$R/app.log" 2>&1 &
+WAYLAND_DISPLAY=$DISP ./kits/build/compat/$APPBIN > "$R/app.log" 2>&1 &
 APP=$!
 sleep 3
 TI="$TI" DISP="$DISP" OUT="$OUT" python3 - <<'PY'

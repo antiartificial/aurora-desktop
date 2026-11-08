@@ -78,7 +78,7 @@ step "build" "the kits from HAIKU_SRC, the controller, the adapter and the compo
 "$ROOT/aurora-up" --build-only >"$WORK/build.log" 2>&1 || { cat "$WORK/build.log"; fail "build failed"; }
 (cd "$ROOT/compositor" && cargo build --release >"$WORK/cargo.log" 2>&1) || { cat "$WORK/cargo.log"; fail "compositor build failed"; }
 [ -x "$EX/testclient" ] || fail "no $EX/testclient"
-IFACE=$ROOT/kits/build/interface/iface_controls
+IFACE=$ROOT/kits/build/compat/iface_controls
 [ -x "$IFACE" ] || fail "no $IFACE: the Haiku kits did not build (needs HAIKU_SRC, cmake and ninja); this demo is about real Haiku apps and will not fake one"
 ok "built; the Haiku app is $IFACE"
 
