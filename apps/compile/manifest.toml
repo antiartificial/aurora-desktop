@@ -18,6 +18,7 @@ id = "org.aurora.build"
 name = "Build"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "development"
 
 [[runtime]]
 name = "gcc"

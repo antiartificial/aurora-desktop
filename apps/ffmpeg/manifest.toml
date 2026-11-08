@@ -17,6 +17,7 @@ id = "org.aurora.ffmpeg"
 name = "FFmpeg"
 version = "0.1.0"
 image_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+category = "media"
 
 [[runtime]]
 name = "ffmpeg"
