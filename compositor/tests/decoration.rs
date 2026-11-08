@@ -689,3 +689,37 @@ fn a_window_is_drawn_on_the_output_it_is_on_and_nowhere_else() {
     let home = c.capture("home.png");
     assert!(home.count(INK) > 1000, "a window on this output was not drawn: {} px", home.count(INK));
 }
+
+/// A window that asks for more room than exists is configured down, not placed under the dock.
+///
+/// `placement` clamps the origin, and a clamp cannot save a window taller than the space it is
+/// going in: the lower bound wins, the window hangs off the bottom, and its own status bar ends
+/// up behind the dock panel. The client asked for a size without being told what was available,
+/// which the compositor is the only one in a position to answer.
+///
+/// Checked at both scales because the usable area is in logical units and the dock's strip is
+/// not: at 1.45 the same pixel height is a different number of logical rows, which is where the
+/// arithmetic goes wrong if it is done in the wrong space.
+#[test]
+fn a_window_too_big_for_the_usable_area_is_configured_down_to_fit() {
+    for s in SCALES {
+        let (_t, mut c) = themed(s, "", &[]);
+        let (_, _, uw, uh) = usable(&c, s.parse().unwrap());
+        // Ask for more than the whole usable area in both directions.
+        let want = format!("{}x{}", uw + 240, uh + 240);
+        c.client_args(&["--size", &want, "--title", "TooBig", "--follow"]);
+        wait_deco(&c, "TooBig");
+        wait_for("the oversized window to be configured down", || {
+            let (_, _, w, h) = win_of(&c, "TooBig");
+            w <= uw && h <= uh
+        });
+        let (x, y, w, h) = win_of(&c, "TooBig");
+        let bar = y - (y - BAR_H).max(0);
+        assert!(w <= uw, "scale {s}: {w} wide in a {uw} usable area");
+        assert!(h <= uh, "scale {s}: {h} tall in a {uh} usable area");
+        // And it is actually inside it, bar included, rather than merely small enough.
+        assert!(y - bar >= 0, "scale {s}: the title bar is above the top of the screen (y {y})");
+        assert!(y + h <= uh, "scale {s}: the window runs to {} in a {uh} usable area, i.e. under the dock", y + h);
+        assert!(x >= 0 && x + w <= uw, "scale {s}: {x}..{} outside 0..{uw}", x + w);
+    }
+}

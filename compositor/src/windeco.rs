@@ -374,6 +374,43 @@ impl Aurora {
 
     /// Where a new window of `size` goes. A dialog is centred on its `parent`; anything else cascades
     /// from the usable area's corner. Always inside the usable area (and below its top by the bar).
+    /// Ask a toplevel to shrink to the usable area when it asked for more than exists.
+    ///
+    /// Returns true when a configure was sent. The window keeps whatever size it already has
+    /// until it acks and commits, so the caller re-reads the geometry rather than assuming.
+    pub fn fit_to_usable(&mut self, w: &Window) -> bool {
+        let Some(xdg) = w.toplevel().cloned() else { return false };
+        let area = self.usable_area();
+        let bar = if self.decorated(w) { self.shell.deco_height() } else { 0 };
+        let room = smithay::utils::Size::<i32, smithay::utils::Logical>::from((
+            area.size.w,
+            (area.size.h - bar).max(1),
+        ));
+        let have = w.geometry().size;
+        if have.w <= room.w && have.h <= room.h {
+            return false;
+        }
+        let surf = smithay::reexports::wayland_server::protocol::wl_surface::WlSurface::clone(xdg.wl_surface());
+        let min = smithay::wayland::compositor::with_states(&surf, |states| {
+            let mut guard = states.cached_state.get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+            guard.current().min_size
+        });
+        let want = smithay::utils::Size::<i32, smithay::utils::Logical>::from((
+            have.w.min(room.w).max(min.w.max(1)),
+            have.h.min(room.h).max(min.h.max(1)),
+        ));
+        if want == have {
+            return false;
+        }
+        tracing::info!(
+            "place: {:?} asked for {}x{} with {}x{} usable; configured down to {}x{}",
+            self.window_title(w), have.w, have.h, room.w, room.h, want.w, want.h
+        );
+        xdg.with_pending_state(|st| st.size = Some(want));
+        xdg.send_pending_configure();
+        true
+    }
+
     pub fn placement(&mut self, w: &Window, size: smithay::utils::Size<i32, Logical>, parent: Option<&Window>) -> Point<i32, Logical> {
         let area = self.usable_area();
         let top = self.min_origin_y(w);
@@ -411,6 +448,18 @@ impl Aurora {
             return;
         }
         self.deco.unplaced.remove(&key);
+        // A window that does not FIT is configured down before it is placed.
+        //
+        // `placement` clamps the origin, and a clamp cannot help a window taller than the space
+        // it is going in: the lower bound wins and the window hangs off the bottom, under the
+        // dock, with its own status bar behind the panel. The client asked for a size without
+        // being told what was available, which is the compositor's job to answer.
+        //
+        // Only shrink, never grow, and never below what the client said it needs: a window that
+        // declares a minimum is refusing to be useful smaller, and overriding that trades one
+        // broken frame for another.
+        self.fit_to_usable(&w);
+        let size = w.geometry().size;
         // A window ARRIVES rather than appearing. Started here and not at new_toplevel, because
         // until the first commit its size is zero and an animation from nothing to nothing is a
         // flash on the first frame.
