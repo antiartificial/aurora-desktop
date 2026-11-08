@@ -163,7 +163,11 @@ baseline: the suite has grown since it was written.
   characters.
 - `MAX_APPS` in `shell/apps.rs` rises from 24, as a bound on an untrusted reply. The dock is
   unaffected, because `layout.rs` already draws one pill per item that fits. No second constant.
-- Twelve files under `apps/` gain one `category` line. `apps/browser` is renamed "Haiku Browser",
-  so two rows never both read "Files".
+- Thirteen files under `apps/` gain one `category` line. `apps/browser` is renamed "Haiku
+  Browser", so two rows never both read "Files".
+- `files` and `utilities` start empty, by design. The vocabulary is the taxonomy this system
+  means to have, not a census of what is installed. Atlas is the file manager and it appears in
+  the System section, because it has no manifest, so nothing populates `files` until something
+  file-shaped ships with one.
 - `harness/aurora-up` loses the paragraph that tells the reader to start Atlas by hand.
 - `fx/theme.rs` is untouched.
