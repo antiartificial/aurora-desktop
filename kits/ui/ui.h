@@ -29,6 +29,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include <memory>
 #include <string>
 #include <vector>
@@ -230,6 +231,7 @@ private:
     Window* win_ = nullptr;
     std::vector<Node*> nodes_;
     std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
+    void invalidate_bound();         // invalidate the nodes that read this cell (loop thread only)
 };
 
 // Binding<T> — the one way a widget takes state: no overload set to get wrong. Reads through a
@@ -1072,6 +1074,9 @@ public:
     ~Window();
 
     bool ok() const { return win_ != nullptr; }
+    // True on the thread that constructed (and runs) this window. A cell uses it to decide whether
+    // a set() can write its value directly or must post the apply to this window's loop.
+    bool on_loop_thread() const { return std::this_thread::get_id() == loop_tid_; }
     // A tree swap. The old tree is dropped here; attachment is symmetric (ADR 0009) so the CELLS
     // are safe, but the window's own node lists still named the freed nodes, so clear them and force
     // a fresh layout. Before this, a swap mid-run (preview, hot reload) let Run's tick scan and
@@ -1304,6 +1309,7 @@ private:
     int lw_ = 0, lh_ = 0;
     double scale_ = 1.0;
     bool dirty_ = true, quit_ = false, laid_ = false;
+    std::thread::id loop_tid_;       // the thread that constructed/run this window
     float px_ = -1, py_ = -1;
     Node* hover_ = nullptr;
     Node* pressed_ = nullptr;
@@ -1325,16 +1331,31 @@ public:
 };
 
 template <class T>
-void State<T>::set(T n) {
-    v_ = std::move(n);
+void State<T>::invalidate_bound() {
+    // The damage list and dirty_ are the loop thread's; this is only ever called on it (directly
+    // from a loop-thread set(), or from the deferred lambda the loop drains).
     if (!win_) return;
-    // Nothing attached means nothing in the tree reads this cell through a node, so the safe
-    // answer is the whole frame. One or more attached means we know exactly what changed.
-    if (nodes_.empty()) {
-        win_->Invalidate();
+    if (nodes_.empty()) { win_->Invalidate(); return; }
+    for (Node* n : nodes_) win_->Invalidate(n->frame);
+}
+
+template <class T>
+void State<T>::set(T n) {
+    // v_ is the loop thread's to write. On the loop thread (~ or with no window at all) apply now;
+    // off it, post the whole apply to the deferred queue, which is thread-safe and drained on the
+    // loop. So a loop-thread get() never races a worker's set(), and the damage list is only ever
+    // touched on the loop thread. The liveness token guards a cell that dies before the drain.
+    if (!win_ || win_->on_loop_thread()) {
+        v_ = std::move(n);
+        invalidate_bound();
         return;
     }
-    for (Node* n : nodes_) win_->Invalidate(n->frame);
+    auto tok = alive_;
+    win_->Defer([this, tok, n = std::move(n)]() mutable {
+        if (!*tok) return;             // the cell died before the loop drained this
+        v_ = std::move(n);
+        invalidate_bound();
+    });
 }
 
 // Symmetric attach/detach (ADR 0009). attach() records the node in the state so set() invalidates

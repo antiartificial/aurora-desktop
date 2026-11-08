@@ -4612,7 +4612,9 @@ void Window::Defer(std::function<void()> f) {
         std::lock_guard<std::mutex> g(deferred_mu_);
         deferred_.push_back(std::move(f));
     }
-    dirty_ = true;      // wake the loop so it drains promptly
+    // Wake the loop. ext_dirty_ is atomic and the loop turns it into real damage on its own thread;
+    // Defer is called OFF the loop (an event handler's thread), so a plain dirty_ = true would race.
+    ext_dirty_.store(true, std::memory_order_release);
 }
 
 void Window::RequestCopy(const std::string& text) {
@@ -4660,6 +4662,7 @@ float default_base_size() {
 
 
 Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
+    loop_tid_ = std::this_thread::get_id();
     wl_ = au_wl_connect();
     if (!wl_) return;
     scale_ = au_wl_output_scale(wl_);
