@@ -333,7 +333,7 @@ int main() {
 
     place.bind(&w);
     sidebar.bind(&w);
-    tree = named(TreeView(&places, &place), "places");
+    tree = named(TreeView(&places, place), "places");
     // Selecting in the sidebar navigates. That is single-click-to-navigate, which is what a
     // sidebar is for and what every explorer does there -- unlike the main pane, where a single
     // click selects and only a double-click opens. The two panes mean different things by a
@@ -968,8 +968,8 @@ int main() {
     // they are the whole body. Only one arm is ever measured, placed, drawn or walked for focus,
     // which is what makes sharing the subtree between them safe rather than clever.
     Desc body = HStack({
-                           weight(Either(&list_view, list, icons), 2),
-                           named(Reveal(&preview_open,
+                           weight(Either(list_view, list, icons), 2),
+                           named(Reveal(preview_open,
                                         // 280 wide, the design's default, and STATED: a pane
                                         // that answers "all of it" beside a weighted sibling
                                         // starves the sibling to zero, which is how the preview
@@ -1026,7 +1026,7 @@ int main() {
                               },
                               0.5f),
                        // The location, taking everything the two clusters do not.
-                       weight(named(Either(&path_edit,
+                       weight(named(Either(path_edit,
                                            named(TextField(path_text, nullptr,
                                                            [&](const std::string& to) {
                                                                path_edit.set(false);
@@ -1066,8 +1066,8 @@ int main() {
             44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom, Insets(8, 8)),
         // The sidebar and the rest. The preview stays a RevealX rather than becoming a second
         // split, and the difference is real: appearing is not resizing.
-        weight(Either(&sidebar_open,
-                      HSplit(tree, body, &sidebar, SplitOpts{20, 40, 0.5f, 3}),
+        weight(Either(sidebar_open,
+                      HSplit(tree, body, sidebar, SplitOpts{20, 40, 0.5f, 3}),
                       body),
                1),
         // The status bar, 26 tall with a hairline above: the count on the left and the last

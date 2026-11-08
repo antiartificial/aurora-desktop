@@ -526,9 +526,9 @@ private:
 
 class SliderNode : public Node {
 public:
-    SliderNode(State<float>* v, float lo, float hi, std::function<void(float)> f)
-        : v_(v), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
-        if (v_) v_->attach(this);
+    SliderNode(Binding<float> v, float lo, float hi, std::function<void(float)> f)
+        : v_(std::move(v)), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
+        v_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -565,15 +565,15 @@ public:
     void OnRelease(bool) override { down_ = false; }
 
     bool OnKey(const au_key& k) override {
-        if (!k.pressed || !v_) return false;
+        if (!k.pressed || !v_.live()) return false;
         // A twentieth of the range per press, a fifth on Page. Arrow keys that moved by one
         // unit would make a 0-to-1 slider take a hundred presses to cross.
         const float step = (hi_ - lo_) / 20.0f;
         switch (k.raw_char) {
-            case 0x1c: case 0x1f: put(v_->get() - step); return true;   // left, down
-            case 0x1d: case 0x1e: put(v_->get() + step); return true;   // right, up
-            case 0x0b: put(v_->get() + (hi_ - lo_) / 5.0f); return true;
-            case 0x0c: put(v_->get() - (hi_ - lo_) / 5.0f); return true;
+            case 0x1c: case 0x1f: put(v_.get() - step); return true;   // left, down
+            case 0x1d: case 0x1e: put(v_.get() + step); return true;   // right, up
+            case 0x0b: put(v_.get() + (hi_ - lo_) / 5.0f); return true;
+            case 0x0c: put(v_.get() - (hi_ - lo_) / 5.0f); return true;
             case 0x01: put(lo_); return true;
             case 0x04: put(hi_); return true;
             default: return false;
@@ -582,8 +582,8 @@ public:
 
 private:
     float frac() const {
-        if (!v_) return 0;
-        return std::max(0.0f, std::min(1.0f, (v_->get() - lo_) / (hi_ - lo_)));
+        if (!v_.live()) return 0;
+        return std::max(0.0f, std::min(1.0f, (v_.get() - lo_) / (hi_ - lo_)));
     }
     void set_from(float x) {
         const float x0 = frame.x + knob_, x1 = frame.x + frame.w - knob_;
@@ -591,14 +591,14 @@ private:
         put(lo_ + (hi_ - lo_) * std::max(0.0f, std::min(1.0f, t)));
     }
     void put(float nv) {
-        if (!v_) return;
+        if (!v_.live()) return;
         nv = std::max(lo_, std::min(hi_, nv));
-        if (nv == v_->get()) return;
-        v_->set(nv);
+        if (nv == v_.get()) return;
+        v_.set(nv);
         if (f_) f_(nv);
     }
 
-    State<float>* v_;
+    Binding<float> v_;
     float lo_, hi_;
     std::function<void(float)> f_;
     TextStyle st_;
@@ -612,8 +612,8 @@ private:
 // making it a Tab stop would put a dead stop in a keyboard user's path.
 class ProgressNode : public Node {
 public:
-    explicit ProgressNode(State<float>* v) : v_(v) {
-        if (v_) v_->attach(this);
+    explicit ProgressNode(Binding<float> v) : v_(std::move(v)) {
+        v_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -622,7 +622,7 @@ public:
     void Draw(au_surface* s, const Env& e) override {
         const float r = frame.h * 0.5f;
         au_fill_round_rect(s, frame.box(), r, r, e.surface_hi);
-        const float t = v_ ? std::max(0.0f, std::min(1.0f, v_->get())) : 0.0f;
+        const float t = v_.live() ? std::max(0.0f, std::min(1.0f, v_.get())) : 0.0f;
         if (t <= 0.0f) return;
         // At least as wide as it is tall, so a value just above zero is a dot rather than a
         // sliver too thin to see: "barely started" and "not started" must not look the same.
@@ -632,7 +632,7 @@ public:
     Node* HitTest(float, float) override { return nullptr; }
 
 private:
-    State<float>* v_;
+    Binding<float> v_;
 };
 
 // ---- Stacks -----------------------------------------------------------------------------------
@@ -3246,10 +3246,10 @@ private:
 
 class EitherNode : public Node {
 public:
-    EitherNode(State<bool>* f, Desc a, Desc b) : f_(f), a_(std::move(a)), b_(std::move(b)) {
-        if (f_) f_->attach(this);
+    EitherNode(Binding<bool> f, Desc a, Desc b) : f_(std::move(f)), a_(std::move(a)), b_(std::move(b)) {
+        f_.attach(this);
     }
-    Node* live() const { return (f_ && f_->get()) ? a_.get() : b_.get(); }
+    Node* live() const { return (f_.live() && f_.get()) ? a_.get() : b_.get(); }
 
     Size Measure(const Env& e, Constraints c) override {
         applied_ = pick();
@@ -3275,9 +3275,9 @@ public:
     bool Animating() const override { return (int)pick() != applied_; }
 
 private:
-    bool pick() const { return f_ && f_->get(); }
+    bool pick() const { return f_.live() && f_.get(); }
 
-    State<bool>* f_;
+    Binding<bool> f_;
     Desc a_, b_;
     int applied_ = -1;
 };
@@ -3286,16 +3286,16 @@ private:
 
 class RevealNode : public Node {
 public:
-    RevealNode(State<bool>* shown, Desc child, Transition t)
-        : shown_(shown), c_(std::move(child)), t_(t), eff_(t) {
-        if (shown_) shown_->attach(this);
-        e_.target(shown_ && shown_->get() ? 1.0f : 0.0f, 0);   // start at the end state
+    RevealNode(Binding<bool> shown, Desc child, Transition t)
+        : shown_(std::move(shown)), c_(std::move(child)), t_(t), eff_(t) {
+        shown_.attach(this);
+        e_.target(shown_.live() && shown_.get() ? 1.0f : 0.0f, 0);   // start at the end state
         e_.snap();
     }
 
     Size Measure(const Env& env, Constraints c) override {
         nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
-        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        want_ = (shown_.live() && shown_.get()) ? 1.0f : 0.0f;
         // Resolve the transition against the environment's table EVERY pass, so a theme that
         // turns motion down (or a frame budget that cannot afford it) is honoured at run time
         // rather than at the moment the tree was built. The axis is not resolvable -- it is what
@@ -3329,11 +3329,11 @@ public:
 
     // Hit testing follows the STATE, not the animation: the target state is live immediately.
     Node* HitTest(float x, float y) override {
-        if (!shown_ || !shown_->get()) return nullptr;
+        if (!shown_.live() || !shown_.get()) return nullptr;
         return c_->HitTest(x, y);
     }
     void Children(std::vector<Node*>* out) override {
-        if (shown_ && shown_->get()) out->push_back(c_.get());
+        if (shown_.live() && shown_.get()) out->push_back(c_.get());
     }
 
     // While moving, ask for a frame at display rate. When settled, stop asking: an idle window
@@ -3343,7 +3343,7 @@ public:
 
     void Retarget(bool allowed) override {
         affordable_ = allowed;
-        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        want_ = (shown_.live() && shown_.get()) ? 1.0f : 0.0f;
         // Three ways not to move, and they resolve in ONE place: the caller asked for none,
         // the theme turned motion down (eff_none_, decided in Measure against Env's table), or
         // the frame budget cannot afford it. Each must land on the end state THIS frame, which
@@ -3371,7 +3371,7 @@ public:
     bool Animating() const override { return e_.running() || e_.value() != applied_; }
 
 private:
-    State<bool>* shown_;
+    Binding<bool> shown_;
     Desc c_;
     Transition t_;
     Transition eff_;
@@ -3541,8 +3541,8 @@ size_t IconsRasterised() { return icons_cache().rasterised; }
 
 class TreeNode : public Node {
 public:
-    TreeNode(TreeSource* src, State<std::string>* sel) : src_(src), sel_(sel) {
-        if (sel_) sel_->attach(this);
+    TreeNode(TreeSource* src, Binding<std::string> sel) : src_(src), sel_(std::move(sel)) {
+        sel_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -3583,7 +3583,7 @@ public:
                 au_clip_reset(s);
                 continue;
             }
-            const bool is_sel = sel_ && sel_->get() == r.id;
+            const bool is_sel = sel_.live() && sel_.get() == r.id;
             // Inset 6 horizontally and 1 vertically, radius 6 (3.3). Three states, three
             // pictures: which fill says whether this pane has the keyboard, and a ring with no
             // fill is the cursor with nothing selected.
@@ -3795,7 +3795,7 @@ public:
         flat_valid_ = false;
         whole_ = true;
         rebuild();
-        if (sel_) sel_->set(id);
+        if (sel_.live()) sel_.set(id);
         for (size_t i = 0; i < flat_.size(); i++)
             if (flat_[i].id == id) { cur_ = (int)i; show(cur_); break; }
     }
@@ -3851,8 +3851,8 @@ private:
         dirty_rows_.push_back(i);
         cur_ = i;
         const std::string& id = flat_[i].id;
-        if (sel_ && sel_->get() == id) return;
-        if (sel_) sel_->set(id);
+        if (sel_.live() && sel_.get() == id) return;
+        if (sel_.live()) sel_.set(id);
         if (on_sel_) on_sel_(id);
     }
 
@@ -3920,7 +3920,7 @@ private:
     }
 
     TreeSource* src_;
-    State<std::string>* sel_;
+    Binding<std::string> sel_;
     std::vector<Row> flat_;
     std::set<std::string> open_, pending_;
     std::vector<int> dirty_rows_;
@@ -3945,9 +3945,9 @@ private:
 // rather than decorative.
 class SplitNode : public Node {
 public:
-    SplitNode(Desc a, Desc b, State<float>* r, bool vert, SplitOpts o)
-        : a_(std::move(a)), b_(std::move(b)), r_(r), vert_(vert), o_(o) {
-        if (r_) r_->attach(this);
+    SplitNode(Desc a, Desc b, Binding<float> r, bool vert, SplitOpts o)
+        : a_(std::move(a)), b_(std::move(b)), r_(std::move(r)), vert_(vert), o_(o) {
+        r_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -4062,9 +4062,9 @@ public:
     float divider_pos() const { return vert_ ? dv_.y : dv_.x; }   // for tests
 
 private:
-    float raw() const { return r_ ? r_->get() : 0.5f; }
+    float raw() const { return r_.live() ? r_.get() : 0.5f; }
     void set(float v) {
-        if (r_) r_->set(v);
+        if (r_.live()) r_.set(v);
     }
 
     // The two main-axis sizes for a given total. One place decides this, so Measure and Place
@@ -4085,7 +4085,7 @@ private:
     }
 
     Desc a_, b_;
-    State<float>* r_;
+    Binding<float> r_;
     bool vert_;
     SplitOpts o_;
     Rect dv_;
@@ -4233,11 +4233,11 @@ Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> f) {
     return std::make_shared<ToggleNode>(std::move(label), on, true, std::move(f));
 }
 
-Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> f) {
+Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)> f) {
     return std::make_shared<SliderNode>(value, lo, hi, std::move(f));
 }
 
-Desc Progress(State<float>* fraction) { return std::make_shared<ProgressNode>(fraction); }
+Desc Progress(Binding<float> fraction) { return std::make_shared<ProgressNode>(fraction); }
 
 Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
                 std::function<void(int)> f, bool horizontal) {
@@ -4337,11 +4337,11 @@ Desc sized(Desc child, float w, float h) {
     return std::make_shared<SizedNode>(std::move(child), w, h);
 }
 
-Desc Either(State<bool>* first, Desc a, Desc b) {
+Desc Either(Binding<bool> first, Desc a, Desc b) {
     return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
 }
 
-Desc TreeView(TreeSource* src, State<std::string>* selected) {
+Desc TreeView(TreeSource* src, Binding<std::string> selected) {
     return std::make_shared<TreeNode>(src, selected);
 }
 
@@ -4381,15 +4381,15 @@ int TreeCursor(const Desc& tree) {
     return t ? t->cursor() : -1;
 }
 
-Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
+Desc HSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
     return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, false, o);
 }
 
-Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
+Desc VSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
     return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, true, o);
 }
 
-Desc Reveal(State<bool>* shown, Desc child, Transition t) {
+Desc Reveal(Binding<bool> shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
 }
 

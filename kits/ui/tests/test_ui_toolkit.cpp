@@ -698,7 +698,7 @@ no_font_done:
             Transition t = le.motion.pane;
             if (cond == 1) le.motion.reduced = true;
             if (cond == 2) t.motion = Motion::None;
-            Desc pane = Reveal(&shown, sized(Spacer(), 280, 400), t);
+            Desc pane = Reveal(shown, sized(Spacer(), 280, 400), t);
             lay(pane, le, Rect{0, 0, 280, 400});
             shown.set(true);
             // Drive it the way the window does -- Retarget, tick, lay out -- against the wall
@@ -775,7 +775,7 @@ no_font_done:
             }
         } side;
         State<std::string> sel("");
-        Desc tree = TreeView(&side, &sel);
+        Desc tree = TreeView(&side, sel);
         lay(tree, e, Rect{0, 0, 200, 600});
         CHECK(TreeRowCount(tree) == 5, "the sidebar flattens to 5 rows, got %d",
               TreeRowCount(tree));

@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
         w.Quit();
     };
 
-    tree = named(TreeView(&places, &place), "places");
+    tree = named(TreeView(&places, place), "places");
     OnTreeSelect(tree, [&](const std::string& id) { if (!revealing) go(id); });
     OnTreeActivate(tree, [&](const std::string& id) { if (!revealing) go(id); });
 
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
                                      Spacer()}),
                              Insets(1, 0.25f)));
     column.push_back(padding(named(Breadcrumb(path, [&](const std::string& to) { go(to); }), "crumbs"), 0.25f));
-    column.push_back(weight(HSplit(tree, list, &sidebar, SplitOpts{9, 16, 0.5f, 3}), 1));
+    column.push_back(weight(HSplit(tree, list, sidebar, SplitOpts{9, 16, 0.5f, 3}), 1));
     if (takes_name(kind))
         column.push_back(padding(HStack({Label("Name"),
                                          weight(named(TextField(name, [&](const std::string&) { refresh(); },

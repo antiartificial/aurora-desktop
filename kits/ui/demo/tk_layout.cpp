@@ -130,7 +130,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r);
+        Desc s = HSplit(a, b, r);
         lay(s, e, box);
         const float div = 4;                     // thickness 0.5 * unit 8
         near("hsplit.a.w at 0.5", a->frame.w, (1000 - div) / 2);
@@ -151,7 +151,7 @@ int main() {
     {
         State<float> r(0.0f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});   // 80 px each side
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});   // 80 px each side
         lay(s, e, box);
         near("min_a holds at ratio 0", a->frame.w, 80);
         r.set(1.0f);
@@ -165,7 +165,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});
         lay(s, e, Rect{0, 0, 60, 600});
         eq("a.w not negative when cramped", a->frame.w >= 0);
         eq("b.w not negative when cramped", b->frame.w >= 0);
@@ -175,7 +175,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = VSplit(a, b, &r);
+        Desc s = VSplit(a, b, r);
         lay(s, e, box);
         near("vsplit.a.h at 0.5", a->frame.h, (600 - 4) / 2);
         near("vsplit.a.w fills cross", a->frame.w, 1000);
@@ -190,7 +190,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});
         lay(s, e, box);
         eq("settled after layout", !s->Animating());
         r.set(0.3f);
@@ -206,7 +206,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r);
+        Desc s = HSplit(a, b, r);
         lay(s, e, box);
         // Grab the divider at its left edge and drag to x = 300.
         Node* hit = s->HitTest(a->frame.w + 1, 300);
@@ -251,7 +251,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         eq("root rows only while collapsed", TreeRowCount(t) == 2);
         eq("a collapsed node is not asked for children", src.asked.count("/a") == 0);
@@ -276,7 +276,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
 
         au_key down = pressing(0x1f), right = pressing(0x1d), left = pressing(0x1c);
@@ -305,7 +305,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         t->OnKey(pressing(0x1f));
         t->OnKey(pressing(0x1f));
@@ -323,7 +323,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         RevealInTree(t, "/a/x/deep");
         eq("the revealed id is selected", sel.get() == "/a/x/deep");
@@ -377,7 +377,7 @@ int main() {
     {
         State<bool> first(true);
         Desc a = Spacer(), b = Spacer();
-        Desc ei = Either(&first, a, b);
+        Desc ei = Either(first, a, b);
         lay(ei, e, box);
         eq("settled after layout", !ei->Animating());
         near("the live child was placed", a->frame.w, 1000);
@@ -400,7 +400,7 @@ int main() {
     {
         State<bool> shown(false);
         Desc child = std::make_shared<Box>(Size{200, 50});
-        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        Desc rv = Reveal(shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
         lay(rv, e, box);
         near("hidden measures no width", rv->Measure(e, Constraints{1000, 600}).w, 0);
         eq("settled while hidden", !rv->Animating());
@@ -416,7 +416,7 @@ int main() {
     {
         State<bool> shown(false);
         Desc child = std::make_shared<Box>(Size{200, 50});
-        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        Desc rv = Reveal(shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
         lay(rv, e, box);
         shown.set(true);
         rv->Retarget(true);
@@ -524,7 +524,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         TreeRowCount(t);                       // flatten
 
@@ -750,7 +750,7 @@ int main() {
     {
         State<float> v(0.5f);
         int changes = 0;
-        Desc sl = Slider(&v, 0.0f, 1.0f, [&](float) { changes++; });
+        Desc sl = Slider(v, 0.0f, 1.0f, [&](float) { changes++; });
         lay(sl, e, Rect{0, 0, 200, 40});
         sl->Draw(nullptr, e);
 
@@ -776,7 +776,7 @@ int main() {
         // A progress bar reports; it is not a control. A Tab stop that does nothing is a dead
         // stop in a keyboard user's path, and a click on it should fall through.
         State<float> p(0.3f);
-        Desc pr = Progress(&p);
+        Desc pr = Progress(p);
         lay(pr, e, Rect{0, 0, 200, 20});
         eq("progress takes no focus", !pr->CanFocus());
         eq("and no clicks", pr->HitTest(10, 10) == nullptr);

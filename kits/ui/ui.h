@@ -479,11 +479,11 @@ Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> change
 // resolution: a narrow one cannot express the values it claims to. Arrows move a twentieth of
 // the range and Page a fifth -- stepping by one unit would make a 0-to-1 slider take a hundred
 // presses to cross.
-Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> changed = nullptr);
+Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)> changed = nullptr);
 
 // A progress bar, 0 to 1. Not focusable and not clickable: it reports, it is not a control, and
 // a Tab stop that does nothing is a dead stop in a keyboard user's path.
-Desc Progress(State<float>* fraction);
+Desc Progress(Binding<float> fraction);
 
 // Exclusive choice. A stack of checkboxes that agree to be exclusive rather than a new widget --
 // exclusivity is the only thing it adds.
@@ -861,7 +861,7 @@ private:
 //
 // The target state is live immediately: `shown` flips, hit testing follows it the same frame,
 // and only the pixels catch up. A transition that gated input would be a latency bug in costume.
-Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
+Desc Reveal(Binding<bool> shown, Desc child, Transition t = Transition{});
 
 // Exactly one of two children, chosen by a State. Both are built once and kept; the one not
 // shown is not measured, not drawn, not hit-tested and not in the focus order.
@@ -870,7 +870,7 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
 // hold both and pick. It costs the memory of two widgets and buys instant switching with each
 // view keeping its own scroll position and selection -- which is what a person expects when they
 // toggle back.
-Desc Either(State<bool>* first, Desc a, Desc b);
+Desc Either(Binding<bool> first, Desc a, Desc b);
 
 // A fixed size on one axis, or both; -1 keeps the child's natural size on that axis.
 //
@@ -933,7 +933,7 @@ public:
 //
 // `selected` is a State holding the selected id, so the app reads the selection as a value and a
 // breadcrumb or a path field can be bound to the same cell.
-Desc TreeView(TreeSource* src, State<std::string>* selected);
+Desc TreeView(TreeSource* src, Binding<std::string> selected);
 void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f);
 void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f);
 
@@ -980,8 +980,8 @@ struct SplitOpts {
     float grab_slop = 3;       // px added each side of it for hit testing only
 };
 
-Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
-Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
+Desc HSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o = SplitOpts{});
+Desc VSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o = SplitOpts{});
 
 // ---- damage -----------------------------------------------------------------------------------
 
