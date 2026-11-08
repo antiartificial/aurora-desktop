@@ -63,11 +63,23 @@ Measured, not guessed. See [`docs/performance-architecture.md`](docs/performance
 
 ### Userland utilities
 
-- **Sound** works end to end against real PipeWire for volume. `system.audio.mute@v1` and
-  `system.audio.sinks@v1` do not exist yet; only get and volume-set do.
-- **Display** reports real refresh and resolution; pointer settings are written but have never
-  executed, because libinput only exists on the DRM backend.
-- **Networking** and **keyboard** have settings surfaces; neither is complete.
+All five are now verbs with a declared effect class and caller rule (decision 0024,
+`system.verbs@v1` lists them). Four of the five are READ ONLY, and each says why.
+
+- **Sound** is the complete one: `system.audio@v1`, `.set@v1`, `.mute@v1` and `.sinks@v1`, run end
+  to end against real PipeWire over a real bus.
+- **Display** is `system.display@v1`: connectors, their mode lists, and the EDID's preferred mode,
+  millimetre size and the scale `drm.rs` would derive from it. The mode actually SET, the scale in
+  force and "which is primary" are the compositor's and are reported as unavailable with the
+  reason. No write verb: the compositor owns scale.
+- **Pointer** and **keyboard** are `system.pointer@v1` and `system.keyboard@v1`, reading the
+  theme's `[input]` table. No write verb, and not for lack of time: the theme file has one writer,
+  the compositor, and a second one in Go is the theme-drift defect by construction. Those values
+  also reach libinput only on the DRM backend, which has never run on a display.
+- **Networking** is `system.network@v1`, read only by decision: changing network configuration is
+  a different risk class and 0015 already owns what a network grant means.
+- Still missing: none of these reaches an agent, because the gateway's policy is keyed on app id
+  and filesystem roots and a system verb has neither.
 
 ---
 

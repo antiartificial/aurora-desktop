@@ -44,6 +44,7 @@ func main() {
 	noComp := fs.Bool("no-compositor-approval", false, "never ask the compositor; use only the bus route (approval.requested / approval.decide@v1)")
 	compUID := fs.Int("compositor-uid", -1, "uid the compositor must run as; a peer on the compositor socket with another uid, or inside a domain cgroup, is refused and approvals fall back to the bus route (default: this process's own uid)")
 	apprTimeout := fs.Duration("approval-timeout", invoke.DefaultApprovalTimeout, "how long an approval request waits for a decision before the answer is deny")
+	themeDir := fs.String("theme-dir", os.Getenv("AURORA_THEME_DIR"), "directory holding aurora-glass.toml, for system.pointer@v1 and system.keyboard@v1 (env AURORA_THEME_DIR). Not guessed when empty: those verbs then report unavailable and name this flag, rather than reading a theme file this controller may have nothing to do with")
 	plumbRules := fs.String("plumb-rules", "", "plumb rules file (default: the rules embedded from contracts/plumb/rules.toml); a file that does not validate stops startup")
 	unsandboxed := fs.Bool("unsandboxed-windows", false, "ESCAPE HATCH: launch windowed apps as plain host processes instead of in a domain (HAIKU_SRC builds, debugging). Default off: a dock click puts the app in a domain with device:wayland and what its manifest declares. Logged on every launch")
 	timeout := fs.Duration("timeout", time.Minute, "per-invoke time limit")
@@ -166,7 +167,12 @@ func main() {
 	}
 	log.Printf("registered service %q on %s", config.Service, *sock)
 
-	svc := &service.Service{Reg: reg, Inv: inv}
+	svc := &service.Service{Reg: reg, Inv: inv, ThemeDir: *themeDir}
+	if *themeDir == "" {
+		log.Printf("no --theme-dir: system.pointer@v1 and system.keyboard@v1 will report unavailable (the other system verbs read /sys and need no configuration)")
+	} else {
+		log.Printf("theme dir %s: system.pointer@v1 and system.keyboard@v1 read its %s. READ ONLY -- the theme file has one writer, the compositor", *themeDir, "aurora-glass.toml")
+	}
 	if *plumbRules != "" {
 		if svc.Rules, err = plumb.Load(*plumbRules); err != nil {
 			log.Fatalf("--plumb-rules: %v", err)

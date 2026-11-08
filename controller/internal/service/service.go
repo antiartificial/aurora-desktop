@@ -4,8 +4,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"github.com/antiartificial/aurora/controller/internal/sysaudio"
 
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
@@ -14,6 +12,9 @@ import (
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/prov"
+	"github.com/antiartificial/aurora/controller/internal/sysaudio"
+	"github.com/antiartificial/aurora/controller/internal/sysdisplay"
+	"github.com/antiartificial/aurora/controller/internal/sysnet"
 )
 
 // Service answers registry requests.
@@ -26,6 +27,18 @@ type Service struct {
 	// How the audio verbs run their tool. nil means really run it; the tests
 	// replace it so the parsing can be checked without an audio server.
 	Audio sysaudio.Runner
+	// ThemeDir holds aurora-glass.toml, for system.pointer@v1 and
+	// system.keyboard@v1. Empty means those verbs answer "unavailable" and name
+	// the flag: it is NOT guessed, because the compositor's own default is the
+	// repo's contracts/theme and a controller that assumed it would answer
+	// about a tree it may not be running from.
+	ThemeDir string
+	// Where the display and network verbs read. Zero value means the real /sys;
+	// the tests point them at a fixture tree.
+	DisplayRoots sysdisplay.Roots
+	NetRoots     sysnet.Roots
+	// NetLister is the kernel interface list; nil means the real netlink call.
+	NetLister sysnet.Lister
 }
 
 // audio is Audio, or the real exec.
@@ -67,6 +80,12 @@ func (s *Service) handle(c *client.Client, req proto.Envelope) {
 // dispatch answers one request. req.From is set by busd from SO_PEERCRED, so
 // it is what the kernel says the caller is, not what the caller claims.
 func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
+	// The system.* family. Its effect class and caller rule are declared in one table
+	// (system.go) and applied there, so the policy is not nine `if` statements in nine arms
+	// where a forgotten one is a verb silently open to every domain.
+	if out, e, handled := s.systemDispatch(req); handled {
+		return out, e
+	}
 	switch req.Verb {
 	case "approval.decide@v1":
 		return s.decide(req)
@@ -85,25 +104,6 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 		var q plumb.Request
 		if e = decode(req, &q); e == nil {
 			out = s.plumb(q, req.From)
-		}
-	case "system.audio@v1":
-		// Reading the volume is harmless and anything may ask.
-		out = sysaudio.Get(s.audio)
-	case "system.audio.set@v1":
-		// SETTING it is not. It changes the machine for every application at once, so it is
-		// refused inside a domain by the same rule that refuses registry.launch@v1: an app the
-		// user gave a file to has not been given the speakers.
-		if !mayDecide(req.From) {
-			return nil, &invoke.Error{Code: "not_permitted", Msg: "system.audio.set@v1 may only be called from the session socket", Detail: fmt.Sprintf("caller %q may not change the machine's volume", req.From)}
-		}
-		var q struct {
-			Volume int `json:"volume"`
-		}
-		if e = decode(req, &q); e == nil {
-			if err := sysaudio.Set(s.audio, q.Volume); err != nil {
-				return nil, &invoke.Error{Code: "unavailable", Msg: "the volume could not be set", Detail: err.Error()}
-			}
-			out = sysaudio.Get(s.audio)
 		}
 	case "registry.describe@v1":
 		var q struct{ App, Verb string }
