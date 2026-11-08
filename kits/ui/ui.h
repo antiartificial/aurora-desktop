@@ -221,11 +221,41 @@ public:
     void attach(Node* n);            // defined below, after Node is complete
     void detach(Node* n) override;   // erase n from nodes_
     size_t bound_count() const { return nodes_.size(); }
+    // A liveness flag a Binding shares. ~State flips it, so a Binding that outlives its cell
+    // reads its own constant instead of dereferencing freed memory (ADR 0009's open question).
+    std::shared_ptr<bool> aliveToken() const { return alive_; }
 
 private:
     T v_;
     Window* win_ = nullptr;
     std::vector<Node*> nodes_;
+    std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
+};
+
+// Binding<T> — the one way a widget takes state: no overload set to get wrong. Reads through a
+// live State<T> (writable) or a constant literal (read-only). It converts implicitly from
+// State<T>& and from a non-string literal; a State<T>* is NOT a State<T>&, so migrating a pointer
+// call site stays a deliberate source edit. A string literal will NOT reach a Binding (const char*
+// -> std::string -> Binding is two user-defined conversions), which is intended: static text keeps
+// the plain Label(std::string) overload, live text takes the Binding.
+template <class T>
+class Binding {
+public:
+    Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
+    Binding(const T& v) : lit_(v) {}                           // a read-only constant
+
+    const T& get() const { return (s_ && *alive_) ? s_->get() : lit_; }
+    void set(T v) const {
+        if (s_ && *alive_) s_->set(std::move(v));
+        else lit_ = std::move(v);                              // a constant writes its own copy
+    }
+    bool writable() const { return s_ && *alive_; }
+    bool alive() const { return !s_ || *alive_; }
+
+private:
+    State<T>* s_ = nullptr;
+    std::shared_ptr<bool> alive_;
+    mutable T lit_{};
 };
 
 // ---- drag and drop ----------------------------------------------------------------------------
@@ -1335,6 +1365,7 @@ inline Node::~Node() {
 // in each node so a later ~Node has nothing dangling to call.
 template <class T>
 State<T>::~State() {
+    *alive_ = false;   // a Binding that outlives this cell stops reading through it
     for (Node* n : nodes_) n->removeCell(this);
 }
 
