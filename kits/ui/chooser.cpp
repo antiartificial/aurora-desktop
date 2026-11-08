@@ -92,6 +92,7 @@ int main(int argc, char** argv) {
     sidebar.bind(&w);
     can_grant.bind(&w);
     show_hidden.bind(&w);
+    selected.bind(&w);
 
     PlacesTree places(home);
     Desc tree;

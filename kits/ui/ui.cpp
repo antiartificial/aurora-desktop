@@ -249,7 +249,7 @@ public:
     }
 
 private:
-    bool enabled() const { return !enabled_.live() || enabled_.get(); }
+    bool enabled() const { return enabled_.get_or(true); }
 
     std::string l_;
     std::function<void()> f_;
@@ -408,7 +408,7 @@ private:
         std::function<std::vector<MenuItem>()> items = items_;
         w->Defer([w, r, items] { w->ShowMenu(r.x, r.y + r.h + 2, items()); });
     }
-    bool enabled() const { return !enabled_.live() || enabled_.get(); }
+    bool enabled() const { return enabled_.get_or(true); }
 
     Glyph g_;
     std::function<void()> f_;
@@ -444,9 +444,9 @@ public:
     // keep them; a raw `new` there would leak one cell per option per tree.
     ToggleNode(std::string label, std::unique_ptr<State<bool>> own, bool as_switch,
                std::function<void(bool)> f)
-        : l_(std::move(label)), owned_(std::move(own)), sw_(as_switch), f_(std::move(f)) {
-        if (owned_) on_ = Binding<bool>(*owned_);
-        on_.attach(this);
+        : ToggleNode(std::move(label), own ? Binding<bool>(*own) : Binding<bool>(false), as_switch,
+                     std::move(f)) {
+        owned_ = std::move(own);   // the State does not move; on_ already points at it
     }
 
     Size Measure(const Env& e, Constraints) override {
@@ -458,7 +458,7 @@ public:
     void SetStyle(const TextStyle& st) override { st_ = st; }
 
     void Draw(au_surface* s, const Env& e) override {
-        const bool on = on_.live() && on_.get();
+        const bool on = on_.get_or(false);
         const float cy = frame.y + frame.h * 0.5f;
         if (sw_) {
             // A track with a knob that slides. The knob is drawn at the end it is AT, with no
@@ -508,8 +508,9 @@ public:
 private:
     void flip() {
         if (!on_.live()) return;
-        on_.set(!on_.get());
-        if (f_) f_(on_.get());
+        const bool next = !on_.get();   // not a read-back: set() is async off the loop
+        on_.set(next);
+        if (f_) f_(next);
     }
 
     std::string l_;
@@ -622,7 +623,7 @@ public:
     void Draw(au_surface* s, const Env& e) override {
         const float r = frame.h * 0.5f;
         au_fill_round_rect(s, frame.box(), r, r, e.surface_hi);
-        const float t = v_.live() ? std::max(0.0f, std::min(1.0f, v_.get())) : 0.0f;
+        const float t = std::max(0.0f, std::min(1.0f, v_.get_or(0.0f)));
         if (t <= 0.0f) return;
         // At least as wide as it is tall, so a value just above zero is a dot rather than a
         // sliver too thin to see: "barely started" and "not started" must not look the same.
@@ -826,7 +827,7 @@ void draw_halo(au_surface* s, au_rect fill, float fill_radius, au_color ring, au
 
 class ListNode : public Node {
 public:
-    ListNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)), edit_text_("") {}
+    ListNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)), edit_text_("") { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
         // Whole pixels. The design's row is round(text_h + 6) = 24 at the base size of 13 with
@@ -932,7 +933,7 @@ public:
                 continue;
             }
             const bool picked = is_selected(i);
-            const bool cursor = sel_.live() && sel_.get() == i;
+            const bool cursor = sel_.get_or(-1) == i;
             const au_rect band{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1};
             // Zebra first: it is the row's own colour, and everything else sits on it. Odd
             // rows, by absolute index, so the stripes do not swap when the list scrolls.
@@ -998,7 +999,7 @@ public:
         }
         // The halo last, over every row, because it overlaps the rows either side (6.3).
         // Cursor-only ALWAYS shows it: it is the only thing marking a row that has no fill.
-        const int cur = sel_.live() ? sel_.get() : -1;
+        const int cur = sel_.get_or(-1);
         if (focused_ && cur >= first && cur <= last && (halo() || !is_selected(cur))) {
             const float ry = frame.y + head_h_ + 1 + (cur - first) * row_h_;
             draw_halo(s, au_rect{frame.x + 4, ry + 1, frame.x + frame.w - 5, ry + row_h_ - 2}, 5,
@@ -1293,7 +1294,7 @@ public:
     }
 
     void set_only(int row) {
-        const bool same = sel_.live() && sel_.get() == row && multi_.size() == 1 && multi_.count(row);
+        const bool same = sel_.get_or(-1) == row && multi_.size() == 1 && multi_.count(row);
         if (same) return;
         mark_all_dirty();
         multi_.clear();
@@ -2576,7 +2577,7 @@ private:
 
 class IconsNode : public Node {
 public:
-    IconsNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)) {}
+    IconsNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)) { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
         env_ = e;
@@ -2607,7 +2608,7 @@ public:
             const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
             if (t.y > frame.y + frame.h) break;
             const bool is_sel = is_selected(i);
-            const bool cursor = sel_.live() && sel_.get() == i;
+            const bool cursor = sel_.get_or(-1) == i;
             // Inset 3, radius 8 (3.3). The same three states as a row, drawn as three different
             // pictures: the fill says selected, WHICH fill says whether this pane has the
             // keyboard, and a ring with no fill says the cursor is here and nothing is chosen.
@@ -2835,7 +2836,7 @@ public:
     }
 
     void set_only(int i) {
-        if (sel_.live() && sel_.get() == i && multi_.size() == 1 && multi_.count(i)) return;
+        if (sel_.get_or(-1) == i && multi_.size() == 1 && multi_.count(i)) return;
         multi_.clear();
         if (i >= 0) multi_.insert(i);
         if (sel_.live()) sel_.set(i);
@@ -3249,7 +3250,7 @@ public:
     EitherNode(Binding<bool> f, Desc a, Desc b) : f_(std::move(f)), a_(std::move(a)), b_(std::move(b)) {
         f_.attach(this);
     }
-    Node* live() const { return (f_.live() && f_.get()) ? a_.get() : b_.get(); }
+    Node* live() const { return pick() ? a_.get() : b_.get(); }
 
     Size Measure(const Env& e, Constraints c) override {
         applied_ = pick();
@@ -3275,7 +3276,7 @@ public:
     bool Animating() const override { return (int)pick() != applied_; }
 
 private:
-    bool pick() const { return f_.live() && f_.get(); }
+    bool pick() const { return f_.get_or(false); }
 
     Binding<bool> f_;
     Desc a_, b_;
@@ -3289,13 +3290,13 @@ public:
     RevealNode(Binding<bool> shown, Desc child, Transition t)
         : shown_(std::move(shown)), c_(std::move(child)), t_(t), eff_(t) {
         shown_.attach(this);
-        e_.target(shown_.live() && shown_.get() ? 1.0f : 0.0f, 0);   // start at the end state
+        e_.target(shown_.get_or(false) ? 1.0f : 0.0f, 0);   // start at the end state
         e_.snap();
     }
 
     Size Measure(const Env& env, Constraints c) override {
         nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
-        want_ = (shown_.live() && shown_.get()) ? 1.0f : 0.0f;
+        want_ = (shown_.get_or(false)) ? 1.0f : 0.0f;
         // Resolve the transition against the environment's table EVERY pass, so a theme that
         // turns motion down (or a frame budget that cannot afford it) is honoured at run time
         // rather than at the moment the tree was built. The axis is not resolvable -- it is what
@@ -3329,11 +3330,11 @@ public:
 
     // Hit testing follows the STATE, not the animation: the target state is live immediately.
     Node* HitTest(float x, float y) override {
-        if (!shown_.live() || !shown_.get()) return nullptr;
+        if (!shown_.get_or(false)) return nullptr;
         return c_->HitTest(x, y);
     }
     void Children(std::vector<Node*>* out) override {
-        if (shown_.live() && shown_.get()) out->push_back(c_.get());
+        if (shown_.get_or(false)) out->push_back(c_.get());
     }
 
     // While moving, ask for a frame at display rate. When settled, stop asking: an idle window
@@ -3343,7 +3344,7 @@ public:
 
     void Retarget(bool allowed) override {
         affordable_ = allowed;
-        want_ = (shown_.live() && shown_.get()) ? 1.0f : 0.0f;
+        want_ = (shown_.get_or(false)) ? 1.0f : 0.0f;
         // Three ways not to move, and they resolve in ONE place: the caller asked for none,
         // the theme turned motion down (eff_none_, decided in Measure against Env's table), or
         // the frame budget cannot afford it. Each must land on the end state THIS frame, which
@@ -3583,7 +3584,7 @@ public:
                 au_clip_reset(s);
                 continue;
             }
-            const bool is_sel = sel_.live() && sel_.get() == r.id;
+            const bool is_sel = sel_.get_or(std::string()) == r.id;
             // Inset 6 horizontally and 1 vertically, radius 6 (3.3). Three states, three
             // pictures: which fill says whether this pane has the keyboard, and a ring with no
             // fill is the cursor with nothing selected.
@@ -3851,7 +3852,7 @@ private:
         dirty_rows_.push_back(i);
         cur_ = i;
         const std::string& id = flat_[i].id;
-        if (sel_.live() && sel_.get() == id) return;
+        if (sel_.get_or(std::string()) == id) return;
         if (sel_.live()) sel_.set(id);
         if (on_sel_) on_sel_(id);
     }
@@ -4062,7 +4063,7 @@ public:
     float divider_pos() const { return vert_ ? dv_.y : dv_.x; }   // for tests
 
 private:
-    float raw() const { return r_.live() ? r_.get() : 0.5f; }
+    float raw() const { return r_.get_or(0.5f); }
     void set(float v) {
         if (r_.live()) r_.set(v);
     }
@@ -4213,12 +4214,12 @@ Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));
 }
 Desc Button(std::string l, std::function<void()> f, Binding<bool> enabled) {
-    return std::make_shared<ButtonNode>(std::move(l), std::move(f), enabled);
+    return std::make_shared<ButtonNode>(std::move(l), std::move(f), std::move(enabled));
 }
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
 
 Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled) {
-    return std::make_shared<GlyphButtonNode>(g, std::move(on_click), enabled);
+    return std::make_shared<GlyphButtonNode>(g, std::move(on_click), std::move(enabled));
 }
 
 Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items) {
@@ -4226,18 +4227,18 @@ Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items) {
 }
 
 Desc Checkbox(std::string label, Binding<bool> on, std::function<void(bool)> f) {
-    return std::make_shared<ToggleNode>(std::move(label), on, false, std::move(f));
+    return std::make_shared<ToggleNode>(std::move(label), std::move(on), false, std::move(f));
 }
 
 Desc Switch(std::string label, Binding<bool> on, std::function<void(bool)> f) {
-    return std::make_shared<ToggleNode>(std::move(label), on, true, std::move(f));
+    return std::make_shared<ToggleNode>(std::move(label), std::move(on), true, std::move(f));
 }
 
 Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)> f) {
-    return std::make_shared<SliderNode>(value, lo, hi, std::move(f));
+    return std::make_shared<SliderNode>(std::move(value), lo, hi, std::move(f));
 }
 
-Desc Progress(Binding<float> fraction) { return std::make_shared<ProgressNode>(fraction); }
+Desc Progress(Binding<float> fraction) { return std::make_shared<ProgressNode>(std::move(fraction)); }
 
 Desc RadioGroup(std::vector<std::string> labels, Binding<int> chosen,
                 std::function<void(int)> f, bool horizontal) {
@@ -4261,7 +4262,7 @@ Desc VStack(std::vector<Desc> c, float gap) {
 Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
-Desc ListView(Rows* r, Binding<int> sel) { return std::make_shared<ListNode>(r, sel); }
+Desc ListView(Rows* r, Binding<int> sel) { return std::make_shared<ListNode>(r, std::move(sel)); }
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
 }
@@ -4338,11 +4339,11 @@ Desc sized(Desc child, float w, float h) {
 }
 
 Desc Either(Binding<bool> first, Desc a, Desc b) {
-    return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
+    return std::make_shared<EitherNode>(std::move(first), std::move(a), std::move(b));
 }
 
 Desc TreeView(TreeSource* src, Binding<std::string> selected) {
-    return std::make_shared<TreeNode>(src, selected);
+    return std::make_shared<TreeNode>(src, std::move(selected));
 }
 
 void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f) {
@@ -4382,22 +4383,22 @@ int TreeCursor(const Desc& tree) {
 }
 
 Desc HSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
-    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, false, o);
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), std::move(ratio), false, o);
 }
 
 Desc VSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
-    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, true, o);
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), std::move(ratio), true, o);
 }
 
 Desc Reveal(Binding<bool> shown, Desc child, Transition t) {
-    return std::make_shared<RevealNode>(shown, std::move(child), t);
+    return std::make_shared<RevealNode>(std::move(shown), std::move(child), t);
 }
 
 Desc TextView(Binding<std::string> t, bool wrap) {
     return std::make_shared<TextViewNode>(t, wrap);
 }
 
-Desc IconView(Rows* r, Binding<int> sel) { return std::make_shared<IconsNode>(r, sel); }
+Desc IconView(Rows* r, Binding<int> sel) { return std::make_shared<IconsNode>(r, std::move(sel)); }
 void OnIconsActivate(const Desc& d, std::function<void(int)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetActivateHandler(std::move(f));
 }
@@ -4407,7 +4408,7 @@ void OnIconsContext(const Desc& d, std::function<void(int, float, float)> f) {
 
 Desc Breadcrumb(Binding<std::string> p, std::function<void(const std::string&)> pick,
                 std::function<void()> edit) {
-    return std::make_shared<CrumbNode>(p, std::move(pick), std::move(edit));
+    return std::make_shared<CrumbNode>(std::move(p), std::move(pick), std::move(edit));
 }
 
 Desc TextField(Binding<std::string> t, std::function<void(const std::string&)> ch,

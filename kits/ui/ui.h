@@ -224,13 +224,13 @@ public:
     size_t bound_count() const { return nodes_.size(); }
     // A liveness flag a Binding shares. ~State flips it, so a Binding that outlives its cell
     // reads its own constant instead of dereferencing freed memory (ADR 0009's open question).
-    std::shared_ptr<bool> aliveToken() const { return alive_; }
+    std::shared_ptr<std::atomic<bool>> aliveToken() const { return alive_; }
 
 private:
     T v_;
     Window* win_ = nullptr;
     std::vector<Node*> nodes_;
-    std::shared_ptr<bool> alive_{std::make_shared<bool>(true)};
+    std::shared_ptr<std::atomic<bool>> alive_{std::make_shared<std::atomic<bool>>(true)};
     void invalidate_bound();         // invalidate the nodes that read this cell (loop thread only)
 };
 
@@ -247,21 +247,24 @@ public:
     Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
     explicit Binding(T v) : lit_(std::move(v)) {}             // a read-only constant (explicit: no pointer/literal slips in)
 
-    const T& get() const { return (s_ && *alive_) ? s_->get() : lit_; }
+    // The one place that decides what an unbound/dead binding reads as, so a widget cannot forget
+    // the guard: live -> the cell's value, otherwise the caller's fallback.
+    T get_or(T fallback) const { return live() ? s_->get() : std::move(fallback); }
+    const T& get() const { return live() ? s_->get() : lit_; }
     void set(T v) const {
-        if (s_ && *alive_) s_->set(std::move(v));
+        if (live()) s_->set(std::move(v));
         else lit_ = std::move(v);                              // a constant writes its own copy
     }
-    bool writable() const { return s_ && *alive_; }
-    bool alive() const { return !s_ || *alive_; }
-    bool live() const { return s_ && *alive_; }                // backed by a cell (vs a constant)
+    bool live() const { return s_ && alive_->load(std::memory_order_acquire); }
+    bool writable() const { return live(); }
+    bool alive() const { return !s_ || alive_->load(std::memory_order_acquire); }
     // A node built from a live binding attaches to the cell so set() invalidates it; a constant
     // binding has nothing to attach to.
-    void attach(Node* n) const { if (s_ && *alive_) s_->attach(n); }
+    void attach(Node* n) const { if (live()) s_->attach(n); }
 
 private:
     State<T>* s_ = nullptr;
-    std::shared_ptr<bool> alive_;
+    std::shared_ptr<std::atomic<bool>> alive_;
     mutable T lit_{};
 };
 
@@ -1391,7 +1394,7 @@ inline Node::~Node() {
 // in each node so a later ~Node has nothing dangling to call.
 template <class T>
 State<T>::~State() {
-    *alive_ = false;   // a Binding that outlives this cell stops reading through it
+    alive_->store(false, std::memory_order_release);   // a Binding that outlives this cell stops reading through it
     for (Node* n : nodes_) n->removeCell(this);
 }
 

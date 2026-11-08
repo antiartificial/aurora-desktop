@@ -333,15 +333,15 @@ static void sheet_states(const std::string& dir, const std::string& suffix) {
     // mean the last one drawn is the only one that is true.
     std::vector<Listing*> srcs;
     std::vector<Desc> lists;
-    std::vector<State<int>> sels; sels.reserve((size_t)n_strips);
-    for (size_t k = 0; k < (size_t)n_strips; k++) sels.emplace_back(-1);
+    std::vector<std::unique_ptr<State<int>>> sels;
+    for (size_t k = 0; k < (size_t)n_strips; k++) sels.push_back(std::make_unique<State<int>>(-1));
     std::vector<au_surface*> shots;
     float row_h = 0, head_h = 0;
     for (int i = 0; i < n_strips; i++) {
         Listing* src = new Listing(rows);
         src->with_kind = false;
         srcs.push_back(src);
-        Desc l = ListView(src, sels[(size_t)i]);
+        Desc l = ListView(src, *sels[(size_t)i]);
         ListIcons(l);
         lists.push_back(l);
         lay(l, Rect{0, 0, strip_w, 200});
@@ -415,12 +415,12 @@ static void sheet_columns(const std::string& dir, const std::string& suffix) {
     const float widths[] = {520, 760, 1000};
     const float pad = 16, W = 1000 + pad * 2;
     Details src(5);
-    std::vector<State<int>> sels; sels.reserve(3);
-    for (int k = 0; k < 3; k++) sels.emplace_back(-1);
+    std::vector<std::unique_ptr<State<int>>> sels;
+    for (int k = 0; k < 3; k++) sels.push_back(std::make_unique<State<int>>(-1));
     std::vector<au_surface*> shots;
     float total = 0, head = 0, row = 0;
     for (int i = 0; i < 3; i++) {
-        Desc l = ListView(&src, sels[(size_t)i]);
+        Desc l = ListView(&src, *sels[(size_t)i]);
         ListIcons(l);
         lay(l, Rect{0, 0, widths[i], 300});
         head = ListHeaderHeight(l);

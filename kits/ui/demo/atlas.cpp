@@ -118,6 +118,7 @@ int main() {
     filter.bind(&w);
     filter_open.bind(&w);
     path.bind(&w);
+    selected.bind(&w);          // the list/icon cursor cell
     can_back.bind(&w);
     can_fwd.bind(&w);
     can_up.bind(&w);
@@ -131,7 +132,6 @@ int main() {
         status.set(f.empty() ? grouped(rows.Count()) + " items"
                              : grouped(rows.Count()) + " of " + grouped(rows.Total()) +
                                    " match \"" + f + "\"");
-        if (Node* n = w.FindNamed("files")) w.Invalidate(n->frame);
     };
 
     // `/` opens the filter and focuses it; Escape clears it, closes it, and gives the keyboard
