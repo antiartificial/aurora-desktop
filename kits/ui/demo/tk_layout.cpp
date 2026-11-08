@@ -130,7 +130,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r);
+        Desc s = HSplit(a, b, r);
         lay(s, e, box);
         const float div = 4;                     // thickness 0.5 * unit 8
         near("hsplit.a.w at 0.5", a->frame.w, (1000 - div) / 2);
@@ -151,7 +151,7 @@ int main() {
     {
         State<float> r(0.0f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});   // 80 px each side
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});   // 80 px each side
         lay(s, e, box);
         near("min_a holds at ratio 0", a->frame.w, 80);
         r.set(1.0f);
@@ -165,7 +165,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});
         lay(s, e, Rect{0, 0, 60, 600});
         eq("a.w not negative when cramped", a->frame.w >= 0);
         eq("b.w not negative when cramped", b->frame.w >= 0);
@@ -175,7 +175,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = VSplit(a, b, &r);
+        Desc s = VSplit(a, b, r);
         lay(s, e, box);
         near("vsplit.a.h at 0.5", a->frame.h, (600 - 4) / 2);
         near("vsplit.a.w fills cross", a->frame.w, 1000);
@@ -190,7 +190,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r, SplitOpts{10, 10, 0.5f, 3});
+        Desc s = HSplit(a, b, r, SplitOpts{10, 10, 0.5f, 3});
         lay(s, e, box);
         eq("settled after layout", !s->Animating());
         r.set(0.3f);
@@ -206,7 +206,7 @@ int main() {
     {
         State<float> r(0.5f);
         Desc a = Spacer(), b = Spacer();
-        Desc s = HSplit(a, b, &r);
+        Desc s = HSplit(a, b, r);
         lay(s, e, box);
         // Grab the divider at its left edge and drag to x = 300.
         Node* hit = s->HitTest(a->frame.w + 1, 300);
@@ -251,7 +251,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         eq("root rows only while collapsed", TreeRowCount(t) == 2);
         eq("a collapsed node is not asked for children", src.asked.count("/a") == 0);
@@ -276,7 +276,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
 
         au_key down = pressing(0x1f), right = pressing(0x1d), left = pressing(0x1c);
@@ -305,7 +305,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         t->OnKey(pressing(0x1f));
         t->OnKey(pressing(0x1f));
@@ -323,7 +323,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         RevealInTree(t, "/a/x/deep");
         eq("the revealed id is selected", sel.get() == "/a/x/deep");
@@ -338,35 +338,35 @@ int main() {
     // lands on a row too, so dragging the thumb would also select whatever was behind it.
     {
         ManyRows src(500);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);              // the bar is laid out during Draw
 
         // x = 395 is inside the bar (9 px wide, at the right edge of a 400 px frame).
         list->OnPressAt(395, 300, 1);
         list->OnRelease(true);
-        eq("pressing the scrollbar selects nothing", selected == -1);
+        eq("pressing the scrollbar selects nothing", selected.get() == -1);
 
         // The same press away from the bar does select.
         list->OnPressAt(100, 300, 1);
         list->OnRelease(true);
-        eq("pressing a row does select", selected >= 0);
+        eq("pressing a row does select", selected.get() >= 0);
     }
 
     // ---- the bar appears only when there is somewhere to go -----------------------------------
     // A track with a full-length thumb is furniture that says nothing.
     {
         ManyRows few(3);
-        int selected = -1;
-        Desc list = ListView(&few, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&few, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         // Just inside the first row. Not y = 12: that is the column header with a real font
         // loaded, and it only ever "passed" because the negative row index truncated to zero.
         list->OnPressAt(395, list->frame.y + 40, 1);
         list->OnRelease(true);
-        eq("with nothing to scroll the press reaches the rows", selected >= 0);
+        eq("with nothing to scroll the press reaches the rows", selected.get() >= 0);
     }
 
     // ---- switching views is a layout, not a repaint -------------------------------------------
@@ -377,7 +377,7 @@ int main() {
     {
         State<bool> first(true);
         Desc a = Spacer(), b = Spacer();
-        Desc ei = Either(&first, a, b);
+        Desc ei = Either(first, a, b);
         lay(ei, e, box);
         eq("settled after layout", !ei->Animating());
         near("the live child was placed", a->frame.w, 1000);
@@ -400,7 +400,7 @@ int main() {
     {
         State<bool> shown(false);
         Desc child = std::make_shared<Box>(Size{200, 50});
-        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        Desc rv = Reveal(shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
         lay(rv, e, box);
         near("hidden measures no width", rv->Measure(e, Constraints{1000, 600}).w, 0);
         eq("settled while hidden", !rv->Animating());
@@ -416,7 +416,7 @@ int main() {
     {
         State<bool> shown(false);
         Desc child = std::make_shared<Box>(Size{200, 50});
-        Desc rv = Reveal(&shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
+        Desc rv = Reveal(shown, child, Transition{Motion::RevealX, 160, Curve::EaseOut});
         lay(rv, e, box);
         shown.set(true);
         rv->Retarget(true);
@@ -482,8 +482,8 @@ int main() {
     // passed only because integer truncation turned a negative row index into zero.
     {
         ManyRows src(20);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -524,7 +524,7 @@ int main() {
     {
         Fake src;
         State<std::string> sel("");
-        Desc t = TreeView(&src, &sel);
+        Desc t = TreeView(&src, sel);
         lay(t, e, Rect{0, 0, 200, 600});
         TreeRowCount(t);                       // flatten
 
@@ -546,8 +546,8 @@ int main() {
     // how a listing ends up with 10 B after 9 KB. So what is tested here is the ASK.
     {
         ManyRows src(30);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -556,7 +556,7 @@ int main() {
         eq("a header click sorts by that column", src.sorts == 1 && src.col == 0);
         eq("and ascending first", src.asc);
         list->OnRelease(true);
-        eq("a header click does not select a row", selected == -1);
+        eq("a header click does not select a row", selected.get() == -1);
 
         list->OnPressAt(50, list->frame.y + 1, 1);
         list->OnRelease(true);
@@ -582,8 +582,8 @@ int main() {
     // model: what ends up selected, and where the cursor is left.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
 
@@ -594,7 +594,7 @@ int main() {
         au_key down{}; down.pressed = 1; down.raw_char = 0x1f;
         list->OnKey(down);                       // row 0
         eq("one row selected", ListSelection(list).size() == 1);
-        eq("and it is the cursor", selected == 0 && ListSelection(list)[0] == 0);
+        eq("and it is the cursor", selected.get() == 0 && ListSelection(list)[0] == 0);
         eq("the app heard about it", calls > 0 && last.size() == 1);
 
         // Shift+Down sweeps from the anchor rather than moving a single selection.
@@ -604,13 +604,13 @@ int main() {
         const std::vector<int> three = ListSelection(list);
         eq("shift+arrow extends the range", three.size() == 3);
         eq("the range runs from the anchor", !three.empty() && three.front() == 0 && three.back() == 2);
-        eq("and the cursor is at the far end", selected == 2);
+        eq("and the cursor is at the far end", selected.get() == 2);
 
         // A plain arrow collapses back to one, which is what makes shift feel like a mode you
         // leave rather than one you are stuck in.
         list->OnKey(down);
         eq("a plain arrow collapses the selection", ListSelection(list).size() == 1);
-        eq("to where the cursor now is", selected == 3 && ListSelection(list)[0] == 3);
+        eq("to where the cursor now is", selected.get() == 3 && ListSelection(list)[0] == 3);
 
         // Ctrl+A takes everything.
         // A REAL Ctrl+A as present_wl delivers it: raw_char is the layout's letter, utf8 is
@@ -626,8 +626,8 @@ int main() {
     // loses files on the way to a folder.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         OnListDragPaths(list, [](int row) {
@@ -654,7 +654,7 @@ int main() {
     // being short of room.
     {
         State<std::string> text("short");
-        Desc label = Label(&text);
+        Desc label = Label(text);
         lay(label, e, box);
         eq("settled after layout", !label->Animating());
         const float narrow = label->Measure(e, Constraints{1000, 600}).w;
@@ -676,8 +676,8 @@ int main() {
     // ---- the grid selects like the list ---------------------------------------------------------
     {
         ManyRows src(12);
-        int selected = -1;
-        Desc grid = IconView(&src, &selected);
+        State<int> selected(-1);
+        Desc grid = IconView(&src, selected);
         lay(grid, e, Rect{0, 0, 400, 600});
         grid->Draw(nullptr, e);
 
@@ -724,7 +724,7 @@ int main() {
     {
         State<bool> on(false);
         int changes = 0;
-        Desc cb = Checkbox("Show hidden files", &on, [&](bool) { changes++; });
+        Desc cb = Checkbox("Show hidden files", on, [&](bool) { changes++; });
         lay(cb, e, Rect{0, 0, 300, 40});
 
         // A click toggles. Press-then-release, because a press alone must not commit: dragging
@@ -750,7 +750,7 @@ int main() {
     {
         State<float> v(0.5f);
         int changes = 0;
-        Desc sl = Slider(&v, 0.0f, 1.0f, [&](float) { changes++; });
+        Desc sl = Slider(v, 0.0f, 1.0f, [&](float) { changes++; });
         lay(sl, e, Rect{0, 0, 200, 40});
         sl->Draw(nullptr, e);
 
@@ -776,7 +776,7 @@ int main() {
         // A progress bar reports; it is not a control. A Tab stop that does nothing is a dead
         // stop in a keyboard user's path, and a click on it should fall through.
         State<float> p(0.3f);
-        Desc pr = Progress(&p);
+        Desc pr = Progress(p);
         lay(pr, e, Rect{0, 0, 200, 20});
         eq("progress takes no focus", !pr->CanFocus());
         eq("and no clicks", pr->HitTest(10, 10) == nullptr);
@@ -786,7 +786,7 @@ int main() {
         // A radio group is exclusive: choosing one is choosing it, not adding it.
         State<int> pick(0);
         int last = -1;
-        Desc rg = RadioGroup({"Name", "Size", "Date"}, &pick, [&](int i) { last = i; });
+        Desc rg = RadioGroup({"Name", "Size", "Date"}, pick, [&](int i) { last = i; });
         lay(rg, e, Rect{0, 0, 300, 200});
         std::vector<Node*> kids;
         rg->Children(&kids);
@@ -801,8 +801,8 @@ int main() {
     // The gesture people reach for in a grid before they reach for Ctrl-click.
     {
         ManyRows src(12);
-        int selected = -1;
-        Desc grid = IconView(&src, &selected);
+        State<int> selected(-1);
+        Desc grid = IconView(&src, selected);
         lay(grid, e, Rect{0, 0, 400, 600});
         grid->Draw(nullptr, e);
         std::vector<int> last;
@@ -833,7 +833,7 @@ int main() {
     {
         int fired = 0;
         State<bool> on(false);
-        Desc b = Button("Grant", [&] { fired++; }, &on);
+        Desc b = Button("Grant", [&] { fired++; }, on);
 
         b->OnPress();
         b->OnRelease(true);
@@ -864,16 +864,16 @@ int main() {
     // leave exactly one row, or what is highlighted would not be what a picker grants.
     {
         ManyRows src(10);
-        int multi_sel = -1, single_sel = -1;
-        Desc multi = ListView(&src, &multi_sel);
-        Desc single = ListView(&src, &single_sel);
+        State<int> multi_sel(-1), single_sel(-1);
+        Desc multi = ListView(&src, multi_sel);
+        Desc single = ListView(&src, single_sel);
         // Row icons are opt-in and are drawn, not laid out, so what a headless test can check
         // is that turning them on changes no geometry and that the draw path survives a null
         // surface the way every other node here does. tk_layout calls Draw(nullptr), so a
         // widget that dereferenced the surface would take the whole suite down.
         {
-            int icon_sel = -1;
-            Desc icony = ListView(&src, &icon_sel);
+            State<int> icon_sel(-1);
+            Desc icony = ListView(&src, icon_sel);
             const Size before = icony->Measure(e, Constraints{400, 600});
             ListIcons(icony);
             const Size after = icony->Measure(e, Constraints{400, 600});
@@ -907,7 +907,7 @@ int main() {
 
         single->OnKey(shift_down);
         single->OnKey(shift_down);
-        eq("a single-select list moves on Shift+Down", single_sel == 2);
+        eq("a single-select list moves on Shift+Down", single_sel.get() == 2);
         eq("and keeps one row selected", ListSelection(single) == std::vector<int>{2});
         single->OnKey(ctrl_a);
         eq("Ctrl+A selects nothing more", ListSelection(single) == std::vector<int>{2});
@@ -918,19 +918,19 @@ int main() {
     // highlighted must not stay highlighted in a listing they were never chosen from.
     {
         ManyRows src(10);
-        int selected = -1;
-        Desc list = ListView(&src, &selected);
+        State<int> selected(-1);
+        Desc list = ListView(&src, selected);
         lay(list, e, Rect{0, 0, 400, 600});
         list->Draw(nullptr, e);
         list->OnKey(pressing(0x1f));
         list->OnKey(pressing(0x1f));
-        eq("a row is selected", selected == 1 && ListSelection(list) == std::vector<int>{1});
+        eq("a row is selected", selected.get() == 1 && ListSelection(list) == std::vector<int>{1});
 
-        selected = -1;                       // the app opens another directory
+        selected.set(-1);                       // the app opens another directory
         list->Draw(nullptr, e);
         eq("the highlight goes with it", ListSelection(list).empty());
         list->OnKey(pressing(0x1f));
-        eq("and the next selection starts clean", selected == 0 && ListSelection(list) == std::vector<int>{0});
+        eq("and the next selection starts clean", selected.get() == 0 && ListSelection(list) == std::vector<int>{0});
     }
 
     if (fails == 0) printf("tk_layout: ok\n");

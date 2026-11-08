@@ -30,6 +30,44 @@ target_link_libraries(test_ui_toolkit PRIVATE aurora_ui_tk)
 add_test(NAME ui_toolkit COMMAND test_ui_toolkit)
 set_tests_properties(ui_toolkit PROPERTIES TIMEOUT 60)
 
+# ADR 0009 / docs 00 §8.0: the tree-swap use-after-free, proven gone under ASan. State<T>::set is a
+# header template, so it instantiates in this TU and instruments the freed read even though the node
+# is allocated in the uninstrumented library (ASan intercepts malloc/free globally).
+add_executable(test_root_swap tests/test_root_swap.cpp)
+target_link_libraries(test_root_swap PRIVATE aurora_ui_tk)
+target_compile_options(test_root_swap PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_root_swap PRIVATE -fsanitize=address)
+add_test(NAME root_swap COMMAND test_root_swap)
+set_tests_properties(root_swap PROPERTIES TIMEOUT 60
+	ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")   # the claim is "no use-after-free", not "no leaks"
+
+# 8.2 foundation: Binding<T> converts from State<T>& and a literal and survives a cell's death.
+# ASan proves the liveness token stops the freed read.
+add_executable(test_binding tests/test_binding.cpp)
+target_link_libraries(test_binding PRIVATE aurora_ui_tk)
+target_compile_options(test_binding PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_binding PRIVATE -fsanitize=address)
+add_test(NAME binding COMMAND test_binding)
+set_tests_properties(binding PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
+# 8.2b: set() from a worker is race-free (worker defers; v_ is written only on the loop thread).
+# ThreadSanitizer proves there is no data race between a worker's set() and the loop's get().
+add_executable(test_threadsafe_set tests/test_threadsafe_set.cpp)
+target_link_libraries(test_threadsafe_set PRIVATE aurora_ui_tk)
+target_compile_options(test_threadsafe_set PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g -O1)
+target_link_options(test_threadsafe_set PRIVATE -fsanitize=thread)
+add_test(NAME threadsafe_set COMMAND test_threadsafe_set)
+set_tests_properties(threadsafe_set PROPERTIES TIMEOUT 120)
+
+# 8.2e: Derived<T> — declared sources, topological (declaration) order, lazy recompute, read-only
+# Binding. ASan, because a derived holds the sources it reads.
+add_executable(test_derived tests/test_derived.cpp)
+target_link_libraries(test_derived PRIVATE aurora_ui_tk)
+target_compile_options(test_derived PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_derived PRIVATE -fsanitize=address)
+add_test(NAME derived COMMAND test_derived)
+set_tests_properties(derived PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

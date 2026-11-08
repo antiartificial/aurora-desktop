@@ -29,6 +29,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include <memory>
 #include <string>
 #include <vector>
@@ -190,6 +191,42 @@ float default_base_size();
 
 class Window;
 class Node;      // State holds Node* to invalidate what reads it; the class comes below
+class DerivedBase;                    // a derived value; defined after Node, used as a pointer before
+template <class T> class Derived;
+
+// Symmetric attachment. A state records the nodes that read it (so set() invalidates them), and a
+// node records the states it bound to (so its destructor can detach itself). Without the second
+// direction, SetRoot frees the old tree while cells still hold raw Node* and the next set() walks
+// freed memory -- the heap-use-after-free ADR 0009 records.
+// Something a Derived can be computed from: a State or another Derived. Dependents are named at
+// construction, so the graph is fixed after the tree is built and needs no tracker or scheduler.
+class SourceBase {
+public:
+    virtual ~SourceBase() = default;
+    void addDependent(DerivedBase* d) { dependents_.push_back(d); }
+protected:
+    std::vector<DerivedBase*> dependents_;
+};
+
+class StateBase : public SourceBase {
+public:
+    virtual ~StateBase() = default;
+    virtual void detach(Node* n) = 0;
+};
+
+// The commit protocol (markDirty/readers) is internal to the window: a widget never calls it, and a
+// derived never registers itself with a reader -- Binding::attach does that.
+class DerivedBase : public StateBase {
+public:
+    void addReader(Node* n) { readers_.push_back(n); }
+    void removeReader(Node* n);
+    void detach(Node* n) override { removeReader(n); }   // ~Node undoes a derived reader too (ADR 0009)
+    // A source changed: this is stale, its readers repaint, and deriveds that read it follow.
+    void markDirty(Window* w);
+protected:
+    std::vector<Node*> readers_;
+    mutable bool dirty_ = true;
+};
 
 // Set() invalidates exactly the nodes that read this cell: no diffing and no tree walk, because
 // the binding was made when the tree was built. A node constructed from a State attaches itself,
@@ -197,23 +234,96 @@ class Node;      // State holds Node* to invalidate what reads it; the class com
 // can only invalidate the whole window, which it did at first and which measured every frame as
 // a full repaint.
 //
-// Lifetime: a State must outlive the nodes built from it. In practice both are owned by the
-// window's setup scope, and a node is never destroyed before the tree it is in.
+// Lifetime: a State must outlive the nodes built from it, OR the node must detach before the
+// State dies (StateBase::detach from ~Node). Both directions are recorded here.
 template <class T>
-class State {
+class State : public StateBase {
 public:
     explicit State(T v) : v_(std::move(v)) {}
     const T& get() const { return v_; }
     void set(T n);
     void bind(Window* w) { win_ = w; }
     Window* window() const { return win_; }
-    void attach(Node* n) { nodes_.push_back(n); }
+    ~State() override;               // removes this from each bound node's cell list
+    void attach(Node* n);            // defined below, after Node is complete
+    void detach(Node* n) override;   // erase n from nodes_
     size_t bound_count() const { return nodes_.size(); }
+    // A liveness flag a Binding shares. ~State flips it, so a Binding that outlives its cell
+    // reads its own constant instead of dereferencing freed memory (ADR 0009's open question).
+    std::shared_ptr<std::atomic<bool>> aliveToken() const { return alive_; }
 
 private:
     T v_;
     Window* win_ = nullptr;
     std::vector<Node*> nodes_;
+    std::shared_ptr<std::atomic<bool>> alive_{std::make_shared<std::atomic<bool>>(true)};
+    void invalidate_bound();         // invalidate the nodes that read this cell (loop thread only)
+    void notify_dependents();        // mark derived values computed from this cell dirty
+};
+
+// Binding<T> — the one way a widget takes state: no overload set to get wrong. Reads through a
+// live State<T> (writable) or a constant literal (read-only). It converts implicitly from
+// State<T>& and from a non-string literal; a State<T>* is NOT a State<T>&, so migrating a pointer
+// call site stays a deliberate source edit. A string literal will NOT reach a Binding (const char*
+// -> std::string -> Binding is two user-defined conversions), which is intended: static text keeps
+// the plain Label(std::string) overload, live text takes the Binding.
+template <class T>
+class Binding {
+public:
+    Binding() : lit_() {}                                      // a default constant (false/empty)
+    Binding(State<T>& s) : s_(&s), alive_(s.aliveToken()) {}   // live, writable
+    Binding(Derived<T>& d) : d_(&d) {}                         // a derived: read-only
+    explicit Binding(T v) : lit_(std::move(v)) {}             // a read-only constant (explicit: no pointer/literal slips in)
+
+    // The one place that decides what an unbound/dead binding reads as, so a widget cannot forget
+    // the guard: a derived or a live cell -> its value, otherwise the caller's fallback.
+    T get_or(T fallback) const { return d_ ? d_->get() : (cell() ? s_->get() : std::move(fallback)); }
+    const T& get() const { return d_ ? d_->get() : (cell() ? s_->get() : lit_); }
+    void set(T v) const {
+        if (d_) return;                                        // a derived is read-only
+        if (cell()) s_->set(std::move(v));
+        else lit_ = std::move(v);                              // a constant writes its own copy
+    }
+    bool live() const { return d_ != nullptr || cell(); }      // a derived, or a live cell
+    bool writable() const { return !d_ && cell(); }
+    bool alive() const { return d_ != nullptr || !s_ || alive_->load(std::memory_order_acquire); }
+    // A node built from a live binding attaches to the cell so set() invalidates it; a derived gets
+    // it as a reader (so a source change repaints through the derived); a constant has neither.
+    void attach(Node* n) const { if (d_) { d_->addReader(n); n->addCell(d_); } else if (cell()) s_->attach(n); }
+
+private:
+    bool cell() const { return s_ && alive_->load(std::memory_order_acquire); }
+    State<T>* s_ = nullptr;
+    Derived<T>* d_ = nullptr;
+    std::shared_ptr<std::atomic<bool>> alive_;
+    mutable T lit_{};
+};
+
+// ---- derived values ---------------------------------------------------------------------------
+//
+// A cell computed from cells declared before it (docs 04-runtime §1). Declaration order is
+// topological order, so one pass in construction order is enough: no graph sort, no cycle
+// detection, no scheduler, and no ambient observer -- which would have to be correct across the
+// set()-from-any-thread boundary 8.2b opened. Read-only, and it reads as a Binding<T>, so it can
+// feed Either, Reveal, a split ratio or a label without the widget knowing the difference.
+template <class T>
+class Derived : public DerivedBase {
+public:
+    // Sources must be declared before this (they are captured by reference and outlived by it).
+    template <class F, class... S>
+    Derived(F&& f, S&... sources)
+        : f_([fn = std::forward<F>(f), &sources...]() { return fn(sources.get()...); }) {
+        (sources.addDependent(this), ...);   // each source marks this dirty when it changes
+    }
+    const T& get() const {                    // window thread; recomputes once if stale
+        if (dirty_) { value_ = f_(); dirty_ = false; }
+        return value_;
+    }
+    Binding<T> as_binding() const { return Binding<T>(const_cast<Derived<T>&>(*this)); }
+
+private:
+    std::function<T()> f_;
+    mutable T value_{};
 };
 
 // ---- drag and drop ----------------------------------------------------------------------------
@@ -241,7 +351,20 @@ using Desc = std::shared_ptr<Node>;
 
 class Node {
 public:
-    virtual ~Node() {}
+    virtual ~Node();   // detaches from every cell it bound to, so a swapped-out tree cannot dangle
+
+    // A cell records this node (State::attach); the node records the cell here so the destructor
+    // can undo it. addCell is the reverse pointer that makes attachment symmetric (ADR 0009).
+    void addCell(StateBase* c) { cells_.push_back(c); }
+    // The reverse of addCell: a State being destroyed forgets itself in every node it bound to, so
+    // a later ~Node has no dangling cell to call. Symmetric in BOTH directions, so neither order
+    // ("node outlives state" or "state outlives node") can dereference a dead object.
+    void removeCell(StateBase* c) {
+        for (auto it = cells_.begin(); it != cells_.end();) {
+            if (*it == c) it = cells_.erase(it);
+            else ++it;
+        }
+    }
 
     // Flutter's two halves. Measure must not depend on where it will be placed, and must not
     // visit a child more than once -- that is what keeps a pass linear.
@@ -350,6 +473,7 @@ public:
     Insets pad;
     float weight = 0;              // > 0 takes a share of the leftover main-axis space
     std::string name;              // what the accessibility tree and tests find it by
+    std::vector<StateBase*> cells_; // states this node bound to; detached in ~Node
 
 protected:
     // The box a child gets after padding, and the constraints to offer it.
@@ -379,12 +503,12 @@ Desc styled(Desc d, TextStyle st);
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string text);
-Desc Label(State<std::string>* bound);
+Desc Label(Binding<std::string> bound);
 Desc Bold(std::string text);
 Desc Button(std::string label, std::function<void()> on_click);
 // A button that can be switched off by a State. Off, it draws dim, ignores a click and the
 // activation keys, and stays in the tree: a disabled action is shown with its absence, not hidden.
-Desc Button(std::string label, std::function<void()> on_click, State<bool>* enabled);
+Desc Button(std::string label, std::function<void()> on_click, Binding<bool> enabled);
 Desc Spacer();                                       // takes all the leftover space
 
 // ---- glyph buttons ------------------------------------------------------------------------------
@@ -399,7 +523,7 @@ enum class Glyph : uint8_t {
 // 28x28 by default (the toolbar's button), hover and press and focus like a Button, and the
 // same `enabled` cell -- a disabled button STAYS VISIBLE with its glyph in the tertiary ink,
 // because hiding what is unavailable teaches the wrong model.
-Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled = nullptr);
+Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled = Binding<bool>(true));
 
 // MenuButton is declared with the menus, below: it needs MenuItem.
 
@@ -410,22 +534,22 @@ Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled = 
 // thing is running". Both toggle on Space -- not Enter, which every toolkit reserves for
 // "accept the dialog", and a checkbox that swallowed it would make a form unsubmittable from
 // the keyboard.
-Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
-Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> changed = nullptr);
+Desc Checkbox(std::string label, Binding<bool> on, std::function<void(bool)> changed = nullptr);
+Desc Switch(std::string label, Binding<bool> on, std::function<void(bool)> changed = nullptr);
 
 // A slider over [lo, hi]. It takes the width it is given, because a slider's width IS its
 // resolution: a narrow one cannot express the values it claims to. Arrows move a twentieth of
 // the range and Page a fifth -- stepping by one unit would make a 0-to-1 slider take a hundred
 // presses to cross.
-Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> changed = nullptr);
+Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)> changed = nullptr);
 
 // A progress bar, 0 to 1. Not focusable and not clickable: it reports, it is not a control, and
 // a Tab stop that does nothing is a dead stop in a keyboard user's path.
-Desc Progress(State<float>* fraction);
+Desc Progress(Binding<float> fraction);
 
 // Exclusive choice. A stack of checkboxes that agree to be exclusive rather than a new widget --
 // exclusivity is the only thing it adds.
-Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+Desc RadioGroup(std::vector<std::string> labels, Binding<int> chosen,
                 std::function<void(int)> changed = nullptr, bool horizontal = false);
 Desc VStack(std::vector<Desc> children, float gap_units = 0.5f);
 Desc HStack(std::vector<Desc> children, float gap_units = 0.5f);
@@ -595,7 +719,7 @@ public:
     virtual void Sort(int col, bool ascending) { (void)col; (void)ascending; }
 };
 
-Desc ListView(Rows* rows, int* selected);
+Desc ListView(Rows* rows, Binding<int> selected);
 
 // ---- icon view --------------------------------------------------------------------------------
 
@@ -608,7 +732,7 @@ Desc ListView(Rows* rows, int* selected);
 // untrusted file is a verb that runs in a domain), and a grid of identical generic glyphs would
 // be worse than a list. A procedural icon per class carries real information at zero risk.
 // HVIF, when it lands, replaces the drawing and not the widget.
-Desc IconView(Rows* rows, int* selected);
+Desc IconView(Rows* rows, Binding<int> selected);
 void OnIconsActivate(const Desc& icons, std::function<void(int)> f);
 void OnIconsContext(const Desc& icons, std::function<void(int, float, float)> f);
 // A right-click on a row calls this with (row, x, y) in window coordinates, so the app can open
@@ -709,7 +833,7 @@ void BeginListRename(const Desc& list, int row);
 //
 // Lines are split and wrapped once per (text, width) and cached, because wrapping measures text
 // and a scroll must not re-measure the document.
-Desc TextView(State<std::string>* text, bool wrap = true);
+Desc TextView(Binding<std::string> text, bool wrap = true);
 
 // ---- breadcrumb -------------------------------------------------------------------------------
 
@@ -721,7 +845,7 @@ Desc TextView(State<std::string>* text, bool wrap = true);
 // Structural change is a widget's job -- the same reason the list owns its own rows.
 //
 // Clicking past the last segment calls on_edit, which is where a path field belongs (Cmd+L).
-Desc Breadcrumb(State<std::string>* path,
+Desc Breadcrumb(Binding<std::string> path,
                 std::function<void(const std::string&)> on_pick,
                 std::function<void()> on_edit = nullptr);
 
@@ -749,7 +873,7 @@ struct FieldOpts {
     bool select_all_on_focus = false;  // what a path field wants, so typing replaces
 };
 
-Desc TextField(State<std::string>* text,
+Desc TextField(Binding<std::string> text,
                std::function<void(const std::string&)> on_change = nullptr,
                std::function<void(const std::string&)> on_commit = nullptr,
                std::function<void()> on_cancel = nullptr,
@@ -799,7 +923,7 @@ private:
 //
 // The target state is live immediately: `shown` flips, hit testing follows it the same frame,
 // and only the pixels catch up. A transition that gated input would be a latency bug in costume.
-Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
+Desc Reveal(Binding<bool> shown, Desc child, Transition t = Transition{});
 
 // Exactly one of two children, chosen by a State. Both are built once and kept; the one not
 // shown is not measured, not drawn, not hit-tested and not in the focus order.
@@ -808,7 +932,7 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t = Transition{});
 // hold both and pick. It costs the memory of two widgets and buys instant switching with each
 // view keeping its own scroll position and selection -- which is what a person expects when they
 // toggle back.
-Desc Either(State<bool>* first, Desc a, Desc b);
+Desc Either(Binding<bool> first, Desc a, Desc b);
 
 // A fixed size on one axis, or both; -1 keeps the child's natural size on that axis.
 //
@@ -871,7 +995,7 @@ public:
 //
 // `selected` is a State holding the selected id, so the app reads the selection as a value and a
 // breadcrumb or a path field can be bound to the same cell.
-Desc TreeView(TreeSource* src, State<std::string>* selected);
+Desc TreeView(TreeSource* src, Binding<std::string> selected);
 void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f);
 void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f);
 
@@ -918,8 +1042,8 @@ struct SplitOpts {
     float grab_slop = 3;       // px added each side of it for hit testing only
 };
 
-Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
-Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o = SplitOpts{});
+Desc HSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o = SplitOpts{});
+Desc VSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o = SplitOpts{});
 
 // ---- damage -----------------------------------------------------------------------------------
 
@@ -1016,7 +1140,23 @@ public:
     ~Window();
 
     bool ok() const { return win_ != nullptr; }
-    void SetRoot(Desc root) { root_ = std::move(root); dirty_ = true; }
+    // True on the thread that constructed (and runs) this window. A cell uses it to decide whether
+    // a set() can write its value directly or must post the apply to this window's loop.
+    bool on_loop_thread() const { return std::this_thread::get_id() == loop_tid_; }
+    // A tree swap. The old tree is dropped here; attachment is symmetric (ADR 0009) so the CELLS
+    // are safe, but the window's own node lists still named the freed nodes, so clear them and force
+    // a fresh layout. Before this, a swap mid-run (preview, hot reload) let Run's tick scan and
+    // event routing walk freed Node*; SetRoot was only safe before the first Run.
+    void SetRoot(Desc root) {
+        root_ = std::move(root);
+        all_.clear();
+        focusables_.clear();
+        hover_ = pressed_ = focus_ = last_node_ = nullptr;
+        drag_src_ = drag_tgt_ = nullptr;
+        laid_ = false;
+        damage_.all();
+        dirty_ = true;
+    }
     Env& env() { return env_; }
     void Invalidate() { dirty_ = true; damage_.all(); }
     // Mark one rectangle dirty. This is what a State<T> set and a hover should call: a hover that
@@ -1235,6 +1375,7 @@ private:
     int lw_ = 0, lh_ = 0;
     double scale_ = 1.0;
     bool dirty_ = true, quit_ = false, laid_ = false;
+    std::thread::id loop_tid_;       // the thread that constructed/run this window
     float px_ = -1, py_ = -1;
     Node* hover_ = nullptr;
     Node* pressed_ = nullptr;
@@ -1256,16 +1397,72 @@ public:
 };
 
 template <class T>
-void State<T>::set(T n) {
-    v_ = std::move(n);
+void State<T>::invalidate_bound() {
+    // The damage list and dirty_ are the loop thread's; this is only ever called on it (directly
+    // from a loop-thread set(), or from the deferred lambda the loop drains).
     if (!win_) return;
-    // Nothing attached means nothing in the tree reads this cell through a node, so the safe
-    // answer is the whole frame. One or more attached means we know exactly what changed.
-    if (nodes_.empty()) {
-        win_->Invalidate();
+    if (nodes_.empty()) { win_->Invalidate(); return; }
+    for (Node* n : nodes_) win_->Invalidate(n->frame);
+}
+
+template <class T>
+void State<T>::notify_dependents() {
+    // Declared sources are named at construction, so this is a fixed list, not a walk. markDirty
+    // cascades to derived-of-derived; win_ may be null (an unbound cell), which markDirty tolerates.
+    for (DerivedBase* d : dependents_) d->markDirty(win_);
+}
+
+template <class T>
+void State<T>::set(T n) {
+    // v_ is the loop thread's to write. On the loop thread (~ or with no window at all) apply now;
+    // off it, post the whole apply to the deferred queue, which is thread-safe and drained on the
+    // loop. So a loop-thread get() never races a worker's set(), and the damage list is only ever
+    // touched on the loop thread. The liveness token guards a cell that dies before the drain.
+    if (!win_ || win_->on_loop_thread()) {
+        v_ = std::move(n);
+        invalidate_bound();
+        notify_dependents();
         return;
     }
-    for (Node* n : nodes_) win_->Invalidate(n->frame);
+    auto tok = alive_;
+    win_->Defer([this, tok, n = std::move(n)]() mutable {
+        if (!*tok) return;             // the cell died before the loop drained this
+        v_ = std::move(n);
+        invalidate_bound();
+        notify_dependents();
+    });
+}
+
+// Symmetric attach/detach (ADR 0009). attach() records the node in the state so set() invalidates
+// it, and the state in the node so the node can detach itself when destroyed. detach() erases the
+// node from this state's list. ~Node calls detach on every cell it bound to, which is what makes
+// SetRoot safe: dropping the old tree frees the nodes, and their destructors remove them from the
+// cells before a later set() can touch them.
+template <class T>
+void State<T>::attach(Node* n) {
+    nodes_.push_back(n);
+    n->addCell(this);
+}
+
+template <class T>
+void State<T>::detach(Node* n) {
+    for (auto it = nodes_.begin(); it != nodes_.end();) {
+        if (*it == n) it = nodes_.erase(it);
+        else ++it;
+    }
+}
+
+inline Node::~Node() {
+    for (StateBase* c : cells_) c->detach(this);
+}
+
+// The other direction: a State is destroyed before the nodes that read it (main's teardown can
+// destroy a tree after its cells, e.g. a Desc held longer than the state it bound). Forget itself
+// in each node so a later ~Node has nothing dangling to call.
+template <class T>
+State<T>::~State() {
+    alive_->store(false, std::memory_order_release);   // a Binding that outlives this cell stops reading through it
+    for (Node* n : nodes_) n->removeCell(this);
 }
 
 }  // namespace ui

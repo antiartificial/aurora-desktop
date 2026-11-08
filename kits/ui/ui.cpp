@@ -17,6 +17,17 @@
 namespace aurora {
 namespace ui {
 
+void DerivedBase::markDirty(Window* w) {
+    dirty_ = true;
+    if (w) for (Node* n : readers_) w->Invalidate(n->frame);
+    for (DerivedBase* d : dependents_) d->markDirty(w);   // derived-of-derived follows in one pass
+}
+
+void DerivedBase::removeReader(Node* n) {
+    readers_.erase(std::remove(readers_.begin(), readers_.end(), n), readers_.end());
+}
+
+
 namespace {
 
 float text_h(const Env& e) {
@@ -159,13 +170,13 @@ struct Scroller {
 
 class TextNode : public Node {
 public:
-    TextNode(std::string t, bool bold) : t_(std::move(t)) { st_.bold = bold; }
-    TextNode(State<std::string>* s, bool bold) : s_(s) {
+    TextNode(std::string t, bool bold) : b_(std::move(t)) { st_.bold = bold; }
+    TextNode(Binding<std::string> b, bool bold) : b_(std::move(b)) {
         st_.bold = bold;
-        if (s_) s_->attach(this);     // the binding the design promises, made here
+        b_.attach(this);              // attach to the cell so set() invalidates this node
     }
 
-    const std::string& str() const { return s_ ? s_->get() : t_; }
+    const std::string& str() const { return b_.get(); }
 
     Size Measure(const Env& e, Constraints) override {
         laid_ = str();
@@ -182,7 +193,7 @@ public:
     //
     // The same mistake as Split, Either and Reveal: a state change that alters the LAYOUT and
     // only asks for a repaint.
-    bool Animating() const override { return s_ && str() != laid_; }
+    bool Animating() const override { return b_.live() && str() != laid_; }
     void Draw(au_surface* s, const Env& e) override {
         const Rect in = inner();
         au_text_draw(s, e.face(st_), e.sized(st_), str().c_str(), -1, in.x,
@@ -196,9 +207,8 @@ public:
     Node* HitTest(float, float) override { return nullptr; }   // text is not a target
 
 private:
-    std::string t_;
     std::string laid_;            // the text the last layout measured
-    State<std::string>* s_ = nullptr;
+    Binding<std::string> b_;
     TextStyle st_;
 };
 
@@ -206,9 +216,9 @@ private:
 
 class ButtonNode : public Node {
 public:
-    ButtonNode(std::string l, std::function<void()> f, State<bool>* enabled = nullptr)
-        : l_(std::move(l)), f_(std::move(f)), enabled_(enabled) {
-        if (enabled_) enabled_->attach(this);
+    ButtonNode(std::string l, std::function<void()> f, Binding<bool> enabled = Binding<bool>(true))
+        : l_(std::move(l)), f_(std::move(f)), enabled_(std::move(enabled)) {
+        enabled_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints) override {
@@ -250,11 +260,11 @@ public:
     }
 
 private:
-    bool enabled() const { return !enabled_ || enabled_->get(); }
+    bool enabled() const { return enabled_.get_or(true); }
 
     std::string l_;
     std::function<void()> f_;
-    State<bool>* enabled_ = nullptr;
+    Binding<bool> enabled_;
     TextStyle st_;
     bool over_ = false, down_ = false, focused_ = false;
 
@@ -344,9 +354,9 @@ void draw_chevron(au_surface* s, float cx, float cy, float r, au_color c) {
 
 class GlyphButtonNode : public Node {
 public:
-    GlyphButtonNode(Glyph g, std::function<void()> f, State<bool>* enabled)
-        : g_(g), f_(std::move(f)), enabled_(enabled) {
-        if (enabled_) enabled_->attach(this);
+    GlyphButtonNode(Glyph g, std::function<void()> f, Binding<bool> enabled)
+        : g_(g), f_(std::move(f)), enabled_(std::move(enabled)) {
+        enabled_.attach(this);
     }
     // The menu form: the items are asked for at PRESS time, so a tick in the menu shows the
     // state now and not the state the tree was built in.
@@ -409,12 +419,12 @@ private:
         std::function<std::vector<MenuItem>()> items = items_;
         w->Defer([w, r, items] { w->ShowMenu(r.x, r.y + r.h + 2, items()); });
     }
-    bool enabled() const { return !enabled_ || enabled_->get(); }
+    bool enabled() const { return enabled_.get_or(true); }
 
     Glyph g_;
     std::function<void()> f_;
     std::function<std::vector<MenuItem>()> items_;
-    State<bool>* enabled_ = nullptr;
+    Binding<bool> enabled_;
     Window* win_ = nullptr;
     float side_ = 28;
     bool chevron_ = false, over_ = false, down_ = false, focused_ = false;
@@ -436,18 +446,18 @@ public:
 // the keyboard and the state binding to express a choice of shape.
 class ToggleNode : public Node {
 public:
-    ToggleNode(std::string label, State<bool>* on, bool as_switch, std::function<void(bool)> f)
-        : l_(std::move(label)), on_(on), sw_(as_switch), f_(std::move(f)) {
-        if (on_) on_->attach(this);
+    ToggleNode(std::string label, Binding<bool> on, bool as_switch, std::function<void(bool)> f)
+        : l_(std::move(label)), on_(std::move(on)), sw_(as_switch), f_(std::move(f)) {
+        on_.attach(this);
     }
 
     // The same, but the node OWNS the cell. RadioGroup needs one per option and has nowhere to
     // keep them; a raw `new` there would leak one cell per option per tree.
     ToggleNode(std::string label, std::unique_ptr<State<bool>> own, bool as_switch,
                std::function<void(bool)> f)
-        : l_(std::move(label)), owned_(std::move(own)), sw_(as_switch), f_(std::move(f)) {
-        on_ = owned_.get();
-        if (on_) on_->attach(this);
+        : ToggleNode(std::move(label), own ? Binding<bool>(*own) : Binding<bool>(false), as_switch,
+                     std::move(f)) {
+        owned_ = std::move(own);   // the State does not move; on_ already points at it
     }
 
     Size Measure(const Env& e, Constraints) override {
@@ -459,7 +469,7 @@ public:
     void SetStyle(const TextStyle& st) override { st_ = st; }
 
     void Draw(au_surface* s, const Env& e) override {
-        const bool on = on_ && on_->get();
+        const bool on = on_.get_or(false);
         const float cy = frame.y + frame.h * 0.5f;
         if (sw_) {
             // A track with a knob that slides. The knob is drawn at the end it is AT, with no
@@ -508,14 +518,15 @@ public:
 
 private:
     void flip() {
-        if (!on_) return;
-        on_->set(!on_->get());
-        if (f_) f_(on_->get());
+        if (!on_.live()) return;
+        const bool next = !on_.get();   // not a read-back: set() is async off the loop
+        on_.set(next);
+        if (f_) f_(next);
     }
 
     std::string l_;
     std::unique_ptr<State<bool>> owned_;   // set only by the owning constructor
-    State<bool>* on_ = nullptr;
+    Binding<bool> on_;
     bool sw_;
     std::function<void(bool)> f_;
     TextStyle st_;
@@ -527,9 +538,9 @@ private:
 
 class SliderNode : public Node {
 public:
-    SliderNode(State<float>* v, float lo, float hi, std::function<void(float)> f)
-        : v_(v), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
-        if (v_) v_->attach(this);
+    SliderNode(Binding<float> v, float lo, float hi, std::function<void(float)> f)
+        : v_(std::move(v)), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
+        v_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -566,15 +577,15 @@ public:
     void OnRelease(bool) override { down_ = false; }
 
     bool OnKey(const au_key& k) override {
-        if (!k.pressed || !v_) return false;
+        if (!k.pressed || !v_.live()) return false;
         // A twentieth of the range per press, a fifth on Page. Arrow keys that moved by one
         // unit would make a 0-to-1 slider take a hundred presses to cross.
         const float step = (hi_ - lo_) / 20.0f;
         switch (k.raw_char) {
-            case 0x1c: case 0x1f: put(v_->get() - step); return true;   // left, down
-            case 0x1d: case 0x1e: put(v_->get() + step); return true;   // right, up
-            case 0x0b: put(v_->get() + (hi_ - lo_) / 5.0f); return true;
-            case 0x0c: put(v_->get() - (hi_ - lo_) / 5.0f); return true;
+            case 0x1c: case 0x1f: put(v_.get() - step); return true;   // left, down
+            case 0x1d: case 0x1e: put(v_.get() + step); return true;   // right, up
+            case 0x0b: put(v_.get() + (hi_ - lo_) / 5.0f); return true;
+            case 0x0c: put(v_.get() - (hi_ - lo_) / 5.0f); return true;
             case 0x01: put(lo_); return true;
             case 0x04: put(hi_); return true;
             default: return false;
@@ -583,8 +594,8 @@ public:
 
 private:
     float frac() const {
-        if (!v_) return 0;
-        return std::max(0.0f, std::min(1.0f, (v_->get() - lo_) / (hi_ - lo_)));
+        if (!v_.live()) return 0;
+        return std::max(0.0f, std::min(1.0f, (v_.get() - lo_) / (hi_ - lo_)));
     }
     void set_from(float x) {
         const float x0 = frame.x + knob_, x1 = frame.x + frame.w - knob_;
@@ -592,14 +603,14 @@ private:
         put(lo_ + (hi_ - lo_) * std::max(0.0f, std::min(1.0f, t)));
     }
     void put(float nv) {
-        if (!v_) return;
+        if (!v_.live()) return;
         nv = std::max(lo_, std::min(hi_, nv));
-        if (nv == v_->get()) return;
-        v_->set(nv);
+        if (nv == v_.get()) return;
+        v_.set(nv);
         if (f_) f_(nv);
     }
 
-    State<float>* v_;
+    Binding<float> v_;
     float lo_, hi_;
     std::function<void(float)> f_;
     TextStyle st_;
@@ -613,8 +624,8 @@ private:
 // making it a Tab stop would put a dead stop in a keyboard user's path.
 class ProgressNode : public Node {
 public:
-    explicit ProgressNode(State<float>* v) : v_(v) {
-        if (v_) v_->attach(this);
+    explicit ProgressNode(Binding<float> v) : v_(std::move(v)) {
+        v_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -623,7 +634,7 @@ public:
     void Draw(au_surface* s, const Env& e) override {
         const float r = frame.h * 0.5f;
         au_fill_round_rect(s, frame.box(), r, r, e.surface_hi);
-        const float t = v_ ? std::max(0.0f, std::min(1.0f, v_->get())) : 0.0f;
+        const float t = std::max(0.0f, std::min(1.0f, v_.get_or(0.0f)));
         if (t <= 0.0f) return;
         // At least as wide as it is tall, so a value just above zero is a dot rather than a
         // sliver too thin to see: "barely started" and "not started" must not look the same.
@@ -633,7 +644,7 @@ public:
     Node* HitTest(float, float) override { return nullptr; }
 
 private:
-    State<float>* v_;
+    Binding<float> v_;
 };
 
 // ---- Stacks -----------------------------------------------------------------------------------
@@ -730,7 +741,7 @@ private:
 // Rows are built for the visible band plus a margin and for nothing else, which is what makes a
 // directory of 50,000 entries cost the same as one of 40.
 // Defined further down; the list needs one and the field needs nothing from the list.
-Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc make_field(Binding<std::string> t, std::function<void(const std::string&)> ch,
                 std::function<void(const std::string&)> co, std::function<void()> ca,
                 FieldOpts o);
 
@@ -827,7 +838,7 @@ void draw_halo(au_surface* s, au_rect fill, float fill_radius, au_color ring, au
 
 class ListNode : public Node {
 public:
-    ListNode(Rows* r, int* sel) : r_(r), sel_(sel), edit_text_("") {}
+    ListNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)), edit_text_("") { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
         // Whole pixels. The design's row is round(text_h + 6) = 24 at the base size of 13 with
@@ -847,7 +858,7 @@ public:
         // The list's own set of highlighted rows has to follow, or the old row NUMBERS stay lit in the new listing
         // while nothing is selected: the screen would show a choice that the app does not hold. The list itself never
         // leaves the cursor at -1 with rows highlighted (set_only(-1) clears both), so this state is only ever the app's.
-        if (sel_ && *sel_ < 0 && !multi_.empty()) {
+        if (sel_.live() && sel_.get() < 0 && !multi_.empty()) {
             multi_.clear();
             anchor_ = -1;
         }
@@ -933,7 +944,7 @@ public:
                 continue;
             }
             const bool picked = is_selected(i);
-            const bool cursor = sel_ && *sel_ == i;
+            const bool cursor = sel_.get_or(-1) == i;
             const au_rect band{frame.x, ry, frame.x + frame.w - 1, ry + row_h_ - 1};
             // Zebra first: it is the row's own colour, and everything else sits on it. Odd
             // rows, by absolute index, so the stripes do not swap when the list scrolls.
@@ -999,7 +1010,7 @@ public:
         }
         // The halo last, over every row, because it overlaps the rows either side (6.3).
         // Cursor-only ALWAYS shows it: it is the only thing marking a row that has no fill.
-        const int cur = sel_ ? *sel_ : -1;
+        const int cur = sel_.get_or(-1);
         if (focused_ && cur >= first && cur <= last && (halo() || !is_selected(cur))) {
             const float ry = frame.y + head_h_ + 1 + (cur - first) * row_h_;
             draw_halo(s, au_rect{frame.x + 4, ry + 1, frame.x + frame.w - 5, ry + row_h_ - 2}, 5,
@@ -1076,7 +1087,7 @@ public:
         header_press_ = false;
         on_bar_ = false;
         sb_.dragging = false;
-        if (was_header || was_bar || !inside || !sel_) return;
+        if (was_header || was_bar || !inside || !sel_.live()) return;
         const int i = row_at(click_y_);
         if (i < 0) return;
         if (clicks_ >= 2 && on_act_ && !(mods_now() & (AU_MOD_CTRL | AU_MOD_SHIFT))) on_act_(i);
@@ -1125,7 +1136,7 @@ public:
         // was not selected: by the time the pointer has moved 6 px the row is already the
         // selection, so the drag carries what the person pointed at. On release it was always
         // one frame late, and a drag from an unselected row carried the previous selection.
-        if (!sel_) return;
+        if (!sel_.live()) return;
         const int i = row_at(y);
         if (i < 0) {
             // Empty space below the rows clears the selection, the way every file manager does.
@@ -1237,7 +1248,7 @@ public:
         FieldOpts o;
         o.select_all_on_focus = true;      // typing replaces, which is what a rename usually is
         edit_field_ = make_field(
-            &edit_text_, nullptr,
+            edit_text_, nullptr,
             [this](const std::string& v) { CommitRename(v); },
             [this] { CancelRename(); }, o);
         Reveal(row);
@@ -1268,7 +1279,7 @@ public:
     // Every path that moves the selection goes through here, so a listener cannot miss one.
     // ---- selection ----
     //
-    // `*sel_` stays what it always was: the CURSOR, the row the keyboard is on and the one a
+    // `sel_.get()` stays what it always was: the CURSOR, the row the keyboard is on and the one a
     // preview pane follows. The set is what is highlighted. They are usually the same single
     // row, and they come apart exactly when a file manager needs them to -- Ctrl-click adds a
     // row without moving the cursor's meaning, Shift-click sweeps a range from the anchor.
@@ -1286,7 +1297,7 @@ public:
     void SetCursorOnly(int row) {
         mark_all_dirty();
         multi_.clear();
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         anchor_ = row;
         dirty_ = true;
         if (on_sel_) on_sel_(row);
@@ -1294,14 +1305,14 @@ public:
     }
 
     void set_only(int row) {
-        const bool same = sel_ && *sel_ == row && multi_.size() == 1 && multi_.count(row);
+        const bool same = sel_.get_or(-1) == row && multi_.size() == 1 && multi_.count(row);
         if (same) return;
         mark_all_dirty();
         multi_.clear();
         if (row >= 0) multi_.insert(row);
-        if (sel_) {
-            const int before = *sel_;
-            *sel_ = row;
+        if (sel_.live()) {
+            const int before = sel_.get();
+            sel_.set(row);
             rows_dirty_.push_back(before);
         }
         rows_dirty_.push_back(row);
@@ -1317,7 +1328,7 @@ public:
         else multi_.insert(row);
         // The cursor follows the row you touched even when you have just DESELECTED it, because
         // the next Shift-click has to sweep from somewhere and that somewhere is here.
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         anchor_ = row;
         rows_dirty_.push_back(row);
         dirty_ = true;
@@ -1334,7 +1345,7 @@ public:
         const int lo = std::min(anchor_, row), hi = std::max(anchor_, row);
         for (int i = lo; i <= hi && i < r_->Count(); i++)
             if (i >= 0) multi_.insert(i);
-        if (sel_) *sel_ = row;
+        if (sel_.live()) sel_.set(row);
         dirty_ = true;
         if (on_sel_) on_sel_(row);
         if (on_multi_) on_multi_(selection());
@@ -1367,10 +1378,10 @@ public:
         // While renaming, the field has the keyboard. Everything below is the list's bindings and
         // must not fire: typing a name should not also jump the selection via type-ahead.
         if (renaming()) return edit_field_->OnKey(k);
-        if (!sel_) return false;
+        if (!sel_.live()) return false;
         const int n = r_->Count();
         if (n == 0) return false;
-        const int cur = *sel_ < 0 ? -1 : *sel_;
+        const int cur = sel_.get() < 0 ? -1 : sel_.get();
         // F2 by its evdev code, not by raw_char. raw_char carries what a key TYPES, and a
         // function key types nothing -- BeOS reports B_FUNCTION_KEY for all of them and
         // distinguishes by scancode, so a raw_char test for F2 is meaningless. KEY_F2 is 60.
@@ -1456,7 +1467,7 @@ public:
             // halo's top and bottom edges behind as two hairlines that never go away. A hovered
             // row has no halo, so paying for the overhang on every hovered row would be a
             // measurable waste -- it took the damage fraction of a hover from 0.078 to 0.097.
-            const bool has_halo = sel_ && *sel_ == row;
+            const bool has_halo = sel_.live() && sel_.get() == row;
             const float pad = has_halo ? 3.0f : 0.0f;
             out->push_back(Rect{frame.x, std::max(frame.y, ry - pad), frame.w, row_h_ + pad * 2});
         }
@@ -1484,7 +1495,7 @@ public:
             return false;
         }
         ctx_row_ = row;
-        if (sel_ && *sel_ < 0) select(row);
+        if (sel_.live() && sel_.get() < 0) select(row);
         if (on_ctx_) on_ctx_(row, x, y);
         return true;
     }
@@ -1499,7 +1510,7 @@ public:
 
 private:
     Rows* r_;
-    int* sel_;
+    Binding<int> sel_;
     int top_ = 0, rows_drawn_ = 0;
     Scroller sb_;
     bool on_bar_ = false;
@@ -2329,8 +2340,8 @@ void draw_icon(au_surface* s, Rect r, const IconSpec& sp, double scale, bool on_
 
 class TextViewNode : public Node {
 public:
-    TextViewNode(State<std::string>* t, bool wrap) : t_(t), wrap_(wrap) {
-        if (t_) t_->attach(this);
+    TextViewNode(Binding<std::string> t, bool wrap) : t_(std::move(t)), wrap_(wrap) {
+        t_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2403,7 +2414,7 @@ private:
     // Split and wrap once per (text, width). A scroll must not re-measure the document, which is
     // what doing this in Draw unconditionally would cost: wrapping calls au_text_width per word.
     void rewrap(const Env& e) {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         if (v == cached_ && frame.w == cached_w_ && lines_valid_) return;
         cached_ = v;
         cached_w_ = frame.w;
@@ -2458,7 +2469,7 @@ private:
         }
     }
 
-    State<std::string>* t_;
+    Binding<std::string> t_;
     bool wrap_;
     std::vector<std::string> lines_;
     std::string cached_;
@@ -2472,10 +2483,10 @@ private:
 
 class CrumbNode : public Node {
 public:
-    CrumbNode(State<std::string>* p, std::function<void(const std::string&)> pick,
+    CrumbNode(Binding<std::string> p, std::function<void(const std::string&)> pick,
               std::function<void()> edit)
-        : p_(p), pick_(std::move(pick)), edit_(std::move(edit)) {
-        if (p_) p_->attach(this);
+        : p_(std::move(p)), pick_(std::move(pick)), edit_(std::move(edit)) {
+        p_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2542,7 +2553,7 @@ private:
     };
 
     void split() {
-        const std::string& p = p_->get();
+        const std::string& p = p_.get();
         segs_.push_back(Seg{"/", "/"});
         size_t i = 0;
         std::string acc = "";
@@ -2564,7 +2575,7 @@ private:
         return -1;
     }
 
-    State<std::string>* p_;
+    Binding<std::string> p_;
     std::function<void(const std::string&)> pick_;
     std::function<void()> edit_;
     std::vector<Seg> segs_;
@@ -2577,7 +2588,7 @@ private:
 
 class IconsNode : public Node {
 public:
-    IconsNode(Rows* r, int* sel) : r_(r), sel_(sel) {}
+    IconsNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)) { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
         env_ = e;
@@ -2608,7 +2619,7 @@ public:
             const Rect t{frame.x + col * tile_w_, frame.y + row * tile_h_, tile_w_, tile_h_};
             if (t.y > frame.y + frame.h) break;
             const bool is_sel = is_selected(i);
-            const bool cursor = sel_ && *sel_ == i;
+            const bool cursor = sel_.get_or(-1) == i;
             // Inset 3, radius 8 (3.3). The same three states as a row, drawn as three different
             // pictures: the fill says selected, WHICH fill says whether this pane has the
             // keyboard, and a ring with no fill says the cursor is here and nothing is chosen.
@@ -2735,7 +2746,7 @@ public:
     bool OnContext(float x, float y) override {
         const int i = index_at(x, y);
         if (i < 0) return false;
-        if (sel_ && *sel_ < 0) select(i);
+        if (sel_.live() && sel_.get() < 0) select(i);
         if (on_ctx_) on_ctx_(i, x, y);
         return true;
     }
@@ -2781,7 +2792,7 @@ public:
 
     bool band_active() const { return band_; }
     bool OnKey(const au_key& k) override {
-        if (!k.pressed || !sel_) return false;
+        if (!k.pressed || !sel_.live()) return false;
         const int n = r_->Count();
         if (n == 0) return false;
         // Before the switch: the switch's default returns, so anything checked after it is
@@ -2793,7 +2804,7 @@ public:
             return true;
         }
         const int c = cols();
-        const int cur = *sel_ < 0 ? -1 : *sel_;
+        const int cur = sel_.get() < 0 ? -1 : sel_.get();
         int next = cur;
         switch (k.raw_char) {
             case 0x1c: next = std::max(0, cur - 1); break;          // left
@@ -2825,7 +2836,7 @@ public:
     void SetDragPaths(std::function<std::vector<std::string>(int)> f) { drag_paths_ = std::move(f); }
 
     // The same model the list uses, for the same reason: a grid you cannot rubber-band or
-    // Ctrl-click is a grid you have to leave to do anything with more than one file. `*sel_`
+    // Ctrl-click is a grid you have to leave to do anything with more than one file. `sel_.get()`
     // stays the cursor; the set is what is highlighted.
     bool is_selected(int i) const { return multi_.count(i) != 0; }
     std::vector<int> selection() const { return std::vector<int>(multi_.begin(), multi_.end()); }
@@ -2836,10 +2847,10 @@ public:
     }
 
     void set_only(int i) {
-        if (sel_ && *sel_ == i && multi_.size() == 1 && multi_.count(i)) return;
+        if (sel_.get_or(-1) == i && multi_.size() == 1 && multi_.count(i)) return;
         multi_.clear();
         if (i >= 0) multi_.insert(i);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
     }
@@ -2848,7 +2859,7 @@ public:
         if (i < 0) return;
         if (multi_.count(i)) multi_.erase(i);
         else multi_.insert(i);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         anchor_ = i;
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
@@ -2863,7 +2874,7 @@ public:
         // does. A rectangular block would be a different gesture (a rubber band).
         for (int k = std::min(anchor_, i); k <= std::max(anchor_, i) && k < r_->Count(); k++)
             if (k >= 0) multi_.insert(k);
-        if (sel_) *sel_ = i;
+        if (sel_.live()) sel_.set(i);
         if (on_sel_) on_sel_(i);
         if (on_multi_) on_multi_(selection());
     }
@@ -2897,7 +2908,7 @@ public:
 
 private:
     Rows* r_;
-    int* sel_;
+    Binding<int> sel_;
     Env env_;
     std::function<void(int)> on_sel_;
     Scroller sb_;
@@ -2937,11 +2948,11 @@ size_t utf8_next(const std::string& s, size_t i) {
 
 class FieldNode : public Node {
 public:
-    FieldNode(State<std::string>* t, std::function<void(const std::string&)> ch,
+    FieldNode(Binding<std::string> t, std::function<void(const std::string&)> ch,
               std::function<void(const std::string&)> co, std::function<void()> ca,
               FieldOpts o)
-        : t_(t), ch_(std::move(ch)), co_(std::move(co)), ca_(std::move(ca)), o_(std::move(o)) {
-        if (t_) t_->attach(this);     // the binding the design promises, made here
+        : t_(std::move(t)), ch_(std::move(ch)), co_(std::move(co)), ca_(std::move(ca)), o_(std::move(o)) {
+        t_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2952,7 +2963,7 @@ public:
 
     void Draw(au_surface* s, const Env& e) override {
         env_ = e;
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const float pad = e.unit;
         const float avail = frame.w - pad * 2;
 
@@ -3012,8 +3023,8 @@ public:
         focused_ = g;
         caret_on_ = true;
         if (g) {
-            if (o_.select_all_on_focus) { sel_ = 0; caret_ = t_->get().size(); }
-            else { caret_ = t_->get().size(); sel_ = caret_; }
+            if (o_.select_all_on_focus) { sel_ = 0; caret_ = t_.get().size(); }
+            else { caret_ = t_.get().size(); sel_ = caret_; }
         }
     }
 
@@ -3026,7 +3037,7 @@ public:
 
     void OnPressAt(float x, float y, int clicks) override {
         (void)y;
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const size_t at = offset_at(x);
         if (clicks >= 3) { sel_ = 0; caret_ = v.size(); }
         else if (clicks == 2) { word_at(at, &sel_, &caret_); }
@@ -3041,7 +3052,7 @@ public:
 
     bool OnKey(const au_key& k) override {
         if (!k.pressed) return false;
-        std::string v = t_->get();
+        std::string v = t_.get();
         const bool shift = (k.mods & AU_MOD_SHIFT) != 0;
         const bool ctrl = (k.mods & AU_MOD_CTRL) != 0;
         const uint32_t rc = k.raw_char;
@@ -3126,7 +3137,7 @@ public:
         const size_t nl = in.find_first_of("\r\n");
         if (nl != std::string::npos) in.resize(nl);
         if (in.empty()) return;
-        std::string v = t_->get();
+        std::string v = t_.get();
         erase_selection(&v);
         if (o_.max_len && v.size() + in.size() > o_.max_len)
             in.resize(o_.max_len - std::min(o_.max_len, v.size()));
@@ -3139,7 +3150,7 @@ public:
 private:
     void commit(const std::string& v) {
         sel_ = caret_;
-        t_->set(v);
+        t_.set(v);
         if (ch_) ch_(v);
     }
     void move(size_t to, bool extend) {
@@ -3158,7 +3169,7 @@ private:
     // The byte offset whose glyph boundary is nearest x. Nearest, not "the one containing x", so
     // clicking the right half of a character puts the caret after it, as every editor does.
     size_t offset_at(float x) const {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const float tx = frame.x + env_.unit - scroll_;
         size_t best = 0;
         float bestd = 1e9f;
@@ -3184,7 +3195,7 @@ private:
         return i;
     }
     void word_at(size_t at, size_t* a, size_t* b) const {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         size_t s2 = at, e2 = at;
         while (s2 > 0 && wordch((unsigned char)v[s2 - 1])) s2--;
         while (e2 < v.size() && wordch((unsigned char)v[e2])) e2++;
@@ -3192,7 +3203,7 @@ private:
         *b = e2;
     }
 
-    State<std::string>* t_;
+    Binding<std::string> t_;
     std::function<void(const std::string&)> ch_, co_;
     std::function<void()> ca_;
     FieldOpts o_;
@@ -3247,10 +3258,10 @@ private:
 
 class EitherNode : public Node {
 public:
-    EitherNode(State<bool>* f, Desc a, Desc b) : f_(f), a_(std::move(a)), b_(std::move(b)) {
-        if (f_) f_->attach(this);
+    EitherNode(Binding<bool> f, Desc a, Desc b) : f_(std::move(f)), a_(std::move(a)), b_(std::move(b)) {
+        f_.attach(this);
     }
-    Node* live() const { return (f_ && f_->get()) ? a_.get() : b_.get(); }
+    Node* live() const { return pick() ? a_.get() : b_.get(); }
 
     Size Measure(const Env& e, Constraints c) override {
         applied_ = pick();
@@ -3276,9 +3287,9 @@ public:
     bool Animating() const override { return (int)pick() != applied_; }
 
 private:
-    bool pick() const { return f_ && f_->get(); }
+    bool pick() const { return f_.get_or(false); }
 
-    State<bool>* f_;
+    Binding<bool> f_;
     Desc a_, b_;
     int applied_ = -1;
 };
@@ -3287,16 +3298,16 @@ private:
 
 class RevealNode : public Node {
 public:
-    RevealNode(State<bool>* shown, Desc child, Transition t)
-        : shown_(shown), c_(std::move(child)), t_(t), eff_(t) {
-        if (shown_) shown_->attach(this);
-        e_.target(shown_ && shown_->get() ? 1.0f : 0.0f, 0);   // start at the end state
+    RevealNode(Binding<bool> shown, Desc child, Transition t)
+        : shown_(std::move(shown)), c_(std::move(child)), t_(t), eff_(t) {
+        shown_.attach(this);
+        e_.target(shown_.get_or(false) ? 1.0f : 0.0f, 0);   // start at the end state
         e_.snap();
     }
 
     Size Measure(const Env& env, Constraints c) override {
         nat_ = c_->Measure(env, c);          // the child's NATURAL size, measured once
-        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        want_ = (shown_.get_or(false)) ? 1.0f : 0.0f;
         // Resolve the transition against the environment's table EVERY pass, so a theme that
         // turns motion down (or a frame budget that cannot afford it) is honoured at run time
         // rather than at the moment the tree was built. The axis is not resolvable -- it is what
@@ -3330,11 +3341,11 @@ public:
 
     // Hit testing follows the STATE, not the animation: the target state is live immediately.
     Node* HitTest(float x, float y) override {
-        if (!shown_ || !shown_->get()) return nullptr;
+        if (!shown_.get_or(false)) return nullptr;
         return c_->HitTest(x, y);
     }
     void Children(std::vector<Node*>* out) override {
-        if (shown_ && shown_->get()) out->push_back(c_.get());
+        if (shown_.get_or(false)) out->push_back(c_.get());
     }
 
     // While moving, ask for a frame at display rate. When settled, stop asking: an idle window
@@ -3344,7 +3355,7 @@ public:
 
     void Retarget(bool allowed) override {
         affordable_ = allowed;
-        want_ = (shown_ && shown_->get()) ? 1.0f : 0.0f;
+        want_ = (shown_.get_or(false)) ? 1.0f : 0.0f;
         // Three ways not to move, and they resolve in ONE place: the caller asked for none,
         // the theme turned motion down (eff_none_, decided in Measure against Env's table), or
         // the frame budget cannot afford it. Each must land on the end state THIS frame, which
@@ -3372,7 +3383,7 @@ public:
     bool Animating() const override { return e_.running() || e_.value() != applied_; }
 
 private:
-    State<bool>* shown_;
+    Binding<bool> shown_;
     Desc c_;
     Transition t_;
     Transition eff_;
@@ -3542,8 +3553,8 @@ size_t IconsRasterised() { return icons_cache().rasterised; }
 
 class TreeNode : public Node {
 public:
-    TreeNode(TreeSource* src, State<std::string>* sel) : src_(src), sel_(sel) {
-        if (sel_) sel_->attach(this);
+    TreeNode(TreeSource* src, Binding<std::string> sel) : src_(src), sel_(std::move(sel)) {
+        sel_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -3584,7 +3595,7 @@ public:
                 au_clip_reset(s);
                 continue;
             }
-            const bool is_sel = sel_ && sel_->get() == r.id;
+            const bool is_sel = sel_.get_or(std::string()) == r.id;
             // Inset 6 horizontally and 1 vertically, radius 6 (3.3). Three states, three
             // pictures: which fill says whether this pane has the keyboard, and a ring with no
             // fill is the cursor with nothing selected.
@@ -3796,7 +3807,7 @@ public:
         flat_valid_ = false;
         whole_ = true;
         rebuild();
-        if (sel_) sel_->set(id);
+        if (sel_.live()) sel_.set(id);
         for (size_t i = 0; i < flat_.size(); i++)
             if (flat_[i].id == id) { cur_ = (int)i; show(cur_); break; }
     }
@@ -3852,8 +3863,8 @@ private:
         dirty_rows_.push_back(i);
         cur_ = i;
         const std::string& id = flat_[i].id;
-        if (sel_ && sel_->get() == id) return;
-        if (sel_) sel_->set(id);
+        if (sel_.get_or(std::string()) == id) return;
+        if (sel_.live()) sel_.set(id);
         if (on_sel_) on_sel_(id);
     }
 
@@ -3921,7 +3932,7 @@ private:
     }
 
     TreeSource* src_;
-    State<std::string>* sel_;
+    Binding<std::string> sel_;
     std::vector<Row> flat_;
     std::set<std::string> open_, pending_;
     std::vector<int> dirty_rows_;
@@ -3946,9 +3957,9 @@ private:
 // rather than decorative.
 class SplitNode : public Node {
 public:
-    SplitNode(Desc a, Desc b, State<float>* r, bool vert, SplitOpts o)
-        : a_(std::move(a)), b_(std::move(b)), r_(r), vert_(vert), o_(o) {
-        if (r_) r_->attach(this);
+    SplitNode(Desc a, Desc b, Binding<float> r, bool vert, SplitOpts o)
+        : a_(std::move(a)), b_(std::move(b)), r_(std::move(r)), vert_(vert), o_(o) {
+        r_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -4063,9 +4074,9 @@ public:
     float divider_pos() const { return vert_ ? dv_.y : dv_.x; }   // for tests
 
 private:
-    float raw() const { return r_ ? r_->get() : 0.5f; }
+    float raw() const { return r_.get_or(0.5f); }
     void set(float v) {
-        if (r_) r_->set(v);
+        if (r_.live()) r_.set(v);
     }
 
     // The two main-axis sizes for a given total. One place decides this, so Measure and Place
@@ -4086,7 +4097,7 @@ private:
     }
 
     Desc a_, b_;
-    State<float>* r_;
+    Binding<float> r_;
     bool vert_;
     SplitOpts o_;
     Rect dv_;
@@ -4208,49 +4219,49 @@ Desc styled(Desc d, TextStyle st) { d->SetStyle(st); return d; }
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string t) { return std::make_shared<TextNode>(std::move(t), false); }
-Desc Label(State<std::string>* s) { return std::make_shared<TextNode>(s, false); }
+Desc Label(Binding<std::string> b) { return std::make_shared<TextNode>(std::move(b), false); }
 Desc Bold(std::string t) { return std::make_shared<TextNode>(std::move(t), true); }
 Desc Button(std::string l, std::function<void()> f) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f));
 }
-Desc Button(std::string l, std::function<void()> f, State<bool>* enabled) {
-    return std::make_shared<ButtonNode>(std::move(l), std::move(f), enabled);
+Desc Button(std::string l, std::function<void()> f, Binding<bool> enabled) {
+    return std::make_shared<ButtonNode>(std::move(l), std::move(f), std::move(enabled));
 }
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
 
-Desc IconButton(Glyph g, std::function<void()> on_click, State<bool>* enabled) {
-    return std::make_shared<GlyphButtonNode>(g, std::move(on_click), enabled);
+Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled) {
+    return std::make_shared<GlyphButtonNode>(g, std::move(on_click), std::move(enabled));
 }
 
 Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items) {
     return std::make_shared<GlyphButtonNode>(g, std::move(items));
 }
 
-Desc Checkbox(std::string label, State<bool>* on, std::function<void(bool)> f) {
-    return std::make_shared<ToggleNode>(std::move(label), on, false, std::move(f));
+Desc Checkbox(std::string label, Binding<bool> on, std::function<void(bool)> f) {
+    return std::make_shared<ToggleNode>(std::move(label), std::move(on), false, std::move(f));
 }
 
-Desc Switch(std::string label, State<bool>* on, std::function<void(bool)> f) {
-    return std::make_shared<ToggleNode>(std::move(label), on, true, std::move(f));
+Desc Switch(std::string label, Binding<bool> on, std::function<void(bool)> f) {
+    return std::make_shared<ToggleNode>(std::move(label), std::move(on), true, std::move(f));
 }
 
-Desc Slider(State<float>* value, float lo, float hi, std::function<void(float)> f) {
-    return std::make_shared<SliderNode>(value, lo, hi, std::move(f));
+Desc Slider(Binding<float> value, float lo, float hi, std::function<void(float)> f) {
+    return std::make_shared<SliderNode>(std::move(value), lo, hi, std::move(f));
 }
 
-Desc Progress(State<float>* fraction) { return std::make_shared<ProgressNode>(fraction); }
+Desc Progress(Binding<float> fraction) { return std::make_shared<ProgressNode>(std::move(fraction)); }
 
-Desc RadioGroup(std::vector<std::string> labels, State<int>* chosen,
+Desc RadioGroup(std::vector<std::string> labels, Binding<int> chosen,
                 std::function<void(int)> f, bool horizontal) {
     // A radio group is a STACK of toggles that agree to be exclusive, not a new widget. The
     // exclusivity is the only thing it adds, and it is one line per option.
     std::vector<Desc> items;
     for (size_t i = 0; i < labels.size(); i++) {
-        auto cell = std::make_unique<State<bool>>(chosen && chosen->get() == (int)i);
+        auto cell = std::make_unique<State<bool>>(chosen.live() && chosen.get() == (int)i);
         items.push_back(std::make_shared<ToggleNode>(labels[i], std::move(cell), false,
             [chosen, f, i](bool on) {
-                if (!on || !chosen) return;
-                chosen->set((int)i);
+                if (!on || !chosen.live()) return;
+                chosen.set((int)i);
                 if (f) f((int)i);
             }));
     }
@@ -4262,7 +4273,7 @@ Desc VStack(std::vector<Desc> c, float gap) {
 Desc HStack(std::vector<Desc> c, float gap) {
     return std::make_shared<StackNode>(std::move(c), false, gap);
 }
-Desc ListView(Rows* r, int* sel) { return std::make_shared<ListNode>(r, sel); }
+Desc ListView(Rows* r, Binding<int> sel) { return std::make_shared<ListNode>(r, std::move(sel)); }
 void OnListContext(const Desc& list, std::function<void(int, float, float)> f) {
     if (auto* l = dynamic_cast<ListNode*>(list.get())) l->SetContextHandler(std::move(f));
 }
@@ -4338,12 +4349,12 @@ Desc sized(Desc child, float w, float h) {
     return std::make_shared<SizedNode>(std::move(child), w, h);
 }
 
-Desc Either(State<bool>* first, Desc a, Desc b) {
-    return std::make_shared<EitherNode>(first, std::move(a), std::move(b));
+Desc Either(Binding<bool> first, Desc a, Desc b) {
+    return std::make_shared<EitherNode>(std::move(first), std::move(a), std::move(b));
 }
 
-Desc TreeView(TreeSource* src, State<std::string>* selected) {
-    return std::make_shared<TreeNode>(src, selected);
+Desc TreeView(TreeSource* src, Binding<std::string> selected) {
+    return std::make_shared<TreeNode>(src, std::move(selected));
 }
 
 void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f) {
@@ -4382,23 +4393,23 @@ int TreeCursor(const Desc& tree) {
     return t ? t->cursor() : -1;
 }
 
-Desc HSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
-    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, false, o);
+Desc HSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), std::move(ratio), false, o);
 }
 
-Desc VSplit(Desc a, Desc b, State<float>* ratio, SplitOpts o) {
-    return std::make_shared<SplitNode>(std::move(a), std::move(b), ratio, true, o);
+Desc VSplit(Desc a, Desc b, Binding<float> ratio, SplitOpts o) {
+    return std::make_shared<SplitNode>(std::move(a), std::move(b), std::move(ratio), true, o);
 }
 
-Desc Reveal(State<bool>* shown, Desc child, Transition t) {
-    return std::make_shared<RevealNode>(shown, std::move(child), t);
+Desc Reveal(Binding<bool> shown, Desc child, Transition t) {
+    return std::make_shared<RevealNode>(std::move(shown), std::move(child), t);
 }
 
-Desc TextView(State<std::string>* t, bool wrap) {
+Desc TextView(Binding<std::string> t, bool wrap) {
     return std::make_shared<TextViewNode>(t, wrap);
 }
 
-Desc IconView(Rows* r, int* sel) { return std::make_shared<IconsNode>(r, sel); }
+Desc IconView(Rows* r, Binding<int> sel) { return std::make_shared<IconsNode>(r, std::move(sel)); }
 void OnIconsActivate(const Desc& d, std::function<void(int)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetActivateHandler(std::move(f));
 }
@@ -4406,12 +4417,12 @@ void OnIconsContext(const Desc& d, std::function<void(int, float, float)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetContextHandler(std::move(f));
 }
 
-Desc Breadcrumb(State<std::string>* p, std::function<void(const std::string&)> pick,
+Desc Breadcrumb(Binding<std::string> p, std::function<void(const std::string&)> pick,
                 std::function<void()> edit) {
-    return std::make_shared<CrumbNode>(p, std::move(pick), std::move(edit));
+    return std::make_shared<CrumbNode>(std::move(p), std::move(pick), std::move(edit));
 }
 
-Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc TextField(Binding<std::string> t, std::function<void(const std::string&)> ch,
                std::function<void(const std::string&)> co, std::function<void()> ca,
                FieldOpts o) {
     return std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
@@ -4419,7 +4430,7 @@ Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch
 }
 
 namespace {
-Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc make_field(Binding<std::string> t, std::function<void(const std::string&)> ch,
                 std::function<void(const std::string&)> co, std::function<void()> ca,
                 FieldOpts o) {
     auto f = std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
@@ -4612,7 +4623,9 @@ void Window::Defer(std::function<void()> f) {
         std::lock_guard<std::mutex> g(deferred_mu_);
         deferred_.push_back(std::move(f));
     }
-    dirty_ = true;      // wake the loop so it drains promptly
+    // Wake the loop. ext_dirty_ is atomic and the loop turns it into real damage on its own thread;
+    // Defer is called OFF the loop (an event handler's thread), so a plain dirty_ = true would race.
+    ext_dirty_.store(true, std::memory_order_release);
 }
 
 void Window::RequestCopy(const std::string& text) {
@@ -4660,6 +4673,7 @@ float default_base_size() {
 
 
 Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
+    loop_tid_ = std::this_thread::get_id();
     wl_ = au_wl_connect();
     if (!wl_) return;
     scale_ = au_wl_output_scale(wl_);

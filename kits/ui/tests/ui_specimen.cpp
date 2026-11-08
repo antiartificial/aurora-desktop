@@ -267,12 +267,12 @@ struct Details : Rows {
 static void sheet_icons(const std::string& dir, const std::string& suffix) {
     const float W = 896;
     Listing grid_src(family()), list_src(family());
-    int sel_a = -1, sel_b = -1;
+    State<int> sel_a(-1), sel_b(-1);
 
-    Desc grid = IconView(&grid_src, &sel_a);
+    Desc grid = IconView(&grid_src, sel_a);
     au_surface* gs = render(grid, W - 32, 330, g_env.content);
 
-    Desc list = ListView(&list_src, &sel_b);
+    Desc list = ListView(&list_src, sel_b);
     ListIcons(list);
     const float list_h = 27 + 20 * 24 + 4;
     au_surface* ls = render(list, W - 32, list_h, g_env.content);
@@ -333,14 +333,15 @@ static void sheet_states(const std::string& dir, const std::string& suffix) {
     // mean the last one drawn is the only one that is true.
     std::vector<Listing*> srcs;
     std::vector<Desc> lists;
-    std::vector<int> sels((size_t)n_strips, -1);
+    std::vector<std::unique_ptr<State<int>>> sels;
+    for (size_t k = 0; k < (size_t)n_strips; k++) sels.push_back(std::make_unique<State<int>>(-1));
     std::vector<au_surface*> shots;
     float row_h = 0, head_h = 0;
     for (int i = 0; i < n_strips; i++) {
         Listing* src = new Listing(rows);
         src->with_kind = false;
         srcs.push_back(src);
-        Desc l = ListView(src, &sels[(size_t)i]);
+        Desc l = ListView(src, *sels[(size_t)i]);
         ListIcons(l);
         lists.push_back(l);
         lay(l, Rect{0, 0, strip_w, 200});
@@ -414,11 +415,12 @@ static void sheet_columns(const std::string& dir, const std::string& suffix) {
     const float widths[] = {520, 760, 1000};
     const float pad = 16, W = 1000 + pad * 2;
     Details src(5);
-    std::vector<int> sels(3, -1);
+    std::vector<std::unique_ptr<State<int>>> sels;
+    for (int k = 0; k < 3; k++) sels.push_back(std::make_unique<State<int>>(-1));
     std::vector<au_surface*> shots;
     float total = 0, head = 0, row = 0;
     for (int i = 0; i < 3; i++) {
-        Desc l = ListView(&src, &sels[(size_t)i]);
+        Desc l = ListView(&src, *sels[(size_t)i]);
         ListIcons(l);
         lay(l, Rect{0, 0, widths[i], 300});
         head = ListHeaderHeight(l);
@@ -461,22 +463,22 @@ static void sheet_controls(const std::string& dir, const std::string& suffix) {
 
     auto nop = [] {};
     Desc buttons = HStack({Button("Open", nop), Button("Rename", nop), Button("Move\xe2\x80\xa6", nop),
-                           Button("Delete", nop, &enabled_off), Spacer()}, 0.5f);
+                           Button("Delete", nop, enabled_off), Spacer()}, 0.5f);
     Desc glyphs = HStack({IconButton(Glyph::Back, nop), IconButton(Glyph::Forward, nop),
                           IconButton(Glyph::Up, nop), IconButton(Glyph::Sidebar, nop),
                           IconButton(Glyph::Preview, nop), IconButton(Glyph::View, nop),
                           IconButton(Glyph::Filter, nop), IconButton(Glyph::Refresh, nop),
                           Spacer()}, 0.5f);
-    Desc toggles = HStack({Checkbox("Show hidden files", &on_yes),
-                           Checkbox("Group folders first", &on_no), Spacer()}, 1.0f);
-    Desc switches = HStack({Switch("Preview pane", &sw), Spacer()}, 1.0f);
-    Desc radios = RadioGroup({"Name", "Size", "Modified"}, &radio, nullptr, true);
-    Desc slid = sized(Slider(&slider, 0, 1), 220);
-    Desc bar = sized(Progress(&prog), 220);
+    Desc toggles = HStack({Checkbox("Show hidden files", on_yes),
+                           Checkbox("Group folders first", on_no), Spacer()}, 1.0f);
+    Desc switches = HStack({Switch("Preview pane", sw), Spacer()}, 1.0f);
+    Desc radios = RadioGroup({"Name", "Size", "Modified"}, radio, nullptr, true);
+    Desc slid = sized(Slider(slider, 0, 1), 220);
+    Desc bar = sized(Progress(prog), 220);
     FieldOpts fo;
     fo.placeholder = "Filter\xe2\x80\xa6";
-    Desc f1 = sized(TextField(&field, nullptr, nullptr, nullptr, fo), 260);
-    Desc f2 = sized(TextField(&empty, nullptr, nullptr, nullptr, fo), 160);
+    Desc f1 = sized(TextField(field, nullptr, nullptr, nullptr, fo), 260);
+    Desc f2 = sized(TextField(empty, nullptr, nullptr, nullptr, fo), 160);
 
     struct Row { const char* label; Desc node; float h; };
     std::vector<Row> rows = {

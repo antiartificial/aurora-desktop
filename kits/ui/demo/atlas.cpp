@@ -76,7 +76,7 @@ int main() {
         return out;
     };
 
-    int selected = -1;
+    State<int> selected(-1);
     State<std::string> path(dir);
     // The sidebar. `place` is the tree's selected id and the split's ratio is a State for the
     // reason the widget takes one: it is a setting, and it belongs to whatever the app persists.
@@ -118,6 +118,7 @@ int main() {
     filter.bind(&w);
     filter_open.bind(&w);
     path.bind(&w);
+    selected.bind(&w);          // the list/icon cursor cell
     can_back.bind(&w);
     can_fwd.bind(&w);
     can_up.bind(&w);
@@ -127,11 +128,10 @@ int main() {
     // selection, the filter narrows the listing, and a query opens its own window.
     auto refilter = [&](const std::string& f) {
         rows.SetFilter(f);
-        selected = -1;
+        selected.set(-1);
         status.set(f.empty() ? grouped(rows.Count()) + " items"
                              : grouped(rows.Count()) + " of " + grouped(rows.Total()) +
                                    " match \"" + f + "\"");
-        if (Node* n = w.FindNamed("files")) w.Invalidate(n->frame);
     };
 
     // `/` opens the filter and focuses it; Escape clears it, closes it, and gives the keyboard
@@ -183,7 +183,7 @@ int main() {
         const double ms = rows.Open(to);
         (void)ms;
         path.set(to);
-        selected = -1;
+        selected.set(-1);
         rows.SetFilter(filter.get());
         status.set(grouped(rows.Count()) + " items");
         // Keep the sidebar on the directory the main pane is showing, whichever way we got here
@@ -216,7 +216,7 @@ int main() {
     // keeping an index that now names a different file is how a Delete goes to the wrong place.
     auto apply_hidden = [&] {
         rows.SetShowHidden(show_hidden.get());
-        selected = -1;
+        selected.set(-1);
         status.set(grouped(rows.Count()) + " items");
         w.Invalidate();
     };
@@ -333,7 +333,7 @@ int main() {
 
     place.bind(&w);
     sidebar.bind(&w);
-    tree = named(TreeView(&places, &place), "places");
+    tree = named(TreeView(&places, place), "places");
     // Selecting in the sidebar navigates. That is single-click-to-navigate, which is what a
     // sidebar is for and what every explorer does there -- unlike the main pane, where a single
     // click selects and only a double-click opens. The two panes mean different things by a
@@ -349,9 +349,9 @@ int main() {
     State<bool> preview_open(false);
     list_view.bind(&w);
     preview_open.bind(&w);
-    auto list = named(ListView(&rows, &selected), "files");
+    auto list = named(ListView(&rows, selected), "files");
     ListIcons(list);   // a folder should look like a folder, not like a name with a slash
-    auto icons = named(IconView(&rows, &selected), "icons");
+    auto icons = named(IconView(&rows, selected), "icons");
     State<std::string> last_action("");
     last_action.bind(&w);
 
@@ -530,7 +530,7 @@ int main() {
             rows.SetShowHidden(show_hidden.get());
             rows.SetFilter(filter.get());
             status.set(grouped(rows.Count()) + " items");
-            selected = -1;
+            selected.set(-1);
         }
         std::string msg;
         if (done) msg = "moved " + std::to_string(done) + (done == 1 ? " item" : " items") + " to the trash";
@@ -546,7 +546,7 @@ int main() {
         const std::string base = path.get() == "/" ? "" : path.get();
         std::vector<int> rowsel = ListSelection(list);
         if (rowsel.empty() && !list_view.get()) rowsel = IconsSelection(icons);
-        if (rowsel.empty() && selected >= 0) rowsel.push_back(selected);
+        if (rowsel.empty() && selected.get() >= 0) rowsel.push_back(selected.get());
         for (int r : rowsel) {
             std::string n = rows.Cell(r, 0).text;
             if (n.empty()) continue;
@@ -578,7 +578,7 @@ int main() {
             std::string n = rows.Cell(i, 0).text;
             if (!n.empty() && n.back() == '/') n.pop_back();
             if (n == name) {
-                selected = i;
+                selected.set(i);
                 w.Defer([&, i] { BeginListRename(list, i); });
                 break;
             }
@@ -746,7 +746,7 @@ int main() {
             rows.Open(path.get());        // the listing changed under us either way
             rows.SetFilter(filter.get());
             status.set(grouped(rows.Count()) + " items");
-            selected = -1;
+            selected.set(-1);
         }
         // Both halves are reported. "3 moved, 1 refused" is the honest answer to a multi-file
         // drop, and silence about the refusal is how a user loses track of a file.
@@ -968,8 +968,8 @@ int main() {
     // they are the whole body. Only one arm is ever measured, placed, drawn or walked for focus,
     // which is what makes sharing the subtree between them safe rather than clever.
     Desc body = HStack({
-                           weight(Either(&list_view, list, icons), 2),
-                           named(Reveal(&preview_open,
+                           weight(Either(list_view, list, icons), 2),
+                           named(Reveal(preview_open,
                                         // 280 wide, the design's default, and STATED: a pane
                                         // that answers "all of it" beside a weighted sibling
                                         // starves the sibling to zero, which is how the preview
@@ -977,9 +977,9 @@ int main() {
                                         // 16 px padding all round, and a hairline on its left
                                         // edge: the separator between content and preview.
                                         atlas::SideBand(VStack({
-                                                            styled(Label(&preview_head),
+                                                            styled(Label(preview_head),
                                                                    TextStyle{1.0f, true}),
-                                                            weight(named(TextView(&preview_text),
+                                                            weight(named(TextView(preview_text),
                                                                          "preview"), 1),
                                                         }, 0.5f),
                                                         280, atlas::BandFill::Content,
@@ -1019,15 +1019,15 @@ int main() {
                                                  }
                                                  w.Invalidate();
                                              }),
-                                  IconButton(Glyph::Back, [&] { go_back(); }, &can_back),
-                                  IconButton(Glyph::Forward, [&] { go_forward(); }, &can_fwd),
+                                  IconButton(Glyph::Back, [&] { go_back(); }, can_back),
+                                  IconButton(Glyph::Forward, [&] { go_forward(); }, can_fwd),
                                   IconButton(Glyph::Up, [&] { go(parent_of(path.get()), true); },
-                                             &can_up),
+                                             can_up),
                               },
                               0.5f),
                        // The location, taking everything the two clusters do not.
-                       weight(named(Either(&path_edit,
-                                           named(TextField(&path_text, nullptr,
+                       weight(named(Either(path_edit,
+                                           named(TextField(path_text, nullptr,
                                                            [&](const std::string& to) {
                                                                path_edit.set(false);
                                                                go(to, true);
@@ -1039,7 +1039,7 @@ int main() {
                                                            },
                                                            FieldOpts{"go to…", false, 0, true}),
                                                  "pathbar"),
-                                           named(Breadcrumb(&path,
+                                           named(Breadcrumb(path,
                                                             [&](const std::string& to) { go(to, true); },
                                                             [&] { open_path_bar(); }),
                                                  "crumbs")),
@@ -1048,7 +1048,7 @@ int main() {
                        // Cluster two: the filter field at its stated 180, the view menu and the
                        // preview toggle.
                        HStack({
-                                  sized(named(TextField(&filter, refilter, nullptr, close_filter,
+                                  sized(named(TextField(filter, refilter, nullptr, close_filter,
                                                         FieldOpts{"filter files", false, 0, false}),
                                               "filter"),
                                         180),
@@ -1056,7 +1056,7 @@ int main() {
                                   IconButton(Glyph::Preview,
                                              [&] {
                                                  preview_open.set(!preview_open.get());
-                                                 if (preview_open.get()) load_preview(selected);
+                                                 if (preview_open.get()) load_preview(selected.get());
                                                  w.Invalidate();
                                              }),
                               },
@@ -1066,8 +1066,8 @@ int main() {
             44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom, Insets(8, 8)),
         // The sidebar and the rest. The preview stays a RevealX rather than becoming a second
         // split, and the difference is real: appearing is not resizing.
-        weight(Either(&sidebar_open,
-                      HSplit(tree, body, &sidebar, SplitOpts{20, 40, 0.5f, 3}),
+        weight(Either(sidebar_open,
+                      HSplit(tree, body, sidebar, SplitOpts{20, 40, 0.5f, 3}),
                       body),
                1),
         // The status bar, 26 tall with a hairline above: the count on the left and the last
@@ -1096,7 +1096,7 @@ int main() {
     }
     if (getenv("ATLAS_PREVIEW")) {
         preview_open.set(true);
-        load_preview(selected);
+        load_preview(selected.get());
     }
     if (getenv("ATLAS_OPEN_FILTER")) {
         filter_open.set(true);
@@ -1200,8 +1200,8 @@ int main() {
         printf("ATLAS preview open=%s head=\"%s\" bytes=%zu first=\"%.48s\"\n",
                preview_open.get() ? "yes" : "no", preview_head.get().c_str(),
                preview_text.get().size(), preview_text.get().c_str());
-        printf("ATLAS selected=%d name=%s\n", selected,
-               selected >= 0 ? rows.Cell(selected, 0).text.c_str() : "(none)");
+        printf("ATLAS selected=%d name=%s\n", selected.get(),
+               selected.get() >= 0 ? rows.Cell(selected.get(), 0).text.c_str() : "(none)");
         fflush(stdout);
     }
     return 0;
