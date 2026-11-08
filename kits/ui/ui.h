@@ -771,7 +771,7 @@ void BeginListRename(const Desc& list, int row);
 //
 // Lines are split and wrapped once per (text, width) and cached, because wrapping measures text
 // and a scroll must not re-measure the document.
-Desc TextView(State<std::string>* text, bool wrap = true);
+Desc TextView(Binding<std::string> text, bool wrap = true);
 
 // ---- breadcrumb -------------------------------------------------------------------------------
 
@@ -783,7 +783,7 @@ Desc TextView(State<std::string>* text, bool wrap = true);
 // Structural change is a widget's job -- the same reason the list owns its own rows.
 //
 // Clicking past the last segment calls on_edit, which is where a path field belongs (Cmd+L).
-Desc Breadcrumb(State<std::string>* path,
+Desc Breadcrumb(Binding<std::string> path,
                 std::function<void(const std::string&)> on_pick,
                 std::function<void()> on_edit = nullptr);
 
@@ -811,7 +811,7 @@ struct FieldOpts {
     bool select_all_on_focus = false;  // what a path field wants, so typing replaces
 };
 
-Desc TextField(State<std::string>* text,
+Desc TextField(Binding<std::string> text,
                std::function<void(const std::string&)> on_change = nullptr,
                std::function<void(const std::string&)> on_commit = nullptr,
                std::function<void()> on_cancel = nullptr,

@@ -475,8 +475,8 @@ static void sheet_controls(const std::string& dir, const std::string& suffix) {
     Desc bar = sized(Progress(&prog), 220);
     FieldOpts fo;
     fo.placeholder = "Filter\xe2\x80\xa6";
-    Desc f1 = sized(TextField(&field, nullptr, nullptr, nullptr, fo), 260);
-    Desc f2 = sized(TextField(&empty, nullptr, nullptr, nullptr, fo), 160);
+    Desc f1 = sized(TextField(field, nullptr, nullptr, nullptr, fo), 260);
+    Desc f2 = sized(TextField(empty, nullptr, nullptr, nullptr, fo), 160);
 
     struct Row { const char* label; Desc node; float h; };
     std::vector<Row> rows = {

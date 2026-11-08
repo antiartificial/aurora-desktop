@@ -188,11 +188,11 @@ int main(int argc, char** argv) {
                                              }), 0.4f),
                                      Spacer()}),
                              Insets(1, 0.25f)));
-    column.push_back(padding(named(Breadcrumb(&path, [&](const std::string& to) { go(to); }), "crumbs"), 0.25f));
+    column.push_back(padding(named(Breadcrumb(path, [&](const std::string& to) { go(to); }), "crumbs"), 0.25f));
     column.push_back(weight(HSplit(tree, list, &sidebar, SplitOpts{9, 16, 0.5f, 3}), 1));
     if (takes_name(kind))
         column.push_back(padding(HStack({Label("Name"),
-                                         weight(named(TextField(&name, [&](const std::string&) { refresh(); },
+                                         weight(named(TextField(name, [&](const std::string&) { refresh(); },
                                                                 [&](const std::string&) { try_grant(); }, cancel,
                                                                 FieldOpts{"file name", false, 0, true}),
                                                       "name"), 1)}, 0.75f),

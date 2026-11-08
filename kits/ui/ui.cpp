@@ -729,7 +729,7 @@ private:
 // Rows are built for the visible band plus a margin and for nothing else, which is what makes a
 // directory of 50,000 entries cost the same as one of 40.
 // Defined further down; the list needs one and the field needs nothing from the list.
-Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc make_field(Binding<std::string> t, std::function<void(const std::string&)> ch,
                 std::function<void(const std::string&)> co, std::function<void()> ca,
                 FieldOpts o);
 
@@ -1236,7 +1236,7 @@ public:
         FieldOpts o;
         o.select_all_on_focus = true;      // typing replaces, which is what a rename usually is
         edit_field_ = make_field(
-            &edit_text_, nullptr,
+            edit_text_, nullptr,
             [this](const std::string& v) { CommitRename(v); },
             [this] { CancelRename(); }, o);
         Reveal(row);
@@ -2328,8 +2328,8 @@ void draw_icon(au_surface* s, Rect r, const IconSpec& sp, double scale, bool on_
 
 class TextViewNode : public Node {
 public:
-    TextViewNode(State<std::string>* t, bool wrap) : t_(t), wrap_(wrap) {
-        if (t_) t_->attach(this);
+    TextViewNode(Binding<std::string> t, bool wrap) : t_(std::move(t)), wrap_(wrap) {
+        t_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2402,7 +2402,7 @@ private:
     // Split and wrap once per (text, width). A scroll must not re-measure the document, which is
     // what doing this in Draw unconditionally would cost: wrapping calls au_text_width per word.
     void rewrap(const Env& e) {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         if (v == cached_ && frame.w == cached_w_ && lines_valid_) return;
         cached_ = v;
         cached_w_ = frame.w;
@@ -2457,7 +2457,7 @@ private:
         }
     }
 
-    State<std::string>* t_;
+    Binding<std::string> t_;
     bool wrap_;
     std::vector<std::string> lines_;
     std::string cached_;
@@ -2471,10 +2471,10 @@ private:
 
 class CrumbNode : public Node {
 public:
-    CrumbNode(State<std::string>* p, std::function<void(const std::string&)> pick,
+    CrumbNode(Binding<std::string> p, std::function<void(const std::string&)> pick,
               std::function<void()> edit)
-        : p_(p), pick_(std::move(pick)), edit_(std::move(edit)) {
-        if (p_) p_->attach(this);
+        : p_(std::move(p)), pick_(std::move(pick)), edit_(std::move(edit)) {
+        p_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2541,7 +2541,7 @@ private:
     };
 
     void split() {
-        const std::string& p = p_->get();
+        const std::string& p = p_.get();
         segs_.push_back(Seg{"/", "/"});
         size_t i = 0;
         std::string acc = "";
@@ -2563,7 +2563,7 @@ private:
         return -1;
     }
 
-    State<std::string>* p_;
+    Binding<std::string> p_;
     std::function<void(const std::string&)> pick_;
     std::function<void()> edit_;
     std::vector<Seg> segs_;
@@ -2936,11 +2936,11 @@ size_t utf8_next(const std::string& s, size_t i) {
 
 class FieldNode : public Node {
 public:
-    FieldNode(State<std::string>* t, std::function<void(const std::string&)> ch,
+    FieldNode(Binding<std::string> t, std::function<void(const std::string&)> ch,
               std::function<void(const std::string&)> co, std::function<void()> ca,
               FieldOpts o)
-        : t_(t), ch_(std::move(ch)), co_(std::move(co)), ca_(std::move(ca)), o_(std::move(o)) {
-        if (t_) t_->attach(this);     // the binding the design promises, made here
+        : t_(std::move(t)), ch_(std::move(ch)), co_(std::move(co)), ca_(std::move(ca)), o_(std::move(o)) {
+        t_.attach(this);
     }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2951,7 +2951,7 @@ public:
 
     void Draw(au_surface* s, const Env& e) override {
         env_ = e;
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const float pad = e.unit;
         const float avail = frame.w - pad * 2;
 
@@ -3011,8 +3011,8 @@ public:
         focused_ = g;
         caret_on_ = true;
         if (g) {
-            if (o_.select_all_on_focus) { sel_ = 0; caret_ = t_->get().size(); }
-            else { caret_ = t_->get().size(); sel_ = caret_; }
+            if (o_.select_all_on_focus) { sel_ = 0; caret_ = t_.get().size(); }
+            else { caret_ = t_.get().size(); sel_ = caret_; }
         }
     }
 
@@ -3025,7 +3025,7 @@ public:
 
     void OnPressAt(float x, float y, int clicks) override {
         (void)y;
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const size_t at = offset_at(x);
         if (clicks >= 3) { sel_ = 0; caret_ = v.size(); }
         else if (clicks == 2) { word_at(at, &sel_, &caret_); }
@@ -3040,7 +3040,7 @@ public:
 
     bool OnKey(const au_key& k) override {
         if (!k.pressed) return false;
-        std::string v = t_->get();
+        std::string v = t_.get();
         const bool shift = (k.mods & AU_MOD_SHIFT) != 0;
         const bool ctrl = (k.mods & AU_MOD_CTRL) != 0;
         const uint32_t rc = k.raw_char;
@@ -3125,7 +3125,7 @@ public:
         const size_t nl = in.find_first_of("\r\n");
         if (nl != std::string::npos) in.resize(nl);
         if (in.empty()) return;
-        std::string v = t_->get();
+        std::string v = t_.get();
         erase_selection(&v);
         if (o_.max_len && v.size() + in.size() > o_.max_len)
             in.resize(o_.max_len - std::min(o_.max_len, v.size()));
@@ -3138,7 +3138,7 @@ public:
 private:
     void commit(const std::string& v) {
         sel_ = caret_;
-        t_->set(v);
+        t_.set(v);
         if (ch_) ch_(v);
     }
     void move(size_t to, bool extend) {
@@ -3157,7 +3157,7 @@ private:
     // The byte offset whose glyph boundary is nearest x. Nearest, not "the one containing x", so
     // clicking the right half of a character puts the caret after it, as every editor does.
     size_t offset_at(float x) const {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         const float tx = frame.x + env_.unit - scroll_;
         size_t best = 0;
         float bestd = 1e9f;
@@ -3183,7 +3183,7 @@ private:
         return i;
     }
     void word_at(size_t at, size_t* a, size_t* b) const {
-        const std::string& v = t_->get();
+        const std::string& v = t_.get();
         size_t s2 = at, e2 = at;
         while (s2 > 0 && wordch((unsigned char)v[s2 - 1])) s2--;
         while (e2 < v.size() && wordch((unsigned char)v[e2])) e2++;
@@ -3191,7 +3191,7 @@ private:
         *b = e2;
     }
 
-    State<std::string>* t_;
+    Binding<std::string> t_;
     std::function<void(const std::string&)> ch_, co_;
     std::function<void()> ca_;
     FieldOpts o_;
@@ -4393,7 +4393,7 @@ Desc Reveal(State<bool>* shown, Desc child, Transition t) {
     return std::make_shared<RevealNode>(shown, std::move(child), t);
 }
 
-Desc TextView(State<std::string>* t, bool wrap) {
+Desc TextView(Binding<std::string> t, bool wrap) {
     return std::make_shared<TextViewNode>(t, wrap);
 }
 
@@ -4405,12 +4405,12 @@ void OnIconsContext(const Desc& d, std::function<void(int, float, float)> f) {
     if (auto* n = dynamic_cast<IconsNode*>(d.get())) n->SetContextHandler(std::move(f));
 }
 
-Desc Breadcrumb(State<std::string>* p, std::function<void(const std::string&)> pick,
+Desc Breadcrumb(Binding<std::string> p, std::function<void(const std::string&)> pick,
                 std::function<void()> edit) {
     return std::make_shared<CrumbNode>(p, std::move(pick), std::move(edit));
 }
 
-Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc TextField(Binding<std::string> t, std::function<void(const std::string&)> ch,
                std::function<void(const std::string&)> co, std::function<void()> ca,
                FieldOpts o) {
     return std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),
@@ -4418,7 +4418,7 @@ Desc TextField(State<std::string>* t, std::function<void(const std::string&)> ch
 }
 
 namespace {
-Desc make_field(State<std::string>* t, std::function<void(const std::string&)> ch,
+Desc make_field(Binding<std::string> t, std::function<void(const std::string&)> ch,
                 std::function<void(const std::string&)> co, std::function<void()> ca,
                 FieldOpts o) {
     auto f = std::make_shared<FieldNode>(t, std::move(ch), std::move(co), std::move(ca),

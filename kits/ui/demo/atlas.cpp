@@ -979,7 +979,7 @@ int main() {
                                         atlas::SideBand(VStack({
                                                             styled(Label(preview_head),
                                                                    TextStyle{1.0f, true}),
-                                                            weight(named(TextView(&preview_text),
+                                                            weight(named(TextView(preview_text),
                                                                          "preview"), 1),
                                                         }, 0.5f),
                                                         280, atlas::BandFill::Content,
@@ -1027,7 +1027,7 @@ int main() {
                               0.5f),
                        // The location, taking everything the two clusters do not.
                        weight(named(Either(&path_edit,
-                                           named(TextField(&path_text, nullptr,
+                                           named(TextField(path_text, nullptr,
                                                            [&](const std::string& to) {
                                                                path_edit.set(false);
                                                                go(to, true);
@@ -1039,7 +1039,7 @@ int main() {
                                                            },
                                                            FieldOpts{"go to…", false, 0, true}),
                                                  "pathbar"),
-                                           named(Breadcrumb(&path,
+                                           named(Breadcrumb(path,
                                                             [&](const std::string& to) { go(to, true); },
                                                             [&] { open_path_bar(); }),
                                                  "crumbs")),
@@ -1048,7 +1048,7 @@ int main() {
                        // Cluster two: the filter field at its stated 180, the view menu and the
                        // preview toggle.
                        HStack({
-                                  sized(named(TextField(&filter, refilter, nullptr, close_filter,
+                                  sized(named(TextField(filter, refilter, nullptr, close_filter,
                                                         FieldOpts{"filter files", false, 0, false}),
                                               "filter"),
                                         180),
