@@ -59,7 +59,11 @@ void Canvas::Resize(int lw, int lh, double scale)
 
 void Canvas::Clear(Color c)
 {
-	uint32_t v = 0xFF000000u | (c.r << 16) | (c.g << 8) | c.b;
+	// The colour's OWN alpha, not a forced 0xFF. Clearing to {0,0,0,0} has to mean transparent:
+	// the icon cache does exactly that before rasterising a glyph, and with alpha forced opaque
+	// every pixel the glyph does not cover came out as black rather than as nothing. That is the
+	// dark corner on every folder, page and badge.
+	uint32_t v = ((uint32_t)c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
 	std::fill(fPx.begin(), fPx.end(), v);
 }
 
