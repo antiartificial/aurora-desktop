@@ -4,6 +4,7 @@
 #include "ui.h"
 
 #include <algorithm>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -4225,6 +4226,23 @@ DragData DragData::parse_uri_list(const std::string& bytes) {
 }
 
 // ---- modifiers --------------------------------------------------------------------------------
+
+namespace {
+void walk_names(Node* n, std::map<std::string, int>& seen, std::vector<std::string>* dup, int depth) {
+    if (!n || depth > 512) return;   // a malformed tree cannot hang the check
+    if (!n->name.empty() && ++seen[n->name] == 2) dup->push_back(n->name);
+    std::vector<Node*> kids;
+    n->Children(&kids);
+    for (Node* k : kids) walk_names(k, seen, dup, depth + 1);
+}
+}   // namespace
+
+std::vector<std::string> DuplicateNames(Desc root) {
+    std::map<std::string, int> seen;
+    std::vector<std::string> dup;
+    if (root) walk_names(root.get(), seen, &dup, 0);
+    return dup;
+}
 
 Desc Desc::padding(float units) const { n_->pad = Insets(units * 8); return *this; }
 Desc Desc::padding(Insets i) const { n_->pad = i; return *this; }

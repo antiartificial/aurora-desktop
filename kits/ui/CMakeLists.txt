@@ -89,6 +89,11 @@ add_executable(test_desc tests/test_desc.cpp)
 target_link_libraries(test_desc PRIVATE aurora_ui_tk)
 add_test(NAME desc COMMAND test_desc)
 
+# 8.6: the naming rule -- two nodes sharing a name make every lookup ambiguous.
+add_executable(test_names tests/test_names.cpp)
+target_link_libraries(test_names PRIVATE aurora_ui_tk)
+add_test(NAME names COMMAND test_names)
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

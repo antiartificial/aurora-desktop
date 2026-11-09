@@ -518,6 +518,11 @@ private:
     std::shared_ptr<Node> n_;
 };
 
+// 8.6: the naming rule, checked. A name is how the accessibility tree, the preview and every test
+// find a node, so two nodes sharing one make every lookup ambiguous. Walks the tree in layout order
+// and returns each name that occurs more than once (empty for a clean tree).
+std::vector<std::string> DuplicateNames(Desc root);
+
 // ---- modifiers: each takes a Desc and returns it, so they chain -------------------------------
 
 Desc padding(Desc d, float units);
