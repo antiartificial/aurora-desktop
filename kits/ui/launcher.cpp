@@ -146,7 +146,7 @@ int main() {
         w.Defer([&, id] { launch(id); });   // not during a node event
     });
     // TextView wraps: a controller refusal can be a whole sentence and the strip must show it.
-    Desc root = VStack({weight(tree, 1.0f), sized(TextView(status, true), -1, 46)}, 0.0f);
+    Desc root = VStack({tree.weight(1.0f), sized(TextView(status, true), -1, 46)}, 0.0f);
 
     // The apps@v1 call runs on a Task worker (a slow registry must not freeze the window); the reply
     // is parsed and applied on the loop. A failure keeps the inventory already on screen.

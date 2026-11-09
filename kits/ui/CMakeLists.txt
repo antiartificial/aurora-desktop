@@ -84,6 +84,11 @@ target_link_options(test_task PRIVATE -fsanitize=address)
 add_test(NAME task COMMAND test_task)
 set_tests_properties(task PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 
+# 8.2d: Desc is a class; modifiers mutate the node and return one handle.
+add_executable(test_desc tests/test_desc.cpp)
+target_link_libraries(test_desc PRIVATE aurora_ui_tk)
+add_test(NAME desc COMMAND test_desc)
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

@@ -348,7 +348,7 @@ struct DragData {
 // ---- nodes -----------------------------------------------------------------------------------
 
 class Node;
-using Desc = std::shared_ptr<Node>;
+class Desc;   // a handle to a node; defined after Node so its methods can see the fields
 
 class Node {
 public:
@@ -487,6 +487,35 @@ protected:
         if (c.max_h >= 0) c.max_h -= pad.t + pad.b;
         return c;
     }
+};
+
+// One node, cheap to copy: a handle, not the node. A modifier mutates the node and returns the SAME
+// handle (Decision 4 -- shared_ptr semantics), so a chain sets fields on one node rather than
+// rebuilding it, which is why "modifiers return a new value" is not the contract.
+class Desc {
+public:
+    Desc() = default;
+    Desc(std::nullptr_t) {}
+    template <class T, class = std::enable_if_t<std::is_base_of_v<Node, T>>>
+    Desc(std::shared_ptr<T> n) : n_(std::move(n)) {}
+
+    Node* get() const { return n_.get(); }
+    Node* operator->() const { return n_.get(); }
+    explicit operator bool() const { return n_ != nullptr; }
+    bool operator==(std::nullptr_t) const { return n_ == nullptr; }
+    bool operator!=(std::nullptr_t) const { return n_ != nullptr; }
+    bool operator==(const Desc& o) const { return n_ == o.n_; }
+    bool operator!=(const Desc& o) const { return n_ != o.n_; }
+    void reset() { n_.reset(); }
+
+    Desc padding(float units) const;
+    Desc padding(Insets i) const;
+    Desc weight(float w) const;
+    Desc name(std::string n) const;
+    Desc style(TextStyle st) const;
+
+private:
+    std::shared_ptr<Node> n_;
 };
 
 // ---- modifiers: each takes a Desc and returns it, so they chain -------------------------------
