@@ -507,7 +507,12 @@ fn a_client_in_a_real_domain_cgroup_gets_the_figures_that_cgroup_can_give_and_th
     assert!(line1.starts_with("cpu "), "{line1}");
     let mem_file = dom.dir.join("memory.current").exists();
     assert_eq!(line1.contains("mem "), mem_file, "a memory figure is shown exactly when the cgroup has memory.current ({line1})");
-    assert!(line1.contains("1 proc") || line1.contains("procs"), "{line1}");
+    // `pids.current` is not guaranteed either: a delegated subtree only exposes the controllers the
+    // parent enables, so the count is asserted exactly when the file is there -- the same rule as
+    // memory.current above.
+    let pids_file = dom.dir.join("pids.current").exists();
+    assert_eq!(line1.contains("proc"), pids_file,
+               "a process count is shown exactly when the cgroup has pids.current ({line1})");
     // line two: the network of the domain, with the refusal counted
     assert!(boxed.meta.ends_with(&format!("net 2 hosts {DOT} 1 refused")), "{}", boxed.meta);
     // and the row of the app outside any domain, in the same box, still carries none of it
