@@ -61,8 +61,17 @@ struct Constraints { float max_w = -1, max_h = -1; };
 // Per-node text style. Size is a MULTIPLIER on the environment's size, not an absolute: a theme
 // that changes the base size then scales the whole interface, which is what a person increasing
 // their font size expects, rather than leaving every hand-set size behind.
+// 8.6/P5: sizes are ratios. A design size is a multiplier on Env::size, so a bare 14 is a bug the
+// type can refuse: Ratio has no implicit conversion from a number, and TextStyle{.size = 14} does
+// not compile. Same rule as motion durations coming from the table rather than a call site.
+struct Ratio {
+    float v = 1.0f;
+    constexpr Ratio() = default;
+    explicit constexpr Ratio(float f) : v(f) {}
+};
+
 struct TextStyle {
-    float size = 1.0f;             // multiplier on Env::size
+    Ratio size{};                  // multiplier on Env::size
     bool bold = false;
     bool italic = false;
     bool has_color = false;
@@ -178,7 +187,7 @@ struct Env {
         if (st.italic) return italic;
         return font;
     }
-    float sized(const TextStyle& st) const { return size * st.size; }
+    float sized(const TextStyle& st) const { return size * st.size.v; }
     au_color ink(const TextStyle& st) const { return st.has_color ? st.color : fg; }
 };
 
@@ -531,8 +540,8 @@ Desc weight(Desc d, float w);
 Desc named(Desc d, std::string n);
 
 // Text style, on any node that draws text. Chains like the others:
-//   styled(Label("Atlas"), TextStyle{1.4f, true})          -- 40% larger and bold
-//   styled(Label(&note), TextStyle{0.85f, false, true})    -- smaller and italic
+//   styled(Label("Atlas"), TextStyle{Ratio(1.4f), true})          -- 40% larger and bold
+//   styled(Label(&note), TextStyle{Ratio(0.85f), false, true})    -- smaller and italic
 Desc styled(Desc d, TextStyle st);
 
 // ---- primitives -------------------------------------------------------------------------------

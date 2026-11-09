@@ -112,6 +112,14 @@ if(ZLIB_FOUND)
 	         COMMAND aurora-preview --check ${CMAKE_CURRENT_SOURCE_DIR}/goldens)
 	set_tests_properties(preview PROPERTIES TIMEOUT 120)
 
+# 8.6/P5: TextStyle{.size = 14} must not compile. WILL_FAIL turns the compiler into the check.
+add_test(NAME ratio_guard
+         COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only
+                 -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/../render
+                 -I${CMAKE_CURRENT_SOURCE_DIR}/../../include
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail_ratio.cpp)
+set_tests_properties(ratio_guard PROPERTIES WILL_FAIL TRUE)
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.

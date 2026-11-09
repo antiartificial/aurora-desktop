@@ -167,18 +167,18 @@ int main(int argc, char** argv) {
 
     const Access access = access_of(args.mode, kind);
     const au_color amber{255, 196, 92, 255};
-    const TextStyle weighty{1.0f, true, false, true, amber};
-    const TextStyle grant_style = heavy(access) ? weighty : TextStyle{1.0f, true};
+    const TextStyle weighty{Ratio(1.0f), true, false, true, amber};
+    const TextStyle grant_style = heavy(access) ? weighty : TextStyle{Ratio(1.0f), true};
 
     Desc headline_text = heavy(access)
-        ? styled(Bold(headline(args.app, args.mode, kind)), TextStyle{1.3f, true, false, true, amber})
-        : styled(Bold(headline(args.app, args.mode, kind)), TextStyle{1.3f, true});
+        ? styled(Bold(headline(args.app, args.mode, kind)), TextStyle{Ratio(1.3f), true, false, true, amber})
+        : styled(Bold(headline(args.app, args.mode, kind)), TextStyle{Ratio(1.3f), true});
     Desc consequence_text = heavy(access) ? styled(Label(consequence(access)), weighty)
-                                          : styled(Label(consequence(access)), TextStyle{0.95f});
+                                          : styled(Label(consequence(access)), TextStyle{Ratio(0.95f)});
 
     std::vector<Desc> column;
     column.push_back(padding(VStack({headline_text, consequence_text,
-                                     styled(Label(action_line(args.verb)), TextStyle{0.85f, false, true})}, 0.25f),
+                                     styled(Label(action_line(args.verb)), TextStyle{Ratio(0.85f), false, true})}, 0.25f),
                              Insets(1, 0.75f)));
     column.push_back(padding(HStack({Button("Up", [&] { go(parent_path(path.get())); }),
                                      padding(Checkbox("Hidden files", show_hidden, [&](bool on) {
@@ -198,9 +198,9 @@ int main(int argc, char** argv) {
                                                                 FieldOpts{"file name", false, 0, true}),
                                                       "name"), 1)}, 0.75f),
                                  Insets(1, 0.35f)));
-    column.push_back(padding(styled(Label(message), TextStyle{0.9f, false, true}), Insets(1, 0.35f)));
+    column.push_back(padding(styled(Label(message), TextStyle{Ratio(0.9f), false, true}), Insets(1, 0.35f)));
     column.push_back(padding(HStack({styled(Label("Enter opens a folder or grants a file   Ctrl+Enter grants   Esc cancels"),
-                                            TextStyle{0.8f}),
+                                            TextStyle{Ratio(0.8f)}),
                                      Spacer(),
                                      named(Button("Cancel", cancel), "cancel"),
                                      named(styled(Button("Grant", try_grant, can_grant), grant_style), "grant")}),

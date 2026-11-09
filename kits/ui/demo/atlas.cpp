@@ -978,7 +978,7 @@ int main() {
                                         // edge: the separator between content and preview.
                                         atlas::SideBand(VStack({
                                                             styled(Label(preview_head),
-                                                                   TextStyle{1.0f, true}),
+                                                                   TextStyle{Ratio(1.0f), true}),
                                                             weight(named(TextView(preview_text),
                                                                          "preview"), 1),
                                                         }, 0.5f),
