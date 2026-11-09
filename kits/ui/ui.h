@@ -497,6 +497,11 @@ public:
     // its children in the order they are laid out.
     virtual void Children(std::vector<Node*>* out) { (void)out; }
 
+    // What this node IS, for the accessibility tree and for `aurora ui tree` (8.7). "control" is
+    // the floor: a widget that answers it has not said what it is, and the check for a new
+    // component is that it answers something better.
+    virtual const char* Role() const { return "control"; }
+
     // After handling an event, a node may say that less than its whole frame changed. Without
     // this the window damages the handler's frame, which for a list that fills the window is a
     // full repaint for a selection moving one row -- measured at 0.906 of the window before this
@@ -609,6 +614,10 @@ enum class Glyph : uint8_t {
 // same `enabled` cell -- a disabled button STAYS VISIBLE with its glyph in the tertiary ink,
 // because hiding what is unavailable teaches the wrong model.
 Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled = Binding<bool>(true));
+
+// A decorator that only changes what a node IS, for the accessibility tree. The alternative was
+// a role field on every widget constructor, which is the same information written twelve times.
+Desc WithRole(Desc child, const char* role);
 
 // MenuButton is declared with the menus, below: it needs MenuItem.
 
@@ -1223,6 +1232,8 @@ struct MenuItem {
 // The items are asked for when the button is pressed, not when the tree is built: a view menu
 // whose ticks were decided at build time would show the state the app started in.
 Desc MenuButton(Glyph g, std::function<std::vector<MenuItem>()> items);
+
+
 
 // A popup menu on its own Wayland surface, so it is not clipped by its parent window and the
 // compositor can place it. Ordering and marking follow docs/aurora-ui.md section 7 and the

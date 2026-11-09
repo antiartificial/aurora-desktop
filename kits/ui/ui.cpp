@@ -179,6 +179,7 @@ struct Scroller {
 
 class TextNode : public Node {
 public:
+    const char* Role() const override { return "label"; }
     TextNode(std::string t, bool bold) : b_(std::move(t)) { st_.bold = bold; }
     TextNode(Binding<std::string> b, bool bold) : b_(std::move(b)) {
         st_.bold = bold;
@@ -225,6 +226,7 @@ private:
 
 class ButtonNode : public Node {
 public:
+    const char* Role() const override { return "button"; }
     ButtonNode(std::string l, std::function<void()> f, Binding<bool> enabled = Binding<bool>(true))
         : l_(std::move(l)), f_(std::move(f)), enabled_(std::move(enabled)) {
         enabled_.attach(this);
@@ -363,6 +365,7 @@ void draw_chevron(au_surface* s, float cx, float cy, float r, au_color c) {
 
 class GlyphButtonNode : public Node {
 public:
+    const char* Role() const override { return "button"; }
     GlyphButtonNode(Glyph g, std::function<void()> f, Binding<bool> enabled)
         : g_(g), f_(std::move(f)), enabled_(std::move(enabled)) {
         enabled_.attach(this);
@@ -455,6 +458,7 @@ public:
 // the keyboard and the state binding to express a choice of shape.
 class ToggleNode : public Node {
 public:
+    const char* Role() const override { return "checkbox"; }
     ToggleNode(std::string label, Binding<bool> on, bool as_switch, std::function<void(bool)> f)
         : l_(std::move(label)), on_(std::move(on)), sw_(as_switch), f_(std::move(f)) {
         on_.attach(this);
@@ -547,6 +551,7 @@ private:
 
 class SliderNode : public Node {
 public:
+    const char* Role() const override { return "slider"; }
     SliderNode(Binding<float> v, float lo, float hi, std::function<void(float)> f)
         : v_(std::move(v)), lo_(lo), hi_(std::max(hi, lo + 1e-6f)), f_(std::move(f)) {
         v_.attach(this);
@@ -633,6 +638,7 @@ private:
 // making it a Tab stop would put a dead stop in a keyboard user's path.
 class ProgressNode : public Node {
 public:
+    const char* Role() const override { return "progressbar"; }
     explicit ProgressNode(Binding<float> v) : v_(std::move(v)) {
         v_.attach(this);
     }
@@ -847,6 +853,7 @@ void draw_halo(au_surface* s, au_rect fill, float fill_radius, au_color ring, au
 
 class ListNode : public Node {
 public:
+    const char* Role() const override { return "list"; }
     ListNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)), edit_text_("") { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2343,6 +2350,7 @@ void draw_icon(au_surface* s, Rect r, const IconSpec& sp, double scale, bool on_
 
 class TextViewNode : public Node {
 public:
+    const char* Role() const override { return "text"; }
     TextViewNode(Binding<std::string> t, bool wrap) : t_(std::move(t)), wrap_(wrap) {
         t_.attach(this);
     }
@@ -2486,6 +2494,7 @@ private:
 
 class CrumbNode : public Node {
 public:
+    const char* Role() const override { return "breadcrumb"; }
     CrumbNode(Binding<std::string> p, std::function<void(const std::string&)> pick,
               std::function<void()> edit)
         : p_(std::move(p)), pick_(std::move(pick)), edit_(std::move(edit)) {
@@ -2591,6 +2600,7 @@ private:
 
 class IconsNode : public Node {
 public:
+    const char* Role() const override { return "list"; }
     IconsNode(Rows* r, Binding<int> sel) : r_(r), sel_(std::move(sel)) { sel_.attach(this); }
 
     Size Measure(const Env& e, Constraints c) override {
@@ -2949,6 +2959,7 @@ size_t utf8_next(const std::string& s, size_t i) {
 
 class FieldNode : public Node {
 public:
+    const char* Role() const override { return "textbox"; }
     FieldNode(Binding<std::string> t, std::function<void(const std::string&)> ch,
               std::function<void(const std::string&)> co, std::function<void()> ca,
               FieldOpts o)
@@ -3255,6 +3266,28 @@ private:
     float w_, h_;
 };
 
+// ---- role decorator ---------------------------------------------------------------------------
+// SizedNode's shape: it measures, places and draws exactly its child, and answers a role.
+class RoleNode : public Node {
+public:
+    RoleNode(Desc c, const char* role) : c_(std::move(c)), role_(role) {}
+
+    const char* Role() const override { return role_; }
+    Size Measure(const Env& e, Constraints c) override { return c_->Measure(e, c); }
+    void Place(Rect r) override {
+        frame = r;
+        c_->parent = this;
+        c_->Place(r);
+    }
+    void Draw(au_surface* s, const Env& e) override { c_->Draw(s, e); }
+    Node* HitTest(float x, float y) override { return c_->HitTest(x, y); }
+    void Children(std::vector<Node*>* out) override { out->push_back(c_.get()); }
+
+private:
+    Desc c_;
+    const char* role_;
+};
+
 // ---- Either -----------------------------------------------------------------------------------
 
 class EitherNode : public Node {
@@ -3554,6 +3587,7 @@ size_t IconsRasterised() { return icons_cache().rasterised; }
 
 class TreeNode : public Node {
 public:
+    const char* Role() const override { return "tree"; }
     TreeNode(TreeSource* src, Binding<std::string> sel) : src_(src), sel_(std::move(sel)) {
         sel_.attach(this);
     }
@@ -4334,6 +4368,11 @@ Desc Button(std::string l, std::function<void()> f) {
 Desc Button(std::string l, std::function<void()> f, Binding<bool> enabled) {
     return std::make_shared<ButtonNode>(std::move(l), std::move(f), std::move(enabled));
 }
+
+Desc WithRole(Desc child, const char* role) {
+    return std::make_shared<RoleNode>(std::move(child), role);
+}
+
 Desc Spacer() { return std::make_shared<SpacerNode>(); }
 
 Desc IconButton(Glyph g, std::function<void()> on_click, Binding<bool> enabled) {

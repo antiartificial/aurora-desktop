@@ -13,7 +13,12 @@ endif()
 add_executable(aurora_ui_spike demo/spike.cpp)
 target_link_libraries(aurora_ui_spike PRIVATE aurora_ui)
 
-add_library(aurora_ui_tk STATIC ui.cpp)
+# Components live one file pair each (components/<name>.{h,cpp}); the glob means adding one is a
+# one-file change, which is what lets the twelve be written in parallel.
+add_subdirectory(components)
+
+add_library(aurora_ui_tk STATIC ui.cpp ${AURORA_UI_COMPONENT_SOURCES})
+target_include_directories(aurora_ui_tk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 
 # Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
@@ -129,6 +134,11 @@ add_test(NAME thread_proof COMMAND test_thread_proof)
 add_executable(test_vstates tests/test_vstates.cpp)
 target_link_libraries(test_vstates PRIVATE aurora_ui_tk)
 add_test(NAME vstates COMMAND test_vstates)
+
+# 8.7: components live one file pair each; their tests sit beside the toolkit's.
+add_executable(test_splitbutton tests/test_splitbutton.cpp)
+target_link_libraries(test_splitbutton PRIVATE aurora_ui_tk)
+add_test(NAME splitbutton COMMAND test_splitbutton)
 
 # 8.8/P6: named action nodes become the surface descriptor (ui:describe, toolkit side).
 add_executable(test_describe tests/test_describe.cpp)
