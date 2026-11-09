@@ -42,6 +42,22 @@ older `Describe` delegates to it, so the two cannot disagree about the same node
 Navigation and view preferences are deliberately **not** actions: `Back`, `Forward`, sorting or
 hiding files change what you are looking at, not what the app does to anything.
 
+## How it travels
+
+`registry.describe@v1` carries a manifest-derived descriptor for an app that has verbs. That covers
+manifest apps and nothing else -- an app with no manifest has no verbs to describe.
+
+So an app can also publish its own:
+
+| Verb | Payload | Reply |
+|---|---|---|
+| `surface.publish@v1` | `{"surface": <Descriptor>}` | `{"ok": true}` |
+| `surface.list@v1` | `{}` | `{"surfaces": [<Descriptor>, ...]}` |
+
+The compositor's relay asks `apps@v1` + `describe@v1` for manifest apps and `surface.list@v1` for
+published ones, merging the two: a publication wins on the same app id, because it is the app's own
+claim about itself while `describe` is the manifest's.
+
 ## Where it is enforced
 
 - `registry.describe@v1` and `ui.act@v1` share one caller gate (`surfaceCaller`): the app's own
@@ -51,6 +67,7 @@ hiding files change what you are looking at, not what the app does to anything.
 
 ## Known limits
 
-- The shell reads descriptors at startup; a descriptor published later is not yet relayed over the
-  bus.
+- The relay polls every 2 s rather than subscribing: the bus session wire is request/reply.
 - A header binds to the first window of an app, on one output.
+- Published descriptors live in the controller's memory; a restart forgets them until the app
+  republishes.
