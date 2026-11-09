@@ -36,6 +36,13 @@ add_executable(test_atlas_surface tests/test_atlas_surface.cpp)
 target_link_libraries(test_atlas_surface PRIVATE aurora_ui_tk)
 add_test(NAME atlas_surface COMMAND test_atlas_surface)
 
+# The component gallery: a coherent Photo Library using all twelve components, runnable for review.
+add_executable(aurora-gallery demo/gallery.cpp)
+target_link_libraries(aurora-gallery PRIVATE aurora_ui_tk)
+add_executable(test_gallery tests/test_gallery.cpp)
+target_link_libraries(test_gallery PRIVATE aurora_ui_tk)
+add_test(NAME gallery COMMAND test_gallery)
+
 # Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
 # read back, which is why this is a test and the other aurora-ui demos are demos.
 add_executable(tk_layout demo/tk_layout.cpp)
