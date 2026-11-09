@@ -21,6 +21,11 @@ add_library(aurora_ui_tk STATIC ui.cpp ${AURORA_UI_COMPONENT_SOURCES})
 target_include_directories(aurora_ui_tk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 
+# 8.7's check as a command: dump the component tree's roles, and fail if a root only says "control".
+add_executable(aurora-uitree tools/uitree.cpp)
+target_link_libraries(aurora-uitree PRIVATE aurora_ui_tk)
+add_test(NAME uitree COMMAND aurora-uitree --check)
+
 # Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
 # read back, which is why this is a test and the other aurora-ui demos are demos.
 add_executable(tk_layout demo/tk_layout.cpp)
