@@ -785,7 +785,7 @@ int main() {
     // most of what dragging is for.
     OnTreeDrop(tree, [&](const std::string& id, const DragData& d) {
         const bool ok = move_into(id, d.paths);
-        if (ok) places.Forget(id);        // its children changed
+        if (ok) { places.Forget(id); TreeInvalidate(w, tree); }   // its children changed: repaint
         return ok;
     });
 

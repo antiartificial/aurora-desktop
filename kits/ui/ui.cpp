@@ -3773,6 +3773,8 @@ public:
 
     void SetSelectHandler(std::function<void(const std::string&)> f) { on_sel_ = std::move(f); }
     void SetActivateHandler(std::function<void(const std::string&)> f) { on_act_ = std::move(f); }
+    // Re-ask the source on the next frame. Keeps top_/cur_/sel_; the caller repaints.
+    void Invalidate() { flat_valid_ = false; whole_ = true; }
     void SetDropHandler(std::function<bool(const std::string&, const DragData&)> f) {
         on_drop_ = std::move(f);
     }
@@ -4377,6 +4379,14 @@ void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f) {
 
 void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f) {
     if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) t->SetActivateHandler(std::move(f));
+}
+
+void TreeInvalidate(Window& w, const Desc& tree) {
+    if (!tree) return;
+    if (TreeNode* t = dynamic_cast<TreeNode*>(tree.get())) {
+        t->Invalidate();
+        w.Invalidate(t->frame);
+    }
 }
 
 void OnTreeDrop(const Desc& tree, std::function<bool(const std::string&, const DragData&)> f) {

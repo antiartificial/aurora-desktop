@@ -140,15 +140,15 @@ int main() {
         status.set("launched " + name_of(id));
     };
 
-    std::function<Desc()> make_root = [&]() -> Desc {
-        Desc tree = TreeView(&src, sel);
-        OnTreeActivate(tree, [&](const std::string& id) {
-            // The widget only activates enabled rows, so a disabled row never reaches here.
-            w.Defer([&, id] { launch(id); });   // not during a node event
-        });
-        // TextView wraps: a controller refusal can be a whole sentence and the strip must show it.
-        return VStack({weight(tree, 1.0f), sized(TextView(status, true), -1, 46)}, 0.0f);
-    };
+    // Built once: a refresh asks the source again and repaints in place, rather than swapping the
+    // tree, so the scroll position, the cursor and keyboard focus all survive.
+    Desc tree = TreeView(&src, sel);
+    OnTreeActivate(tree, [&](const std::string& id) {
+        // The widget only activates enabled rows, so a disabled row never reaches here.
+        w.Defer([&, id] { launch(id); });   // not during a node event
+    });
+    // TextView wraps: a controller refusal can be a whole sentence and the strip must show it.
+    Desc root = VStack({weight(tree, 1.0f), sized(TextView(status, true), -1, 46)}, 0.0f);
 
     refresh = [&] {
         if (!bus_up) {
@@ -168,7 +168,7 @@ int main() {
                 status.set(apps.empty() ? "no apps installed" : "");
             }
         }
-        w.SetRoot(make_root());
+        TreeInvalidate(w, tree);   // rebuild the rows; scroll, cursor and selection stay
     };
 
     w.SetKeyHook([&](const au_key& k) -> bool {
@@ -179,6 +179,7 @@ int main() {
     });
 
     refresh();
+    w.SetRoot(root);
     w.Run(0, false, 0);
     return 0;
 }

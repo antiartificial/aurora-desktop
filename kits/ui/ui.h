@@ -1004,6 +1004,9 @@ public:
 Desc TreeView(TreeSource* src, Binding<std::string> selected);
 void OnTreeSelect(const Desc& tree, std::function<void(const std::string&)> f);
 void OnTreeActivate(const Desc& tree, std::function<void(const std::string&)> f);
+// Re-ask a tree's source on the next frame: its rows changed (a refresh). Keeps the scroll
+// position and the selection. The window repaints the tree's frame.
+void TreeInvalidate(Window& w, const Desc& tree);
 
 // Expand the chain down to `id` and select it. This is how navigating in the main pane keeps the
 // sidebar in step without the app having to know how the tree is laid out -- it names a
