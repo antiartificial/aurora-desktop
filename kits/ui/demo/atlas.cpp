@@ -101,7 +101,10 @@ int main() {
     // What the three navigation buttons may do. A disabled button stays visible with its glyph
     // in the tertiary ink (6.9): the absence is shown, not hidden, so the toolbar does not
     // change shape as you walk a tree.
-    State<bool> can_back(false), can_fwd(false), can_up(dir != "/");
+    State<bool> can_back(false), can_fwd(false);
+    // "Up" is not a cell of its own: it is path != "/". Derived says that once, so navigating
+    // cannot forget to update it -- the bug the manual set() at every navigation was waiting for.
+    Derived<bool> can_up([](const std::string& p) { return p != "/"; }, path);
     // The location bar: Ctrl+L, or a click past the last breadcrumb segment. Separate from the
     // filter because they mean opposite things -- one narrows what you are looking at, the other
     // leaves for somewhere else -- and a single box that did both would have to guess which.
@@ -121,7 +124,6 @@ int main() {
     selected.bind(&w);          // the list/icon cursor cell
     can_back.bind(&w);
     can_fwd.bind(&w);
-    can_up.bind(&w);
 
     // The filter narrows as you type. It is not a search box and it does not open a mode: it is
     // one of the three distinct things docs/aurora-ui.md separates -- type-ahead moves the
@@ -196,7 +198,6 @@ int main() {
         }
         can_back.set(!history.empty());
         can_fwd.set(!forward.empty());
-        can_up.set(to != "/");
         w.Invalidate();
     };
     auto parent_of = [](const std::string& p) {

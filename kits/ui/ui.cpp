@@ -3602,18 +3602,22 @@ public:
             // fill is the cursor with nothing selected.
             const au_rect in{frame.x + 6, ry + 1, frame.x + frame.w - 7, ry + row_h_ - 2};
             const bool cursor = i == cur_ && focused_;
-            if (is_sel) {
-                au_fill_round_rect(s, in, 6, 6, focused_ ? e.accent : e.sel_unfocused);
-            } else if (i == hover_ && !(cursor && halo_) && r.enabled) {
-                au_fill_round_rect(s, in, 6, 6, e.hover);
-            }
+            // One table answers the six states (8.5). Which fill says whether this pane has the
+            // keyboard, and a ring with no fill is the cursor with nothing selected, fall out of
+            // ResolveSkin rather than being re-derived here.
+            const VState vs = is_sel ? (focused_ ? VState::SelectedFocused : VState::Selected)
+                             : !r.enabled ? VState::Disabled
+                             : (i == hover_ && !(cursor && halo_)) ? VState::Hover
+                                                                   : VState::Normal;
+            const ControlSkin skin = ResolveSkin(e, vs);
+            if (skin.fill.a) au_fill_round_rect(s, in, 6, 6, skin.fill);
             // The keyboard cursor, distinct from the selection. They are usually the same row;
             // they come apart when the app sets the selection from elsewhere, and a tree that
             // showed only one of them would lose the user's place.
-            if (cursor && (halo_ || !is_sel)) draw_halo(s, in, 6, e.focus_ring, e.sidebar);
+            if (cursor && (halo_ || !is_sel)) draw_halo(s, in, 6, skin.ring, e.sidebar);
 
             const float ind = frame.x + e.unit * 1.5f + r.depth * e.unit * 2;
-            const au_color ink = is_sel && focused_ ? e.accent_ink : (r.enabled ? e.fg : e.dim);
+            const au_color ink = skin.ink;   // fg normally, accent-ink on the focused selection, dim3 disabled
             // A flat item has no chevron and no children: Places are destinations, the
             // Filesystem is a tree, and one widget draws both.
             if (r.expandable && !r.flat)
