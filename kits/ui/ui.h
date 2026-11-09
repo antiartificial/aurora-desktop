@@ -307,7 +307,7 @@ public:
     bool alive() const { return d_ != nullptr || !s_ || alive_->load(std::memory_order_acquire); }
     // A node built from a live binding attaches to the cell so set() invalidates it; a derived gets
     // it as a reader (so a source change repaints through the derived); a constant has neither.
-    void attach(Node* n) const { if (d_) { d_->addReader(n); n->addCell(d_); } else if (cell()) s_->attach(n); }
+    void attach(Node* n) const;   // defined after Node: it needs the complete type to add a cell
 
 private:
     bool cell() const { return s_ && alive_->load(std::memory_order_acquire); }
@@ -528,6 +528,18 @@ protected:
         return c;
     }
 };
+
+// Defined here, not inline: `n->addCell(...)` needs Node complete, and GCC only defers that while
+// clang rejects the member access outright -- which made every TU in kits/ui unparseable by clang.
+template <class T>
+void Binding<T>::attach(Node* n) const {
+    if (d_) {
+        d_->addReader(n);
+        n->addCell(d_);
+    } else if (cell()) {
+        s_->attach(n);
+    }
+}
 
 // One node, cheap to copy: a handle, not the node. A modifier mutates the node and returns the SAME
 // handle (Decision 4 -- shared_ptr semantics), so a chain sets fields on one node rather than

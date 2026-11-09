@@ -14,6 +14,14 @@
 //! Parsing is `serde_json`, already a dependency: the contract is JSON, and a
 //! hand-rolled reader would be a second parser to keep in step with it.
 //!
+//! A descriptor reaches this file two ways: a file named by `--surface-header`
+//! (fixtures, and a way to pin one app's surface), and the live relay
+//! (`SurfaceRelay`), which asks the controller's registry which surfaces exist
+//! and takes each `registry.describe@v1` reply's `surface` object. The relay
+//! exists because a compositor reads `--surface-header` ONCE at startup, so an
+//! app that publishes when it opens got no header at all. Both paths go through
+//! the same validation and land in `Shell::surface_headers`, keyed by `app`.
+//!
 //! A header belongs to ONE window. A descriptor names its app (`app` is the
 //! toplevel's `app_id`), and the band is placed against that window's own top
 //! edge, not at the output's corner: chrome that floated in the corner would
@@ -21,15 +29,19 @@
 //! is mapped the band is not drawn at all -- there is nothing for it to describe
 //! -- and it comes back, at the window's new place, if the app maps again.
 
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            ImportMem,
             gles::{GlesRenderer, GlesTexture},
+            ImportMem,
         },
     },
     desktop::{Space, Window},
@@ -37,10 +49,10 @@ use smithay::{
     wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use super::{Res, Shell, layout::Rect};
+use super::{layout::Rect, Res, Shell};
 use crate::{
     text::{FontSpec, TextSystem},
-    trusted::draw::{Canvas, clean},
+    trusted::draw::{clean, Canvas},
     windeco::win_key,
 };
 
@@ -91,13 +103,29 @@ impl Descriptor {
     pub fn load(path: &Path) -> Result<Descriptor, String> {
         let bytes =
             std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let mut d: Descriptor =
+        let d: Descriptor =
             serde_json::from_slice(&bytes).map_err(|e| format!("not a surface descriptor: {e}"))?;
-        if d.app.is_empty() {
+        d.validated()
+    }
+
+    /// Parse a `registry.describe@v1` reply's `surface` object and validate it
+    /// by the SAME rules as a file. A relayed descriptor is untrusted in a way
+    /// a `--surface-header` file is not -- it is whatever some app published
+    /// -- so it must not be drawable under looser rules than a fixture.
+    pub fn from_value(v: &serde_json::Value) -> Result<Descriptor, String> {
+        let d: Descriptor = serde_json::from_value(v.clone())
+            .map_err(|e| format!("not a surface descriptor: {e}"))?;
+        d.validated()
+    }
+
+    /// The contract's `Validate`. Separate from `load` so both entry points
+    /// share it and neither can drift.
+    fn validated(mut self) -> Result<Descriptor, String> {
+        if self.app.is_empty() {
             return Err("surface: app is empty".into());
         }
-        let mut seen = std::collections::HashSet::with_capacity(d.actions.len());
-        for a in &d.actions {
+        let mut seen = std::collections::HashSet::with_capacity(self.actions.len());
+        for a in &self.actions {
             if a.id.is_empty() {
                 return Err("surface: an action has no id".into());
             }
@@ -118,9 +146,9 @@ impl Descriptor {
         // again here means a producer that forgets cannot make the same tree
         // draw a different header on a later run, which would make a golden
         // frame diff useless.
-        d.actions.sort_by(|a, b| a.id.cmp(&b.id));
-        d.grants.sort();
-        Ok(d)
+        self.actions.sort_by(|a, b| a.id.cmp(&b.id));
+        self.grants.sort();
+        Ok(self)
     }
 
     /// A stable string for the texture cache: everything the picture depends on.
@@ -176,6 +204,11 @@ pub struct Header {
     shown: bool,
     /// The line last logged for this header, so a settled layout logs once.
     logged: String,
+    /// Published over the bus rather than named with `--surface-header`.
+    /// Live headers track the registry (`reconcile_surface_headers`); a
+    /// fixture is a standing statement and keeps the older hide/return
+    /// behaviour instead.
+    live: bool,
 }
 
 impl Header {
@@ -191,6 +224,7 @@ impl Header {
             placed: vec![],
             shown: false,
             logged: String::new(),
+            live: false,
         }
     }
 
@@ -336,6 +370,142 @@ fn ellipsize(text: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max: f
     out
 }
 
+/// How often the compositor asks the registry which surfaces exist.
+///
+/// A publish is a startup event, not a per-frame one, and the session bus is
+/// request/reply (the shape `registry.apps@v1` already uses), so this is a
+/// poll, not a subscription: a second long-lived connection would be a second
+/// thing to reconnect after a bus restart. Two seconds is short enough that a
+/// demo does not look stuck, long enough that the per-app `describe` calls do
+/// not cost anything noticeable.
+const RELAY_REFRESH: Duration = Duration::from_secs(2);
+/// Bound on an untrusted listing. A registry with hundreds of apps would
+/// otherwise turn each poll into hundreds of round trips.
+const MAX_SURFACES: usize = 64;
+
+/// The live relay: asks the registry for the surfaces it publishes and hands
+/// the answer to the event loop without ever blocking it.
+///
+/// The compositor is a single-threaded event loop. A bus round trip can take
+/// as long as a hung daemon likes, so it runs on its own thread -- the same
+/// pattern `apps::Registry::tick` uses for `registry.apps@v1` -- and the loop
+/// only ever looks at a channel with `try_recv`.
+pub struct SurfaceRelay {
+    rx: Option<mpsc::Receiver<Result<Vec<Descriptor>, String>>>,
+    last: Option<Instant>,
+}
+
+impl SurfaceRelay {
+    pub fn new() -> SurfaceRelay {
+        SurfaceRelay {
+            rx: None,
+            last: None,
+        }
+    }
+
+    /// Start the next ask when one is due. Never blocks: an ask still in
+    /// flight leaves `rx` set and this returns at once.
+    pub fn tick(&mut self, sock: Option<PathBuf>) {
+        if self.rx.is_some() {
+            return;
+        }
+        let Some(sock) = sock else { return };
+        if self.last.is_some_and(|t| t.elapsed() < RELAY_REFRESH) {
+            return;
+        }
+        self.last = Some(Instant::now());
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        let spawned = std::thread::Builder::new()
+            .name("surface-relay".into())
+            .spawn(move || {
+                let _ = tx.send(ask(&sock));
+            });
+        if spawned.is_err() {
+            // No thread means no reply ever arrives; clearing `rx` lets the
+            // next tick try again instead of waiting forever on a channel
+            // whose sender is gone.
+            self.rx = None;
+        }
+    }
+
+    /// A finished ask, if one has landed.
+    pub fn take(&mut self) -> Option<Result<Vec<Descriptor>, String>> {
+        let rx = self.rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(r) => {
+                self.rx = None;
+                Some(r)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.rx = None;
+                None
+            }
+        }
+    }
+}
+
+/// One poll: every app the registry lists that has a verb, described.
+///
+/// `describe` is per-verb but its reply's `surface` covers the whole window,
+/// so any one verb answers for all of them (the same selection the controller's
+/// own `surface.List` makes). An app with no verb has no descriptor to fetch
+/// and is skipped, not failed: one app's gap must not blank the whole relay.
+fn ask(sock: &Path) -> Result<Vec<Descriptor>, String> {
+    let v = crate::trusted::verify::call_to(
+        sock,
+        "registry",
+        "registry.apps@v1",
+        Some(serde_json::json!({})),
+    )?;
+    let apps = v["apps"]
+        .as_array()
+        .ok_or("registry.apps@v1 reply has no apps list")?;
+    let mut out = Vec::new();
+    for a in apps.iter().take(MAX_SURFACES) {
+        let Some(id) = a["id"].as_str().filter(|i| !i.is_empty()) else {
+            continue;
+        };
+        let Some(verb) = a["verbs"]
+            .as_array()
+            .and_then(|v| v.iter().find_map(|x| x.as_str().filter(|x| !x.is_empty())))
+        else {
+            continue;
+        };
+        let reply = match crate::trusted::verify::call_to(
+            sock,
+            "registry",
+            "registry.describe@v1",
+            Some(serde_json::json!({"app": id, "verb": verb})),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("surface: describe {id:?} failed: {e}");
+                continue;
+            }
+        };
+        // An older controller answers describe without a surface. There is
+        // nothing to draw, and inventing one from the per-verb fields would
+        // be a descriptor nobody validated.
+        let Some(s) = reply.get("surface").filter(|s| !s.is_null()) else {
+            continue;
+        };
+        match Descriptor::from_value(s) {
+            Ok(d) if d.app == id => out.push(d),
+            // A descriptor for another app would draw the wrong chrome with
+            // the right-looking grants, so a mismatch is refused, not
+            // repaired -- the same rule the contract's client applies.
+            Ok(d) => tracing::warn!(
+                "surface: bus: asked for {id:?} but the descriptor says {:?}; refused",
+                d.app
+            ),
+            Err(e) => tracing::warn!("surface: bus: descriptor for {id:?} refused: {e}"),
+        }
+    }
+    Ok(out)
+}
+
 impl Shell {
     /// Load a descriptor for `--surface-header`, or report why not. A descriptor
     /// the header cannot draw is refused: drawing a guessed header would be worse
@@ -362,8 +532,8 @@ impl Shell {
     }
 
     /// Forget an app's descriptor, so its band goes away even while the window
-    /// stays mapped. `--surface-header` is the only loader today; this is the
-    /// path a cleared descriptor will take.
+    /// stays mapped. Both loaders replace through this, so the newest
+    /// statement about an app wins whichever path it came by.
     pub fn clear_surface_header(&mut self, app: &str) {
         let before = self.surface_headers.len();
         self.surface_headers.retain(|h| h.desc.app != app);
@@ -372,19 +542,112 @@ impl Shell {
         }
     }
 
+    /// Take a relay snapshot: the descriptors the registry publishes RIGHT NOW.
+    ///
+    /// The relay polls, so a snapshot is a full statement rather than a delta:
+    /// an app that vanished from it has stopped publishing, and its band must
+    /// go. The snapshot is only remembered here; `reconcile_surface_headers`
+    /// decides which of them have a window to describe.
+    pub fn apply_surface_snapshot(&mut self, r: Result<Vec<Descriptor>, String>) {
+        match r {
+            Ok(d) => {
+                tracing::info!(
+                    "surface: bus -> {} surface(s): {:?}",
+                    d.len(),
+                    d.iter().map(|d| d.app.as_str()).collect::<Vec<_>>()
+                );
+                self.surface_live = d;
+            }
+            // A failed poll does not blank the live set: a bus restart or a
+            // hung controller must not make every header flicker away and
+            // back. The last good statement stands until a better one arrives.
+            Err(e) => tracing::warn!("surface: bus relay: {e}"),
+        }
+        self.reconcile_surface_headers();
+    }
+
+    /// Bring the header map in line with what the registry publishes and which
+    /// windows are mapped.
+    ///
+    /// A live header exists only while BOTH are true: the app still publishes
+    /// a descriptor, and a window of that app is mapped. A band with no window
+    /// describes nothing, so keeping the entry would mean the map churns on
+    /// every poll (remove, re-add, remove) for an app that is merely closed.
+    /// Called once per frame; the work is a scan of two small lists.
+    pub fn reconcile_surface_headers(&mut self) {
+        // Most sessions publish nothing; do not walk the lists for them.
+        if self.surface_live.is_empty() && !self.surface_headers.iter().any(|h| h.live) {
+            return;
+        }
+        // Clone so `clear_surface_header` can borrow the shell mutably while
+        // this loop reads the published set.
+        let live = self.surface_live.clone();
+        for d in &live {
+            if !self.surface_targets.iter().any(|t| t.app == d.app) {
+                continue;
+            }
+            // The same descriptor republished every poll must NOT rebuild the
+            // texture: compare what the picture depends on, not the JSON.
+            if self
+                .surface_headers
+                .iter()
+                .any(|h| h.live && h.desc.app == d.app && h.desc.key() == d.key())
+            {
+                continue;
+            }
+            self.clear_surface_header(&d.app);
+            let mut h = Header::new(d.clone());
+            h.live = true;
+            tracing::info!(
+                "surface: header published app={} ({:?}): {} actions, {} grants",
+                d.app,
+                d.title,
+                d.actions.len(),
+                d.grants.len()
+            );
+            self.surface_headers.push(h);
+        }
+        // Drop what is no longer true. A `--surface-header` fixture is NOT
+        // live: it is a standing statement by whoever started the compositor,
+        // and its band already hides and returns with the window.
+        let published = |app: &str| live.iter().any(|d| d.app == app);
+        // Cloned for the same reason: `retain` mutably borrows the header list,
+        // so the closure cannot reach back into `self`.
+        let targets = self.surface_targets.clone();
+        let mut dropped: Vec<String> = vec![];
+        self.surface_headers.retain(|h| {
+            if !h.live {
+                return true;
+            }
+            let keep = published(&h.desc.app) && targets.iter().any(|t| t.app == h.desc.app);
+            if !keep {
+                dropped.push(h.desc.app.clone());
+            }
+            keep
+        });
+        for app in dropped {
+            tracing::info!("surface: header removed app={app} (no window or no longer published)");
+        }
+    }
+
     /// A snapshot of every mapped window, for the header to bind to. Called once
     /// per event-loop turn from `main`, after dispatched events and before the
     /// next frame is composed.
     pub fn note_windows(&mut self, space: &Space<Window>) {
-        // Most sessions run no descriptors at all; do not walk the Space for them.
-        if self.surface_headers.is_empty() {
+        // Most sessions run no descriptors at all; do not walk the Space for
+        // them. A descriptor the bus published but that has no header YET
+        // still needs the snapshot: its window may be about to map, and
+        // `reconcile_surface_headers` can only bind to a window it can see.
+        if self.surface_headers.is_empty() && self.surface_live.is_empty() {
             self.surface_targets.clear();
             return;
         }
         self.surface_targets.clear();
         for w in space.elements() {
             let Some(id) = win_key(w) else { continue };
-            let Some(geo) = space.element_geometry(w) else { continue };
+            let Some(geo) = space.element_geometry(w) else {
+                continue;
+            };
             let (app, title) = window_identity(w);
             self.surface_targets.push(WindowFrame {
                 id,
@@ -415,7 +678,11 @@ impl Shell {
         // The window's "top" for this purpose is the top of its title bar when the
         // compositor draws one: the bar is chrome above the client, and a band
         // level with the client's first pixel would be drawn over by the bar.
-        let bar = if self.deco_on() { self.deco_height() } else { 0 };
+        let bar = if self.deco_on() {
+            self.deco_height()
+        } else {
+            0
+        };
         let edge = (EDGE_GAP as f64 * scale).round() as i32;
         // `prepare` only has `&mut self`, and the renderer borrows nothing of it:
         // split the fields the loop needs so a header can render into the text
@@ -428,10 +695,7 @@ impl Shell {
                 .find(|t| !h.desc.app.is_empty() && t.app == h.desc.app);
             let Some(t) = target else {
                 if h.shown {
-                    tracing::info!(
-                        "surface: header hidden app={} (no window)",
-                        h.desc.app
-                    );
+                    tracing::info!("surface: header hidden app={} (no window)", h.desc.app);
                 }
                 h.shown = false;
                 h.rect = None;
@@ -571,15 +835,81 @@ mod tests {
     fn an_unpoliced_effect_or_a_duplicate_id_is_refused_rather_than_drawn() {
         let bad_effect =
             r#"{"app":"a","title":"t","actions":[{"id":"x","label":"X","effect":"nuke"}]}"#;
-        assert!(
-            load(bad_effect)
-                .unwrap_err()
-                .contains("not read/write/nominal")
-        );
+        assert!(load(bad_effect)
+            .unwrap_err()
+            .contains("not read/write/nominal"));
         let dup = r#"{"app":"a","title":"t","actions":[
             {"id":"x","label":"X","effect":"read"},{"id":"x","label":"Y","effect":"read"}]}"#;
         assert!(load(dup).unwrap_err().contains("duplicate action id"));
         let no_app = r#"{"app":"","title":"t","actions":[]}"#;
         assert!(load(no_app).unwrap_err().contains("app is empty"));
+    }
+
+    #[test]
+    fn a_live_header_follows_its_window_and_goes_when_either_does() {
+        let mut s = Shell::new();
+        let desc = || {
+            Descriptor::from_value(&serde_json::json!({
+                "app": "org.aurora.demo",
+                "title": "T",
+                "actions": [{"id": "open", "label": "Open", "effect": "read"}],
+            }))
+            .unwrap()
+        };
+        let target = || WindowFrame {
+            id: "w1".into(),
+            app: "org.aurora.demo".into(),
+            title: "T".into(),
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 200,
+        };
+
+        // Published, but no window yet: there is nothing for a band to
+        // describe, so no header is materialised.
+        s.surface_live = vec![desc()];
+        s.reconcile_surface_headers();
+        assert!(s.surface_headers.is_empty(), "no window, no band");
+
+        // The window maps and the band appears.
+        s.surface_targets = vec![target()];
+        s.reconcile_surface_headers();
+        assert_eq!(s.surface_headers.len(), 1);
+        assert!(s.surface_headers[0].live);
+
+        // The same descriptor on the next poll keeps the SAME Header: a
+        // republish must not throw away a texture that is already right.
+        let before = &s.surface_headers[0] as *const Header;
+        s.reconcile_surface_headers();
+        assert_eq!(s.surface_headers.len(), 1);
+        assert_eq!(before, &s.surface_headers[0] as *const Header);
+
+        // The window closes while the app still publishes: the band goes.
+        s.surface_targets.clear();
+        s.reconcile_surface_headers();
+        assert!(s.surface_headers.is_empty(), "window gone, band gone");
+
+        // The app republishes with its window back, then stops publishing:
+        // the band goes even though the window is still mapped.
+        s.surface_targets = vec![target()];
+        s.reconcile_surface_headers();
+        assert_eq!(s.surface_headers.len(), 1);
+        s.surface_live.clear();
+        s.reconcile_surface_headers();
+        assert!(s.surface_headers.is_empty(), "app gone, band gone");
+
+        // A `--surface-header` fixture is not live: an empty relay must not
+        // clear a standing statement, whose band already hides and returns
+        // with its window.
+        let mut fixture = Header::new(desc());
+        fixture.desc.app = "org.aurora.pinned".into();
+        s.surface_headers.push(fixture);
+        s.reconcile_surface_headers();
+        assert_eq!(
+            s.surface_headers.len(),
+            1,
+            "a fixture survives a poll that publishes nothing"
+        );
     }
 }

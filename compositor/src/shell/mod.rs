@@ -184,8 +184,15 @@ pub struct Shell {
     /// The surface headers, one per app descriptor from `--surface-header`
     /// (src/shell/header.rs). Each is bound to the window whose `app_id` its
     /// descriptor names, and bound headers are drawn in the scene, so captures
-    /// see them.
+    /// see them. Live descriptors arrive here too, via `surface_live`.
     pub surface_headers: Vec<header::Header>,
+    /// What the registry published on the last successful relay poll. A header
+    /// is materialised from one of these only while a window of its app is
+    /// mapped, so a closed app's band is not re-added every poll.
+    pub surface_live: Vec<header::Descriptor>,
+    /// The bus thread and channel that fill `surface_live`. Owned here so the
+    /// poll rides the frame loop without blocking it.
+    pub surface_relay: header::SurfaceRelay,
     /// Where the windows were on the last event-loop turn. The header binds to
     /// one of these by app id; `main` refreshes it (see `note_windows`).
     pub surface_targets: Vec<header::WindowFrame>,
@@ -244,6 +251,8 @@ impl Shell {
             menu: None,
             menu_seq: 0,
             surface_headers: vec![],
+            surface_live: vec![],
+            surface_relay: header::SurfaceRelay::new(),
             surface_targets: vec![],
             settings: None,
             families: vec![],
@@ -516,6 +525,16 @@ impl Shell {
             self.rebuild_items();
         }
         self.registry.tick();
+        // The live surface relay: start an ask when one is due, and take a
+        // finished one. Both are non-blocking, so this is safe in the frame
+        // loop; the round trip itself is on the relay's own thread.
+        self.surface_relay.tick(self.registry.sock.clone());
+        if let Some(r) = self.surface_relay.take() {
+            self.apply_surface_snapshot(r);
+        }
+        // A window that mapped or closed since the last turn needs a band to
+        // appear or go without waiting for the next poll.
+        self.reconcile_surface_headers();
     }
 
     // ---- launching -------------------------------------------------------

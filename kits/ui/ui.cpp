@@ -442,8 +442,31 @@ private:
     bool chevron_ = false, over_ = false, down_ = false, focused_ = false;
 };
 
+// ---- what a layout box answers ---------------------------------------------------------------
+//
+// A container in this file is a LAYOUT box: it positions other nodes and has no semantics of its
+// own. ARIA's vocabulary for exactly that is `none` (alias `presentation`) -- "the element has no
+// role, and its children are exposed as if it were not there". `group` was the other candidate and
+// is rejected on two counts. First, `group` is a CLAIM that these objects belong together for an
+// assistive consumer; a VStack of a label and a field makes that claim no more than a <div> does.
+// Second, and worse for this codebase: the Expander IS a group and answers `group`, so a layout
+// box answering it too would leave `aurora-uitree` unable to tell a component with a real role
+// from a wrapper wearing one -- the exact distinction 8.7's check exists to test, reproducing the
+// "everything is a control" problem one level up.
+//
+// The one-child decorators (sized, Reveal, Either) deliberately do NOT answer `none`. They
+// relocate, reveal or choose exactly one child and add no structure, so they ARE that child and
+// answer its role -- ARIA's presentational wrapper. Delegation also keeps the 8.7 check sound in
+// the only direction that matters: a wrapper around a bare layout box resolves to `none` and
+// still fails, because Role() can only ever surface a child's real answer, never invent one.
+constexpr const char* kRoleLayout = "none";
+
+// An empty box that takes leftover space. It draws nothing and hit-tests to nothing, so it is the
+// purest case of the rule above: a reader that heard "control" would look for a widget that is
+// not there.
 class SpacerNode : public Node {
 public:
+    const char* Role() const override { return kRoleLayout; }
     Size Measure(const Env&, Constraints) override { return Size{0, 0}; }
     void Draw(au_surface*, const Env&) override {}
     Node* HitTest(float, float) override { return nullptr; }
@@ -668,6 +691,12 @@ class StackNode : public Node {
 public:
     StackNode(std::vector<Desc> c, bool vertical, float gap)
         : c_(std::move(c)), vert_(vertical), gap_(gap) {}
+
+    // A stack groups siblings but never says what they are, so it reports `none` rather than
+    // deriving a role from its contents: a stack with one button stays a stack, because it can
+    // gain a second child and a role that changed with the child count would be a lie in the
+    // other direction (see kRoleLayout).
+    const char* Role() const override { return kRoleLayout; }
 
     Size Measure(const Env& e, Constraints c) override {
         const float gap = gap_ * e.unit;
@@ -3261,6 +3290,11 @@ public:
     Node* HitTest(float x, float y) override { return c_->HitTest(x, y); }
     void Children(std::vector<Node*>* out) override { out->push_back(c_.get()); }
 
+    // A fixed frame is not a new thing: `sized(x, 260)` IS x, moved and bounded, so it answers
+    // what x answers. Answering `none` here would file every fixed-width pane as a semantics-free
+    // box even when the child is a button.
+    const char* Role() const override { return c_->Role(); }
+
 private:
     Desc c_;
     float w_, h_;
@@ -3309,6 +3343,12 @@ public:
     void Draw(au_surface* s, const Env& e) override { live()->Draw(s, e); }
     Node* HitTest(float x, float y) override { return live()->HitTest(x, y); }
     void Children(std::vector<Node*>* out) override { out->push_back(live()); }
+
+    // Either holds two widgets and picks one; the node itself is a switch, not a thing a reader
+    // should hear. Answering the live child's role keeps the dump honest at the moment it is
+    // taken -- a view switch is whatever view is showing -- and never lets a bare Either claim a
+    // role of its own.
+    const char* Role() const override { return live()->Role(); }
 
     // A switch needs a LAYOUT, not just a repaint, and saying so is this node's whole job beyond
     // picking. The child that was not live has never been measured or placed -- that is the
@@ -3381,6 +3421,11 @@ public:
     void Children(std::vector<Node*>* out) override {
         if (shown_.get_or(false)) out->push_back(c_.get());
     }
+
+    // Reveal is a transition on ONE child, not a container: it answers the child's role even
+    // while hidden, because collapsing a pane does not change what the pane is. Reporting `none`
+    // here would make a hidden button indistinguishable from a layout box.
+    const char* Role() const override { return c_->Role(); }
 
     // While moving, ask for a frame at display rate. When settled, stop asking: an idle window
     // must go back to sleeping.
@@ -4085,6 +4130,13 @@ public:
         out->push_back(a_.get());
         out->push_back(b_.get());
     }
+
+    // Two panes and a divider is layout, not a group of related controls, so it answers `none`.
+    // The divider IS interactive, but it is not a node in this tree: claiming `separator` here
+    // would put the container in the reader's path as the thing being adjustable, which is the
+    // divider's story and is not yet reported. When the divider becomes its own node with a real
+    // role, this stays `none` -- the panes are still just placed beside each other.
+    const char* Role() const override { return kRoleLayout; }
 
     void OnEnter() override { hot_ = true; }
     void OnLeave() override { hot_ = false; }

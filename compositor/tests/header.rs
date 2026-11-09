@@ -2,9 +2,12 @@
 //! the window that descriptor names.
 //!
 //! A real headless compositor, a real frame dump, decoded pixels. The fixture
-//! descriptors are written here and passed with `--surface-header`, so this does
-//! not depend on descriptors arriving over the bus (the relay is a separate
-//! change). Two properties are what this file is for: the band is drawn against
+//! descriptors are written here and passed with `--surface-header`, so the
+//! `--surface-header` path is exercised without a bus. A second test puts a
+//! fake registry on a unix socket and proves the LIVE path (`registry.apps@v1`
+//! + `registry.describe@v1`) makes a band appear when an app publishes and
+//! disappear when it stops, with no `--surface-header` at all.
+//! Two properties are what this file is for: the band is drawn against
 //! its OWN window's frame, not at the output's corner, and a descriptor with no
 //! mapped window draws nothing at all.
 //!
@@ -14,7 +17,15 @@
 
 mod common;
 use common::*;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    io::{BufRead, BufReader, Write},
+    os::unix::net::UnixListener,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 /// Mirrors `header::FILL` in src/shell/header.rs. Tests cannot import the
 /// binary's internals, and a pixel assertion should name the colour it expects.
@@ -173,8 +184,16 @@ fn write(dir: &Path, name: &str, body: &str) -> String {
 /// A window of `app` at `size`, moved to `(x, y)` LOGICAL once it is mapped.
 fn window(c: &mut Comp, app: &str, title: &str, size: &str, at: (i32, i32), index: usize) {
     c.client_args(&[
-        "--size", size, "--pattern", "solid", "--rgb", "200,40,200", "--app-id", app,
-        "--title", title,
+        "--size",
+        size,
+        "--pattern",
+        "solid",
+        "--rgb",
+        "200,40,200",
+        "--app-id",
+        app,
+        "--title",
+        title,
     ]);
     c.inject(&format!("move {index} {} {}", at.0, at.1));
 }
@@ -445,7 +464,11 @@ fn two_windows_get_two_headers_at_their_own_frames_not_at_the_corner() {
             l.app,
             EDGE_GAP
         );
-        assert_ne!(l.panel[0], 0, "{}: the band is not at the output corner", l.app);
+        assert_ne!(
+            l.panel[0], 0,
+            "{}: the band is not at the output corner",
+            l.app
+        );
         assert!(
             l.panel[2] <= sx(l.window[2]),
             "{}: the band is no wider than its window",
@@ -496,5 +519,143 @@ fn two_windows_get_two_headers_at_their_own_frames_not_at_the_corner() {
         count_in(&img, FILL, [0, 0, 60, 120]),
         0,
         "the corner is empty: the bands are at the windows"
+    );
+}
+
+/// A bus that answers `registry.apps@v1` and `registry.describe@v1` the way the
+/// controller does, for ONE app whose descriptor can be published and withdrawn
+/// while the compositor runs. `registry.describe@v1`'s reply carries the
+/// descriptor under `surface`, as the controller's does.
+fn fake_surface_bus(
+    dir: &Path,
+    app: &str,
+) -> (std::path::PathBuf, Arc<Mutex<Option<serde_json::Value>>>) {
+    let path = dir.join("bus.sock");
+    let l = UnixListener::bind(&path).unwrap();
+    let published: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let state = published.clone();
+    let app = app.to_string();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let state = state.clone();
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                if BufReader::new(&s).read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    return;
+                };
+                let (to, verb) = (req["to"].as_str(), req["verb"].as_str());
+                if to != Some("registry") {
+                    // Anything else (system.audio@v1, ...) is not this test's
+                    // bus; closing says so without pretending to answer.
+                    return;
+                }
+                let payload = match verb {
+                    Some("registry.apps@v1") => match state.lock().unwrap().is_some() {
+                        true => serde_json::json!({"apps": [{
+                            "id": app, "name": "Photos", "version": "0.1.0", "verbs": ["open@v1"],
+                        }]}),
+                        false => serde_json::json!({"apps": []}),
+                    },
+                    Some("registry.describe@v1") => match state.lock().unwrap().clone() {
+                        Some(surface) => serde_json::json!({
+                            "app": app, "verb": "open@v1", "effect": "read", "surface": surface,
+                        }),
+                        None => serde_json::json!({"app": app}),
+                    },
+                    _ => return,
+                };
+                let reply = serde_json::json!({
+                    "id": "s1", "kind": "response", "corr": req["id"], "verb": verb, "payload": payload,
+                });
+                let _ = writeln!(&s, "{reply}");
+            });
+        }
+    });
+    (path, published)
+}
+
+#[test]
+fn a_surface_published_over_the_bus_appears_at_its_window_and_goes_when_withdrawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bus, published) = fake_surface_bus(dir.path(), PHOTOS);
+    let bus = bus.to_str().unwrap().to_string();
+
+    // No `--surface-header`: the ONLY source of a descriptor is the bus.
+    let mut c = Comp::start(&["--bus-socket", &bus, "--scale", "1", "--freeze-time"]);
+    window(&mut c, PHOTOS, "Holiday Photos", "640x360", (140, 260), 0);
+
+    // The window is mapped and the app has published nothing, so there is no
+    // band. Drawing one here would be the compositor inventing a surface.
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        !c.log().contains("surface: header layout"),
+        "no descriptor published, yet a band was drawn: {}",
+        c.log()
+    );
+
+    // The app publishes: the band appears at its window, from the bus alone.
+    *published.lock().unwrap() = Some(serde_json::from_str(FIXTURE).unwrap());
+    wait_for("the live descriptor to bind to its window", || {
+        layouts(&c.log())
+            .get(PHOTOS)
+            .is_some_and(|l| l.window == [140, 260, 640, 360])
+    });
+    let l = layouts(&c.log()).remove(PHOTOS).unwrap();
+    let on = dump(&c, "relay-published.png");
+    println!(
+        "RELAY published: panel {:?} window {:?} grants {} text {:?}",
+        l.panel,
+        l.window,
+        l.grants,
+        l.text.iter().map(|t| &t.0).collect::<Vec<_>>()
+    );
+    assert_eq!(l.app, PHOTOS);
+    assert_eq!(l.grants, 2, "the count came from the bus descriptor");
+    assert_eq!(placed(&l, "Holiday_Photos").0, "Holiday_Photos");
+    let area = (l.panel[2] * l.panel[3]) as usize;
+    assert!(
+        count_in(&on, FILL, l.panel) * 3 > area * 2,
+        "the live band is really drawn at the window"
+    );
+    assert!(
+        c.log()
+            .contains(&format!("surface: header published app={PHOTOS}")),
+        "the log says where the band came from: {}",
+        c.log()
+    );
+
+    // The app withdraws its surface: the band goes, though the window stays.
+    *published.lock().unwrap() = None;
+    wait_for("the withdrawn header to be removed", || {
+        c.log()
+            .contains(&format!("surface: header removed app={PHOTOS}"))
+    });
+    let off = dump(&c, "relay-withdrawn.png");
+    assert_eq!(
+        count_in(&off, FILL, l.panel),
+        0,
+        "no header pixels left where the withdrawn band was"
+    );
+
+    // A descriptor the contract refuses never becomes a band, even though the
+    // app is listed and its window is mapped: an unknown effect is an
+    // unpoliced action, so the relay drops the whole descriptor.
+    *published.lock().unwrap() = Some(serde_json::json!({
+        "app": PHOTOS, "title": "Holiday Photos",
+        "actions": [{"id": "wipe", "label": "Wipe", "effect": "nuke"}],
+    }));
+    wait_for("the relay to refuse the descriptor", || {
+        c.log()
+            .contains(&format!("surface: bus: descriptor for {PHOTOS:?} refused"))
+    });
+    let bad = dump(&c, "relay-refused.png");
+    assert_eq!(
+        count_in(&bad, FILL, l.panel),
+        0,
+        "a refused descriptor draws nothing"
     );
 }

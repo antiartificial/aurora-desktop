@@ -183,6 +183,13 @@ add_test(NAME duration_rule
          COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/duration_check.py
                  ${CMAKE_CURRENT_SOURCE_DIR})
 
+# P5, for real: the AST form of the duration rule (a chrono unit constructed from a literal).
+# Slower than the written-form check and stronger: it sees the node, not the spelling.
+add_test(NAME duration_ast
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/duration_ast.py
+                 ${CMAKE_CURRENT_SOURCE_DIR})
+set_tests_properties(duration_ast PROPERTIES TIMEOUT 300)
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.
