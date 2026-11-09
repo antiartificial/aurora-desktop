@@ -81,7 +81,9 @@ func (d Descriptor) Marshal() ([]byte, error) {
 		return nil, err
 	}
 	cp := d
-	cp.Actions = append([]Action(nil), d.Actions...)
+	// A surface with no actions must encode as [] rather than null: Rust's Vec<Action> rejects null,
+	// so a nil slice would make the same surface readable by two of the three sides and not the third.
+	cp.Actions = append([]Action{}, d.Actions...)
 	for i := range cp.Actions {
 		cp.Actions[i].Grants = append([]string(nil), cp.Actions[i].Grants...)
 		sort.Strings(cp.Actions[i].Grants)

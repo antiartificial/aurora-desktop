@@ -115,6 +115,10 @@ pub struct Descriptor {
     pub actions: Vec<Action>,
     #[serde(default)]
     pub grants: Vec<String>,
+    /// The app says the shell draws its chrome. Only then is a band drawn: an app that keeps its own
+    /// toolbar would otherwise get two headers, which is worse than no header at all.
+    #[serde(default)]
+    pub shell_chrome: bool,
 }
 
 impl Descriptor {
@@ -860,6 +864,10 @@ impl Shell {
             {
                 continue;
             }
+            // NOTE: `shell_chrome` is parsed but NOT yet honoured here. Gating the band on it is
+            // the obvious move, and it is wrong until the semantics are settled: today a band also
+            // carries the grants, which are not opt-out-able, and every describe-derived descriptor
+            // defaults the flag to false. Deciding that is a design question, not a patch.
             self.clear_surface_header(&d.app);
             let mut h = Header::new(d.clone());
             h.live = true;

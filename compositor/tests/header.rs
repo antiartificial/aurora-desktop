@@ -60,14 +60,16 @@ const NOTES_FIXTURE: &str = r#"{
   "app": "org.aurora.demo.notes",
   "title": "Field Notes",
   "actions": [{"id": "pin", "label": "Pin", "effect": "nominal"}],
-  "grants": ["fs.read"]
+  "grants": ["fs.read"],
+  "shell_chrome": true
 }"#;
 
 const ABSENT_FIXTURE: &str = r#"{
   "app": "org.aurora.demo.absent",
   "title": "Never Mapped",
   "actions": [{"id": "open", "label": "Open", "effect": "read"}],
-  "grants": []
+  "grants": [],
+  "shell_chrome": true
 }"#;
 
 #[derive(Clone, Debug)]
@@ -847,6 +849,7 @@ fn a_surface_named_only_by_the_published_list_draws_at_its_window_and_goes_when_
         "title": "Atlas",
         "actions": [{"id": "open", "label": "Open", "effect": "read"}],
         "grants": ["fs.read"],
+        "shell_chrome": true,
     })];
     wait_for("the list-only surface to bind to its window", || {
         layouts(&c.log())

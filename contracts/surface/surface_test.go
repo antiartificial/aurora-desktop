@@ -108,3 +108,14 @@ func TestShellChromeSurvivesAndDefaultsOff(t *testing.T) {
 		t.Fatalf("the default must not be emitted: %s", b2)
 	}
 }
+
+func TestEmptyActionsEncodeAsAList(t *testing.T) {
+	// Three languages decode this: [] is a list everywhere, null is only a list in two of them.
+	b, err := Descriptor{App: "a", Title: "t"}.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"actions":[]`)) {
+		t.Fatalf("empty actions must be [], not null: %s", b)
+	}
+}
