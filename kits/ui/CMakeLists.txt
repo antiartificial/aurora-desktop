@@ -76,6 +76,14 @@ target_link_options(test_launcher_model PRIVATE -fsanitize=address)
 add_test(NAME launcher_model COMMAND test_launcher_model)
 set_tests_properties(launcher_model PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 
+# 8.2c: Task<F,G> — work off the loop, done on it. ASan: the worker threads and the teardown join.
+add_executable(test_task tests/test_task.cpp)
+target_link_libraries(test_task PRIVATE aurora_ui_tk)
+target_compile_options(test_task PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
+target_link_options(test_task PRIVATE -fsanitize=address)
+add_test(NAME task COMMAND test_task)
+set_tests_properties(task PROPERTIES TIMEOUT 60 ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
 # The component sheets the design documents show. A GENERATOR, not a test: it asserts nothing and
 # draws the real nodes into an offscreen surface. zlib is only here for the PNG encoder.
 find_package(ZLIB QUIET)

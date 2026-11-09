@@ -4730,8 +4730,21 @@ Window::Window(const char* title, int lw, int lh) : lw_(lw), lh_(lh) {
 }
 
 Window::~Window() {
+    // Close first, then join every live task: a worker may be inside Defer (holding deferred_mu_),
+    // so the queue must outlive the join. The token makes a task skip its done() once closed.
+    lifetime_->store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> g(tasks_mu_);
+        for (auto& t : tasks_) if (t.joinable()) t.join();
+        tasks_.clear();
+    }
     if (win_) au_wl_win_destroy(win_);
     if (sf_) au_surface_free(sf_);
+}
+
+void Window::adoptTask(std::thread t) {
+    std::lock_guard<std::mutex> g(tasks_mu_);
+    tasks_.push_back(std::move(t));
 }
 
 void Window::Layout() {

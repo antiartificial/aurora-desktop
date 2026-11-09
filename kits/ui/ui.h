@@ -30,6 +30,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1321,6 +1322,9 @@ public:
     // asks for anything that touches the display -- a menu, a dialog, a new window. The rule is
     // simple and absolute: handlers decide, the loop acts.
     void Defer(std::function<void()> f);
+    // Task<F,G> bookkeeping: the token flips at teardown; the thread is joined then too.
+    std::shared_ptr<std::atomic<bool>> lifetimeToken() const { return lifetime_; }
+    void adoptTask(std::thread t);
 
     // Whether the last input was a KEY rather than a pointer press.
     //
@@ -1402,6 +1406,9 @@ private:
     mutable size_t motion_degraded_ = 0;
     std::vector<std::function<void()>> deferred_;
     std::mutex deferred_mu_;        // the event thread writes it, the loop drains it
+    std::shared_ptr<std::atomic<bool>> lifetime_{std::make_shared<std::atomic<bool>>(true)};
+    std::vector<std::thread> tasks_;
+    std::mutex tasks_mu_;            // guards tasks_ (Task may be called from the loop; teardown joins)
 
     au_wl* wl_ = nullptr;
     au_wl_win* win_ = nullptr;
@@ -1431,6 +1438,31 @@ public:
     bool motion_allowed() const;
     size_t motion_degraded() const { return motion_degraded_; }
 };
+
+// Async: the only way to leave the window thread. T is deduced from `work`; `done` runs on the loop
+// thread with the result (or nothing for a void work). If the window closes first, `done` does not
+// run, and the worker's thread is joined at teardown -- so it cannot post to a destroyed queue.
+template <class F, class G>
+void Task(Window& w, F work, G done) {
+    auto life = w.lifetimeToken();
+    std::thread th([&w, life, work = std::move(work), done = std::move(done)]() mutable {
+        using R = std::invoke_result_t<F>;
+        if constexpr (std::is_void_v<R>) {
+            work();
+            if (!life->load(std::memory_order_acquire)) return;
+            w.Defer([done = std::move(done), life]() mutable {
+                if (life->load(std::memory_order_acquire)) done();
+            });
+        } else {
+            R r = work();
+            if (!life->load(std::memory_order_acquire)) return;
+            w.Defer([done = std::move(done), life, r = std::move(r)]() mutable {
+                if (life->load(std::memory_order_acquire)) done(std::move(r));
+            });
+        }
+    });
+    w.adoptTask(std::move(th));
+}
 
 template <class T>
 void State<T>::invalidate_bound() {
