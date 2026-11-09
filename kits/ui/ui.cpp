@@ -4294,37 +4294,6 @@ const char* VStateName(VState s) {
     return "?";
 }
 
-namespace {
-void walk_actions(Node* n, std::vector<Action>* out, int depth) {
-    if (!n || depth > 512) return;
-    const std::string& nm = n->name;
-    if (nm.rfind("act:", 0) == 0) {
-        std::string rest = nm.substr(4);
-        std::string id = rest, label = rest;
-        const std::size_t eq = rest.find('=');
-        if (eq != std::string::npos) {
-            id = rest.substr(0, eq);
-            label = rest.substr(eq + 1);
-        }
-        Action a;
-        a.id = id;
-        a.label = label;
-        a.effect = "nominal";   // a widget cannot know; the app declares it on the action
-        out->push_back(std::move(a));
-    }
-    std::vector<Node*> kids;
-    n->Children(&kids);
-    for (Node* k : kids) walk_actions(k, out, depth + 1);
-}
-}   // namespace
-
-SurfaceDescriptor Describe(const Desc& root, std::string app, std::string title) {
-    SurfaceDescriptor d;
-    d.app = std::move(app);
-    d.title = std::move(title);
-    if (root) walk_actions(root.get(), &d.actions, 0);
-    return d;
-}
 
 ControlSkin ResolveSkin(const Env& e, VState s) {
     ControlSkin k;

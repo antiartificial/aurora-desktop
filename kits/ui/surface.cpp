@@ -284,4 +284,15 @@ bool SurfaceJson(const Desc& root, std::string app, std::string title,
     return SurfaceJson(d, out, why);
 }
 
+
+// Describe is the same rule as SurfaceOf, with no grants and no failure channel: it is the old entry
+// point, and it now cannot drift from the authority it delegates to.
+SurfaceDescriptor Describe(const Desc& root, std::string app, std::string title) {
+    SurfaceDescriptor d;
+    std::string why;
+    if (!SurfaceOf(root, std::move(app), std::move(title), {}, &d, &why)) return SurfaceDescriptor{};
+    return d;
+}
+
 }   // namespace aurora::ui
+

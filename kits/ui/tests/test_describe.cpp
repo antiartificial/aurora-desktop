@@ -24,6 +24,13 @@ int main() {
     check(d.actions.size() == 2 && d.actions[1].label == "Rename…", "act:verb=label sets the label");
     check(d.actions.size() == 2 && d.actions[0].label == "open", "a bare act:verb labels with the verb");
 
+    // The effect suffix belongs to surface.cpp's parser; Describe delegates, so it must not leak
+    // "save#write" into the action id the way a second parser did.
+    Desc with_effect = VStack({Label("Save").name("act:save#write")});
+    const SurfaceDescriptor eff = Describe(with_effect, "a", "t");
+    check(eff.actions.size() == 1 && eff.actions[0].id == "save",
+          "an effect suffix is not part of the action id");
+
     const SurfaceDescriptor empty = Describe(Desc(), "x", "y");
     check(empty.actions.empty(), "an empty tree offers no actions");
 
