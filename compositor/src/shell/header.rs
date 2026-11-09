@@ -16,11 +16,19 @@
 //!
 //! A descriptor reaches this file two ways: a file named by `--surface-header`
 //! (fixtures, and a way to pin one app's surface), and the live relay
-//! (`SurfaceRelay`), which asks the controller's registry which surfaces exist
-//! and takes each `registry.describe@v1` reply's `surface` object. The relay
-//! exists because a compositor reads `--surface-header` ONCE at startup, so an
-//! app that publishes when it opens got no header at all. Both paths go through
-//! the same validation and land in `Shell::surface_headers`, keyed by `app`.
+//! (`SurfaceRelay`), which asks the controller's registry which surfaces exist.
+//! The relay exists because a compositor reads `--surface-header` ONCE at
+//! startup, so an app that publishes when it opens got no header at all.
+//!
+//! The relay has two sources on one poll, because the registry has two kinds of
+//! app. `registry.apps@v1` + `registry.describe@v1` describes apps that have a
+//! manifest (a verb to describe); `surface.list@v1` is the registry's list of
+//! surfaces APPS PUBLISH THEMSELVES, which is how an app with no manifest
+//! (Atlas) gets a header at all. A published descriptor wins over a
+//! manifest-derived one for the same app id: the publication is the app's own
+//! claim about itself, describe is a claim about its manifest. Both paths go
+//! through the same validation and land in `Shell::surface_headers`, keyed by
+//! `app`.
 //!
 //! A header belongs to ONE window. A descriptor names its app (`app` is the
 //! toplevel's `app_id`), and the band is placed against that window's own top
@@ -446,12 +454,16 @@ impl SurfaceRelay {
     }
 }
 
-/// One poll: every app the registry lists that has a verb, described.
+/// One poll: every app the registry lists that has a verb, described, plus every
+/// surface the registry says an app published for itself.
 ///
 /// `describe` is per-verb but its reply's `surface` covers the whole window,
 /// so any one verb answers for all of them (the same selection the controller's
 /// own `surface.List` makes). An app with no verb has no descriptor to fetch
 /// and is skipped, not failed: one app's gap must not blank the whole relay.
+/// That skip is exactly why `surface.list@v1` is needed: an app with no manifest
+/// (Atlas) has nothing to describe, so its only statement about itself is the
+/// publication.
 fn ask(sock: &Path) -> Result<Vec<Descriptor>, String> {
     let v = crate::trusted::verify::call_to(
         sock,
@@ -503,7 +515,57 @@ fn ask(sock: &Path) -> Result<Vec<Descriptor>, String> {
             Err(e) => tracing::warn!("surface: bus: descriptor for {id:?} refused: {e}"),
         }
     }
+    // A failed list must NOT fail the poll: an older controller has no such
+    // verb, and warning every two seconds about a feature it never had would
+    // bury the describe failures above, which are real. If the bus itself is
+    // down, `apps@v1` has already failed the whole ask.
+    match published(sock) {
+        Ok(ds) => merge_published(ds, &mut out),
+        Err(e) => tracing::debug!("surface: surface.list@v1 unavailable: {e}"),
+    }
     Ok(out)
+}
+
+/// The surfaces apps published for themselves, as `surface.list@v1` returns
+/// them. Every entry is validated by the same rules as a describe reply: a
+/// publication is app-authored, so it is exactly as untrusted as a relayed
+/// descriptor, and an unpoliced effect must not become a band.
+fn published(sock: &Path) -> Result<Vec<Descriptor>, String> {
+    let v = crate::trusted::verify::call_to(
+        sock,
+        "registry",
+        "surface.list@v1",
+        Some(serde_json::json!({})),
+    )?;
+    let surfaces = v["surfaces"]
+        .as_array()
+        .ok_or("surface.list@v1 reply has no surfaces list")?;
+    let mut out = Vec::with_capacity(surfaces.len().min(MAX_SURFACES));
+    for s in surfaces.iter().take(MAX_SURFACES) {
+        match Descriptor::from_value(s) {
+            Ok(d) => out.push(d),
+            // One malformed publication is skipped, not fatal: the other apps
+            // in the same list still have headers to draw.
+            Err(e) => tracing::warn!("surface: bus: published descriptor refused: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+/// Fold the published descriptors into the manifest-derived set.
+///
+/// A publication wins on the same app id: it is the app's own, current claim
+/// about itself, while describe speaks about the manifest, which can lag a
+/// running app that has outgrown it. Apps that only appear here are appended;
+/// order is not meaningful to the header map (it is keyed by `app`), but keeping
+/// the manifest entries in place means a republish does not reshuffle the list.
+fn merge_published(published: Vec<Descriptor>, into: &mut Vec<Descriptor>) {
+    for d in published {
+        match into.iter_mut().find(|x| x.app == d.app) {
+            Some(slot) => *slot = d,
+            None => into.push(d),
+        }
+    }
 }
 
 impl Shell {
@@ -843,6 +905,39 @@ mod tests {
         assert!(load(dup).unwrap_err().contains("duplicate action id"));
         let no_app = r#"{"app":"","title":"t","actions":[]}"#;
         assert!(load(no_app).unwrap_err().contains("app is empty"));
+    }
+
+    #[test]
+    fn a_publication_replaces_the_manifest_descriptor_for_the_same_app() {
+        let d = |app: &str, title: &str| {
+            Descriptor::from_value(&serde_json::json!({
+                "app": app,
+                "title": title,
+                "actions": [{"id": "open", "label": "Open", "effect": "read"}],
+            }))
+            .unwrap()
+        };
+        // `a` exists in both sources; `b` only in the manifest, `c` only in the
+        // publication. The app's own claim wins for `a`, and neither other app
+        // is lost.
+        let mut manifest = vec![d("a", "Manifest"), d("b", "Only manifest")];
+        merge_published(
+            vec![d("a", "Published"), d("c", "Only published")],
+            &mut manifest,
+        );
+        let titles: Vec<(&str, &str)> = manifest
+            .iter()
+            .map(|d| (d.app.as_str(), d.title.as_str()))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                ("a", "Published"),
+                ("b", "Only manifest"),
+                ("c", "Only published")
+            ],
+            "a publication wins on its app id and adds the apps only it names"
+        );
     }
 
     #[test]

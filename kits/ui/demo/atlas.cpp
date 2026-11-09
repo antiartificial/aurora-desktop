@@ -12,6 +12,10 @@
 // ATLAS_FRAMES=n     stop after n frames, for scripted runs
 // ATLAS_REPORT=1     print the first-frame timing and what the list drew
 // AURORA_SURFACE_PATH=file   write this window's surface descriptor (contracts/surface) there
+//
+// The same descriptor also goes over the bus as surface.publish@v1 when AURORA_BUS_SOCK (or
+// $XDG_RUNTIME_DIR/aurora/bus.sock) is reachable, so the shell's relay can see an app that has
+// no manifest. The file write stays: it is the fallback the compositor tests read.
 
 #include "../ui.h"
 #include "../filebrowse.h"
@@ -90,29 +94,82 @@ int main() {
     // about the app and its command set and none about the directory being shown: navigating does
     // not change the descriptor and must not rewrite it. The write is temp + rename, so a shell
     // watching the path sees one whole document and never half of one.
-    auto publish_surface = [&surface_tree] {
-        const char* path = getenv("AURORA_SURFACE_PATH");
-        if (!path || !*path) return;
-        std::string bytes, why;
-        if (!SurfaceJson(surface_tree, kAppId, "Atlas", {}, &bytes, &why)) {
-            fprintf(stderr, "atlas: surface: %s\n", why.c_str());
-            return;
-        }
+    //
+    // The bytes are built even when no path is set, because the bus publish below carries the SAME
+    // document: two encodings of one descriptor would be two claims about one app, and the drift
+    // between them would only show up in a header nobody could explain.
+    std::string surface_bytes, surface_why;
+    const bool surface_ok =
+        SurfaceJson(surface_tree, kAppId, "Atlas", {}, &surface_bytes, &surface_why);
+    if (!surface_ok) fprintf(stderr, "atlas: surface: %s\n", surface_why.c_str());
+
+    if (const char* path = getenv("AURORA_SURFACE_PATH"); surface_ok && path && *path) {
         const std::string tmp = std::string(path) + ".tmp";
         FILE* f = fopen(tmp.c_str(), "wb");
         if (!f) {
             fprintf(stderr, "atlas: cannot publish the surface: %s: %s\n", tmp.c_str(),
                     strerror(errno));
-            return;
+        } else {
+            const size_t n = fwrite(surface_bytes.data(), 1, surface_bytes.size(), f);
+            const bool closed = fclose(f) == 0;
+            if (n != surface_bytes.size() || !closed || rename(tmp.c_str(), path) != 0) {
+                fprintf(stderr, "atlas: cannot publish the surface: %s: %s\n", path,
+                        strerror(errno));
+                unlink(tmp.c_str());
+            }
         }
-        const size_t n = fwrite(bytes.data(), 1, bytes.size(), f);
-        const bool closed = fclose(f) == 0;
-        if (n != bytes.size() || !closed || rename(tmp.c_str(), path) != 0) {
-            fprintf(stderr, "atlas: cannot publish the surface: %s: %s\n", path, strerror(errno));
-            unlink(tmp.c_str());
+    }
+
+    // ---- the bus, and the same descriptor on it -----------------------------------------------
+    //
+    // Declared up here rather than beside the plumber for two reasons: it must outlive the window,
+    // because the nodes' callbacks call it during Run(), and the descriptor has to be announced
+    // before the first frame so the shell's relay has it by the time the window maps.
+    //
+    // surface.publish@v1 is the channel for an app with no manifest. The controller builds a
+    // descriptor from a manifest with registry.describe@v1, and Atlas has none -- so Atlas states
+    // its own, once, for the location-independent command set above.
+    //
+    // The payload is the canonical bytes re-parsed, not fields rebuilt by hand: the bus and the
+    // file then carry one document, and the controller validates and re-canonicalises it on its
+    // side anyway (contracts/surface, publish.go).
+    //
+    // A failure here is reported and survived. The file publish is untouched and still the path
+    // the compositor tests read, and an app that refused to open because a relay was down would
+    // be trading a working window for a missing header.
+    BusClient bus;
+    const bool bus_up = bus.Connect() == B_OK;
+    if (!bus_up) {
+        fprintf(stderr, "atlas: no bus; the menu offers local actions only\n");
+    } else if (surface_ok) {
+        Json descriptor;
+        std::string parse_why;
+        if (!Json::Parse(surface_bytes, &descriptor, &parse_why)) {
+            // SurfaceJson emits JSON, so this is unreachable; naming it beats sending null.
+            fprintf(stderr, "atlas: surface: cannot re-read the descriptor for the bus: %s\n",
+                    parse_why.c_str());
+        } else {
+            Json payload = Json::MakeObject();
+            payload.set("surface", descriptor);
+            BusEnvelope req;
+            req.kind = "request";
+            req.to = "registry";        // what controllerd registers as; not its app id
+            req.verb = "surface.publish@v1";
+            req.payload = std::move(payload);
+            BusEnvelope rep;
+            // 2 s, the menu's budget. A relay that has not answered by then is a header that can
+            // wait for the next start; startup must not stall on one.
+            const status_t rc = bus.Call(req, &rep, 2000000);
+            if (rc != B_OK) {
+                const std::string why = rep.payload.getString("message", "");
+                fprintf(stderr, "atlas: surface: the bus did not take the descriptor (%d)%s%s\n",
+                        (int)rc, why.empty() ? "" : ": ", why.c_str());
+            } else if (getenv("AURORA_UI_TRACE")) {
+                fprintf(stderr, "atlas: surface.publish@v1 ok (%zu bytes)\n",
+                        surface_bytes.size());
+            }
         }
-    };
-    publish_surface();
+    }
 
     const char* d = getenv("ATLAS_DIR");
     std::string dir = d && *d ? d : (getenv("HOME") ? getenv("HOME") : "/");
@@ -872,10 +929,9 @@ int main() {
     // When the bus is not reachable the menu still opens with the operations Atlas can do by
     // itself, and says why the rest are missing. A menu that vanishes because a daemon is down
     // is worse than one that is honest about being short.
-    BusClient bus;
-    const bool bus_up = bus.Connect() == B_OK;
-    if (!bus_up) fprintf(stderr, "atlas: no bus; the menu offers local actions only\n");
-
+    //
+    // `bus` and `bus_up` are established at startup, where the surface is published; this menu is
+    // one of the two users of that connection.
     auto plumb = [&](const std::string& full) -> std::vector<MenuItem> {
         std::vector<MenuItem> out;
         if (!bus_up) return out;

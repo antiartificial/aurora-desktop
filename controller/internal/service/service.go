@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/contracts/manifest"
 	"github.com/antiartificial/aurora/contracts/plumb"
+	"github.com/antiartificial/aurora/contracts/surface"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/prov"
@@ -41,6 +43,13 @@ type Service struct {
 	NetRoots     sysnet.Roots
 	// NetLister is the kernel interface list; nil means the real netlink call.
 	NetLister sysnet.Lister
+
+	// published holds the surfaces apps announced over surface.publish@v1,
+	// keyed by app id. Serve answers each request in its own goroutine on a
+	// Service that every connection shares, so the map needs a lock; the zero
+	// value is ready to use, because most constructors are struct literals.
+	pubMu     sync.Mutex
+	published map[string]surface.Descriptor
 }
 
 // audio is Audio, or the real exec.
@@ -116,6 +125,15 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 				out, e = s.describe(q.App, q.Verb)
 			}
 		}
+	case "surface.publish@v1":
+		// An app announces its own descriptor when it has no manifest for
+		// describe to read. The gate is surfaceCaller, not a second rule; see
+		// publish.go for why and what is stored.
+		return s.publish(req)
+	case "surface.list@v1":
+		// Exactly the published set, canonicalised. list.go says why nothing
+		// manifest-derived is mixed in and who may read it.
+		return s.listSurfaces(req)
 	case "registry.launch@v1", "registry.stop@v1":
 		// A window is the user's to open and close. A domain's app asking the
 		// controller to start another app (inside another domain, with a

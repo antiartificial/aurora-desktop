@@ -6,7 +6,10 @@
 //! `--surface-header` path is exercised without a bus. A second test puts a
 //! fake registry on a unix socket and proves the LIVE path (`registry.apps@v1`
 //! + `registry.describe@v1`) makes a band appear when an app publishes and
-//! disappear when it stops, with no `--surface-header` at all.
+//! disappear when it stops, with no `--surface-header` at all. A third proves
+//! the other live source: `surface.list@v1`, which is how an app with no
+//! manifest publishes itself, and which must skip a malformed descriptor
+//! without dropping the valid ones beside it.
 //! Two properties are what this file is for: the band is drawn against
 //! its OWN window's frame, not at the output's corner, and a descriptor with no
 //! mapped window draws nothing at all.
@@ -35,6 +38,11 @@ const EDGE_GAP: f64 = 8.0;
 const PHOTOS: &str = "org.aurora.demo.photos";
 const NOTES: &str = "org.aurora.demo.notes";
 const ABSENT: &str = "org.aurora.demo.absent";
+/// An app with no manifest: it has no `apps@v1` entry and no verb, so the
+/// manifest path can never describe it. Its ONLY statement is a publication.
+const ATLAS: &str = "org.aurora.demo.atlas";
+/// An app whose publication is malformed; its window must stay blank.
+const BROKEN: &str = "org.aurora.demo.broken";
 
 /// The descriptor a surface would publish: unsorted on purpose.
 const FIXTURE: &str = r#"{
@@ -526,18 +534,30 @@ fn two_windows_get_two_headers_at_their_own_frames_not_at_the_corner() {
 /// controller does, for ONE app whose descriptor can be published and withdrawn
 /// while the compositor runs. `registry.describe@v1`'s reply carries the
 /// descriptor under `surface`, as the controller's does.
+///
+/// It also answers `surface.list@v1`, independently of the manifest: that is
+/// the verb an app with NO manifest publishes on (Atlas), so `listed` can carry
+/// a descriptor for an app `apps@v1` never mentions. Keeping the two states
+/// apart is what lets a test prove the published path works on its own.
 fn fake_surface_bus(
     dir: &Path,
     app: &str,
-) -> (std::path::PathBuf, Arc<Mutex<Option<serde_json::Value>>>) {
+) -> (
+    std::path::PathBuf,
+    Arc<Mutex<Option<serde_json::Value>>>,
+    Arc<Mutex<Vec<serde_json::Value>>>,
+) {
     let path = dir.join("bus.sock");
     let l = UnixListener::bind(&path).unwrap();
     let published: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let listed: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(vec![]));
     let state = published.clone();
+    let surfaces = listed.clone();
     let app = app.to_string();
     std::thread::spawn(move || {
         for s in l.incoming().flatten() {
             let state = state.clone();
+            let surfaces = surfaces.clone();
             let app = app.clone();
             std::thread::spawn(move || {
                 let mut line = String::new();
@@ -566,6 +586,12 @@ fn fake_surface_bus(
                         }),
                         None => serde_json::json!({"app": app}),
                     },
+                    // The full statement, not a delta: whatever is here now is
+                    // everything the registry publishes, as the controller's
+                    // own list is.
+                    Some("surface.list@v1") => {
+                        serde_json::json!({"surfaces": surfaces.lock().unwrap().clone()})
+                    }
                     _ => return,
                 };
                 let reply = serde_json::json!({
@@ -575,13 +601,13 @@ fn fake_surface_bus(
             });
         }
     });
-    (path, published)
+    (path, published, listed)
 }
 
 #[test]
 fn a_surface_published_over_the_bus_appears_at_its_window_and_goes_when_withdrawn() {
     let dir = tempfile::tempdir().unwrap();
-    let (bus, published) = fake_surface_bus(dir.path(), PHOTOS);
+    let (bus, published, _listed) = fake_surface_bus(dir.path(), PHOTOS);
     let bus = bus.to_str().unwrap().to_string();
 
     // No `--surface-header`: the ONLY source of a descriptor is the bus.
@@ -657,5 +683,101 @@ fn a_surface_published_over_the_bus_appears_at_its_window_and_goes_when_withdraw
         count_in(&bad, FILL, l.panel),
         0,
         "a refused descriptor draws nothing"
+    );
+}
+
+#[test]
+fn a_surface_named_only_by_the_published_list_draws_at_its_window_and_goes_when_withdrawn() {
+    let dir = tempfile::tempdir().unwrap();
+    // The manifest is never published, so `registry.apps@v1` lists NO app and
+    // `describe` can never answer for Atlas. Anything drawn below came from
+    // `surface.list@v1` alone -- the path an app without a manifest has.
+    let (bus, _manifest, listed) = fake_surface_bus(dir.path(), ATLAS);
+    let bus = bus.to_str().unwrap().to_string();
+
+    let mut c = Comp::start(&["--bus-socket", &bus, "--scale", "1", "--freeze-time"]);
+    window(&mut c, ATLAS, "Atlas", "600x340", (120, 300), 0);
+    window(&mut c, BROKEN, "Broken", "400x240", (820, 620), 1);
+
+    // Neither app has published anything yet: no band anywhere.
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        !c.log().contains("surface: header layout"),
+        "nothing published, yet a band was drawn: {}",
+        c.log()
+    );
+
+    // Atlas publishes itself. It is NOT in apps@v1, so this can only have come
+    // from the list verb, and the band must bind to Atlas's own window.
+    *listed.lock().unwrap() = vec![serde_json::json!({
+        "app": ATLAS,
+        "title": "Atlas",
+        "actions": [{"id": "open", "label": "Open", "effect": "read"}],
+        "grants": ["fs.read"],
+    })];
+    wait_for("the list-only surface to bind to its window", || {
+        layouts(&c.log())
+            .get(ATLAS)
+            .is_some_and(|l| l.window == [120, 300, 600, 340])
+    });
+    let l = layouts(&c.log()).remove(ATLAS).unwrap();
+    let on = dump(&c, "relay-list-only.png");
+    println!(
+        "LIST-ONLY published: panel {:?} window {:?} grants {} text {:?}",
+        l.panel,
+        l.window,
+        l.grants,
+        l.text.iter().map(|t| &t.0).collect::<Vec<_>>()
+    );
+    assert_eq!(l.app, ATLAS);
+    assert_eq!(l.grants, 1, "the count came from the published descriptor");
+    let area = (l.panel[2] * l.panel[3]) as usize;
+    assert!(
+        count_in(&on, FILL, l.panel) * 3 > area * 2,
+        "the list-only band is really drawn at its window"
+    );
+
+    // A second, malformed publication joins the list. Its unknown effect makes
+    // it an unpoliced action, so it is refused while Atlas's valid band stays:
+    // one bad entry must not blank the others.
+    *listed.lock().unwrap() = vec![
+        serde_json::json!({
+            "app": ATLAS,
+            "title": "Atlas",
+            "actions": [{"id": "open", "label": "Open", "effect": "read"}],
+            "grants": ["fs.read"],
+        }),
+        serde_json::json!({
+            "app": BROKEN,
+            "title": "Broken",
+            "actions": [{"id": "wipe", "label": "Wipe", "effect": "nuke"}],
+        }),
+    ];
+    wait_for("the relay to refuse the malformed publication", || {
+        c.log()
+            .contains("surface: bus: published descriptor refused")
+    });
+    let mixed = dump(&c, "relay-list-refused.png");
+    assert!(
+        !layouts(&c.log()).contains_key(BROKEN),
+        "a published descriptor with an unknown effect is never drawn: {}",
+        c.log()
+    );
+    assert!(
+        count_in(&mixed, FILL, l.panel) * 3 > area * 2,
+        "the valid publication still draws while the bad one is skipped"
+    );
+
+    // Atlas withdraws from the list: its band goes, though the window stays.
+    *listed.lock().unwrap() = vec![];
+    wait_for("the withdrawn list-only header to be removed", || {
+        c.log()
+            .contains(&format!("surface: header removed app={ATLAS}"))
+    });
+    let off = dump(&c, "relay-list-withdrawn.png");
+    assert_eq!(
+        count_in(&off, FILL, l.panel),
+        0,
+        "no header pixels left where the withdrawn list-only band was"
     );
 }
