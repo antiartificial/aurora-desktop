@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/antiartificial/aurora/bus/client"
 	"github.com/antiartificial/aurora/bus/proto"
@@ -12,6 +13,7 @@ import (
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
 	"github.com/antiartificial/aurora/controller/internal/prov"
+	ctlsurface "github.com/antiartificial/aurora/controller/internal/surface"
 	"github.com/antiartificial/aurora/controller/internal/sysaudio"
 	"github.com/antiartificial/aurora/controller/internal/sysdisplay"
 	"github.com/antiartificial/aurora/controller/internal/sysnet"
@@ -108,7 +110,11 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 	case "registry.describe@v1":
 		var q struct{ App, Verb string }
 		if e = decode(req, &q); e == nil {
-			out, e = s.describe(q.App, q.Verb)
+			// A descriptor names what an app can do and which grants it needs, so reading one is
+			// already a disclosure. This is the same gate ui.act uses, not a second, looser one.
+			if e = s.surfaceCaller(req.From, q.App); e == nil {
+				out, e = s.describe(q.App, q.Verb)
+			}
 		}
 	case "registry.launch@v1", "registry.stop@v1":
 		// A window is the user's to open and close. A domain's app asking the
@@ -261,6 +267,24 @@ func (s *Service) plumb(q plumb.Request, from string) plumb.Reply {
 		}
 	}
 	return plumb.ForViewer(rules, verbs, q, from)
+}
+
+// surfaceCaller is the one rule for who may read or act on an app's surface: the app's own domain,
+// or the session (which is the person). Both registry.describe@v1 and ui.act@v1 call it, so a caller
+// cannot find the looser of the two paths.
+func (s *Service) surfaceCaller(from, app string) *invoke.Error {
+	if _, isDomain := ctlsurface.DomainOf(from); isDomain {
+		if e := ctlsurface.Permit(from, app, func(name, appID string) bool { return name == invoke.DomainName(appID) }); e != nil {
+			return &invoke.Error{Code: e.Code, Msg: e.Message, Detail: e.Detail}
+		}
+		return nil
+	}
+	if !mayDecide(from) {
+		return &invoke.Error{Code: "not_permitted",
+			Msg:    "a surface is readable from the session socket or its own domain",
+			Detail: fmt.Sprintf("caller %q is neither the session user nor the domain of %s", from, app)}
+	}
+	return nil
 }
 
 func (s *Service) describe(appID, verb string) (any, *invoke.Error) {

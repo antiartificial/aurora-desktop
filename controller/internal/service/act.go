@@ -3,14 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/antiartificial/aurora/bus/proto"
 	"github.com/antiartificial/aurora/contracts/manifest"
 	"github.com/antiartificial/aurora/contracts/surface"
 	"github.com/antiartificial/aurora/controller/internal/apps"
 	"github.com/antiartificial/aurora/controller/internal/invoke"
-	ctlsurface "github.com/antiartificial/aurora/controller/internal/surface"
 )
 
 // ActRequest is the ui.act@v1 payload: one action of one app's surface, and
@@ -104,13 +102,8 @@ func (s *Service) act(req proto.Envelope) (any, *invoke.Error) {
 	if !ok {
 		return nil, &invoke.Error{Code: "no_such_app", Msg: "no such app: " + q.App}
 	}
-	if _, isDomain := ctlsurface.DomainOf(req.From); isDomain {
-		if e := ctlsurface.Permit(req.From, q.App, func(name, appID string) bool { return name == invoke.DomainName(appID) }); e != nil {
-			return nil, &invoke.Error{Code: e.Code, Msg: e.Message, Detail: e.Detail}
-		}
-	} else if !mayDecide(req.From) {
-		return nil, &invoke.Error{Code: "not_permitted", Msg: "ui.act@v1 may only be called from the session socket",
-			Detail: fmt.Sprintf("caller %q is neither the session user nor the domain of %s", req.From, q.App)}
+	if e := s.surfaceCaller(req.From, q.App); e != nil {
+		return nil, e
 	}
 	d, e := surfaceFor(app, q.Surface)
 	if e != nil {
