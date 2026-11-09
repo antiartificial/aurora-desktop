@@ -143,6 +143,11 @@ add_test(NAME task_capture
          COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/task_capture_check.py
                  ${CMAKE_CURRENT_SOURCE_DIR})
 
+# 8.6/P5: no literal duration at a call site -- it comes from the motion table.
+add_test(NAME duration_rule
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/duration_check.py
+                 ${CMAKE_CURRENT_SOURCE_DIR})
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.

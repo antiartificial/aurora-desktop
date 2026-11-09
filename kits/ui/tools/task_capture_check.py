@@ -114,6 +114,38 @@ def check(path: Path) -> list[str]:
     return bad
 
 
+def binding_decls(src: str) -> set[str]:
+    """Names declared with a Binding<...> type anywhere in the file."""
+    return set(re.findall(r"\bBinding\s*<[^;>]*>\s*&?\s*([A-Za-z_]\w*)\s*[;=(,){]", src))
+
+
+def check_binding_captures(path: Path) -> list[str]:
+    """A Task closure that captures a Binding by reference: the worker can outlive the binding's
+    owner, and a Binding is exactly the handle the design says a closure must not hold."""
+    src = strip(path.read_text(encoding="utf-8", errors="replace"))
+    names = binding_decls(src)
+    if not names:
+        return []
+    bad = []
+    for m in re.finditer(r"\bTask\s*\(", src):
+        open_i = src.index("(", m.start())
+        close_i = match_paren(src, open_i, "(", ")")
+        if close_i < 0:
+            continue
+        call = src[open_i + 1:close_i]
+        for lm in re.finditer(r"\[", call):
+            close_b = match_paren(call, lm.start(), "[", "]")
+            if close_b < 0:
+                continue
+            for part in split_top(call[lm.start() + 1:close_b]):
+                p = part.strip()
+                if p.startswith("&") and p[1:].strip() in names:
+                    line = src.count("\n", 0, open_i + 1 + lm.start()) + 1
+                    bad.append(f"{path}:{line}: Task closure captures Binding `{p[1:].strip()}` by "
+                               f"reference -- take it by value or copy the value out")
+    return bad
+
+
 def main(argv: list[str]) -> int:
     roots = [Path(a) for a in argv[1:]] or [Path(".")]
     files = []
@@ -123,6 +155,7 @@ def main(argv: list[str]) -> int:
     problems = []
     for f in files:
         problems.extend(check(f))
+        problems.extend(check_binding_captures(f))
     for p in problems:
         print(p)
     if problems:
