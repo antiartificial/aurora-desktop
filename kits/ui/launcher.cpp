@@ -22,37 +22,24 @@ using namespace aurora::ui;
 
 namespace {
 
-// The inventory as a flat tree: a non-selectable section heading, then its app rows. The tree
-// already skips headings on the arrow keys and refuses to select them; TreeItem::enabled makes a
-// verb-only or blocked row unactionable with its reason drawn right-aligned.
-class InventorySource : public TreeSource {
-public:
-    std::vector<launcher::Section> sections;
-
-    bool Children(const std::string& id, std::vector<TreeItem>* out) override {
-        if (!id.empty()) return true;   // every row is flat: nothing is ever expanded
-        for (const launcher::Section& s : sections) {
-            TreeItem h;
-            h.id = "section:" + s.id;
-            h.label = s.label;
-            h.section = true;
-            h.flat = true;
-            out->push_back(std::move(h));
-            for (const launcher::Row& r : s.rows) {
-                TreeItem it;
-                it.id = r.id;
-                it.label = r.label;
-                it.flat = true;
-                it.enabled = r.enabled;
-                it.note = r.note;
-                out->push_back(std::move(it));
-            }
-        }
-        return true;
+// Manifest strings reach a text surface: strip control characters and cap the length so a hostile
+// or sloppy name cannot break a row or push a real note off it. (The Rust dock does the same; a
+// shared typed client would own this for every C++ app -- flagged as its own task.)
+std::string scrub(std::string s, std::size_t max = 120) {
+    for (char& c : s) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7f) c = ' ';
     }
-};
+    if (s.size() > max) {
+        std::size_t cut = max;
+        while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
+        s.resize(cut);
+        s += "\xe2\x80\xa6";
+    }
+    return s;
+}
 
-// apps@v1 -> plain structs. Absent keys are absent: `windowed`/`launch_problem` are omitempty.
+// apps@v1 -> plain structs. Absent keys are absent: windowed/launch_problem are omitempty.
 bool parse_inventory(const Json& payload, std::vector<launcher::App>& apps,
                      std::vector<launcher::Category>& cats) {
     const Json* ja = payload.get("apps");
@@ -61,18 +48,20 @@ bool parse_inventory(const Json& payload, std::vector<launcher::App>& apps,
         for (const Json& c : jc->items()) {
             launcher::Category k;
             k.id = c.getString("id");
-            k.label = c.getString("label");
+            k.label = scrub(c.getString("label"), 60);
             cats.push_back(std::move(k));
         }
     }
     for (const Json& a : ja->items()) {
+        if (apps.size() >= 256) break;
         launcher::App ap;
         ap.id = a.getString("id");
-        ap.name = a.getString("name");
+        ap.name = scrub(a.getString("name"));
+        if (ap.name.empty()) ap.name = ap.id;
         ap.category = a.getString("category");
         if (const Json* v = a.get("windowed")) ap.windowed = v->asBool();
         if (const Json* v = a.get("launchable")) ap.launchable = v->asBool();
-        ap.launch_problem = a.getString("launch_problem");
+        ap.launch_problem = scrub(a.getString("launch_problem"), 200);
         apps.push_back(std::move(ap));
     }
     return true;
@@ -95,7 +84,7 @@ int main() {
     sel.bind(&w);
     status.bind(&w);
 
-    InventorySource src;
+    SectionListSource src;
 
     auto request = [&](const char* verb, Json payload, int timeout_us, BusEnvelope& rep) -> status_t {
         BusEnvelope req;
@@ -106,15 +95,15 @@ int main() {
         return bus.Call(req, &rep, timeout_us);
     };
 
-    auto find_row = [&](const std::string& id) -> const launcher::Row* {
-        for (const launcher::Section& s : src.sections)
-            for (const launcher::Row& r : s.rows)
+    auto find_row = [&](const std::string& id) -> const TreeItem* {
+        for (const TreeSection& s : src.sections)
+            for (const TreeItem& r : s.rows)
                 if (r.id == id) return &r;
         return nullptr;
     };
 
     auto name_of = [&](const std::string& id) -> std::string {
-        const launcher::Row* r = find_row(id);
+        const TreeItem* r = find_row(id);
         return r ? r->label : id;
     };
 
@@ -164,7 +153,23 @@ int main() {
             } else if (!parse_inventory(rep.payload, apps, cats)) {
                 status.set("unexpected reply from the registry");
             } else {
-                src.sections = launcher::build_sections(apps, cats);   // swap only on success
+                std::vector<TreeSection> sections;
+                for (const launcher::Section& sec : launcher::build_sections(apps, cats)) {
+                    TreeSection ts;
+                    ts.key = sec.id;
+                    ts.label = sec.label;
+                    for (const launcher::Row& row : sec.rows) {
+                        TreeItem it;
+                        it.id = row.id;
+                        it.label = row.label;
+                        it.flat = true;
+                        it.enabled = row.enabled;
+                        it.note = row.note;
+                        ts.rows.push_back(std::move(it));
+                    }
+                    sections.push_back(std::move(ts));
+                }
+                src.sections = std::move(sections);   // swap only on success
                 status.set(apps.empty() ? "no apps installed" : "");
             }
         }

@@ -988,6 +988,33 @@ public:
     virtual std::string Parent(const std::string& id) const { (void)id; return std::string(); }
 };
 
+// A TreeSource for a flat, sectioned list: a non-selectable heading then its rows, all at the root
+// (nothing is expandable). The launcher's inventory is exactly this. The heading id comes from the
+// caller's key, not the label, so renaming a section never changes its identity.
+struct TreeSection {
+    std::string key;                 // stable identity for the heading (e.g. a category token)
+    std::string label;               // what the heading draws
+    std::vector<TreeItem> rows;
+};
+
+class SectionListSource : public TreeSource {
+public:
+    std::vector<TreeSection> sections;
+    bool Children(const std::string& id, std::vector<TreeItem>* out) override {
+        if (!id.empty()) return true;     // flat: nothing is ever expanded
+        for (const TreeSection& s : sections) {
+            TreeItem h;
+            h.id = "section:" + s.key;
+            h.label = s.label;
+            h.section = true;
+            h.flat = true;
+            out->push_back(std::move(h));
+            for (const TreeItem& r : s.rows) out->push_back(r);
+        }
+        return true;
+    }
+};
+
 // A sidebar tree: expand, collapse, select, and navigate from the keyboard.
 //
 // Rows are FLATTENED to what is visible, which is what keeps the cost proportional to what is on
