@@ -9,6 +9,7 @@ use (
 	./contracts/manifest
 	./contracts/object
 	./contracts/plumb
+	./contracts/surface
 	./controller
 	./gateway
 	./index
