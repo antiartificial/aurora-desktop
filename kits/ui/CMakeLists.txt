@@ -125,6 +125,16 @@ add_executable(test_thread_proof tests/test_thread_proof.cpp)
 target_link_libraries(test_thread_proof PRIVATE aurora_ui_tk)
 add_test(NAME thread_proof COMMAND test_thread_proof)
 
+# 8.5: the six-state resolve table -- the three selection pictures must stay three pictures.
+add_executable(test_vstates tests/test_vstates.cpp)
+target_link_libraries(test_vstates PRIVATE aurora_ui_tk)
+add_test(NAME vstates COMMAND test_vstates)
+
+# 8.8/P6: named action nodes become the surface descriptor (ui:describe, toolkit side).
+add_executable(test_describe tests/test_describe.cpp)
+target_link_libraries(test_describe PRIVATE aurora_ui_tk)
+add_test(NAME describe COMMAND test_describe)
+
 add_executable(test_cxx23 tests/test_cxx23.cpp)
 add_test(NAME cxx23 COMMAND test_cxx23)
 

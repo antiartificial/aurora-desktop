@@ -362,6 +362,24 @@ struct DragData {
     static DragData parse_uri_list(const std::string& bytes);          // the other direction
 };
 
+// 8.5: the six states every interactive component must answer, resolved from one table instead of
+// re-derived per widget. The three selection pictures the design insists on -- selected+focused,
+// selected+unfocused, cursor only -- fall out of this, and a component that answers five of the six
+// becomes visible rather than plausible.
+enum class VState { Normal, Hover, Focused, Selected, SelectedFocused, Disabled };
+constexpr int kVStateCount = 6;
+const char* VStateName(VState s);
+
+struct ControlSkin {
+    au_color fill{};              // the control/row fill
+    au_color ink{};               // text and icons
+    au_color ring{};              // the focus ring
+    bool ring_visible = false;
+    bool selected = false;
+};
+
+ControlSkin ResolveSkin(const Env& e, VState s);
+
 // ---- nodes -----------------------------------------------------------------------------------
 
 class Node;
@@ -534,6 +552,33 @@ public:
 private:
     std::shared_ptr<Node> n_;
 };
+
+// 8.8/P6: the presentation contract's data, toolkit side. The shell draws the chrome and the
+// capability classes gate ui:describe / ui:act; these are the values both sides agree on. Grants are
+// declared on the surface and never inferred from use -- a descriptor is a claim about access.
+struct Action {
+    std::string id;                  // "open", "rename" -- also the verb a receipt names
+    std::string label;
+    std::string effect;              // "read", "write", "nominal"
+    std::vector<std::string> grants;
+};
+
+struct Receipt {
+    std::string action;
+    std::string artifact;            // domain-qualified id, when the action made one
+    std::string effect;
+    std::string detail;
+};
+
+struct SurfaceDescriptor {
+    std::string app;
+    std::string title;
+    std::vector<Action> actions;
+    std::vector<std::string> grants;
+};
+
+// A node named "act:<verb>" is an action the surface offers; "act:<verb>=<label>" sets the label.
+SurfaceDescriptor Describe(const Desc& root, std::string app, std::string title);
 
 // 8.6: the naming rule, checked. A name is how the accessibility tree, the preview and every test
 // find a node, so two nodes sharing one make every lookup ambiguous. Walks the tree in layout order

@@ -4244,6 +4244,74 @@ std::vector<std::string> DuplicateNames(Desc root) {
     return dup;
 }
 
+const char* VStateName(VState s) {
+    switch (s) {
+        case VState::Normal: return "normal";
+        case VState::Hover: return "hover";
+        case VState::Focused: return "focused";
+        case VState::Selected: return "selected";
+        case VState::SelectedFocused: return "selected+focused";
+        case VState::Disabled: return "disabled";
+    }
+    return "?";
+}
+
+namespace {
+void walk_actions(Node* n, std::vector<Action>* out, int depth) {
+    if (!n || depth > 512) return;
+    const std::string& nm = n->name;
+    if (nm.rfind("act:", 0) == 0) {
+        std::string rest = nm.substr(4);
+        std::string id = rest, label = rest;
+        const std::size_t eq = rest.find('=');
+        if (eq != std::string::npos) {
+            id = rest.substr(0, eq);
+            label = rest.substr(eq + 1);
+        }
+        Action a;
+        a.id = id;
+        a.label = label;
+        a.effect = "nominal";   // a widget cannot know; the app declares it on the action
+        out->push_back(std::move(a));
+    }
+    std::vector<Node*> kids;
+    n->Children(&kids);
+    for (Node* k : kids) walk_actions(k, out, depth + 1);
+}
+}   // namespace
+
+SurfaceDescriptor Describe(const Desc& root, std::string app, std::string title) {
+    SurfaceDescriptor d;
+    d.app = std::move(app);
+    d.title = std::move(title);
+    if (root) walk_actions(root.get(), &d.actions, 0);
+    return d;
+}
+
+ControlSkin ResolveSkin(const Env& e, VState s) {
+    ControlSkin k;
+    k.fill = au_color{0, 0, 0, 0};   // nothing under it: the pane shows through
+    k.ink = e.fg;
+    k.ring = e.focus_ring;
+    switch (s) {
+        case VState::Normal: break;
+        case VState::Hover: k.fill = e.hover; break;
+        case VState::Focused: k.ring_visible = true; break;
+        case VState::Selected:
+            k.fill = e.sel_unfocused;
+            k.selected = true;
+            break;
+        case VState::SelectedFocused:
+            k.fill = e.accent;
+            k.ink = e.accent_ink;
+            k.selected = true;
+            k.ring_visible = true;
+            break;
+        case VState::Disabled: k.ink = e.dim3; break;
+    }
+    return k;
+}
+
 Desc Desc::padding(float units) const { n_->pad = Insets(units * 8); return *this; }
 Desc Desc::padding(Insets i) const { n_->pad = i; return *this; }
 Desc Desc::weight(float w) const { n_->weight = w; return *this; }
