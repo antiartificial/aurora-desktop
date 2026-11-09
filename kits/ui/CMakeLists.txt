@@ -135,10 +135,13 @@ add_executable(test_vstates tests/test_vstates.cpp)
 target_link_libraries(test_vstates PRIVATE aurora_ui_tk)
 add_test(NAME vstates COMMAND test_vstates)
 
-# 8.7: components live one file pair each; their tests sit beside the toolkit's.
-add_executable(test_splitbutton tests/test_splitbutton.cpp)
-target_link_libraries(test_splitbutton PRIVATE aurora_ui_tk)
-add_test(NAME splitbutton COMMAND test_splitbutton)
+# 8.7: one test per component, wired in one place so the parallel passes never edited this file.
+foreach(component IN ITEMS splitbutton sidebar toolbar info_bar expander number_box
+                          content_dialog teaching_tip)
+    add_executable(test_${component} tests/test_${component}.cpp)
+    target_link_libraries(test_${component} PRIVATE aurora_ui_tk)
+    add_test(NAME ${component} COMMAND test_${component})
+endforeach()
 
 # 8.8/P6: named action nodes become the surface descriptor (ui:describe, toolkit side).
 add_executable(test_describe tests/test_describe.cpp)
