@@ -67,7 +67,14 @@ claim about itself while `describe` is the manifest's.
 
 ## Known limits
 
+`docs/surface-seam.md` is the fuller account; these are the ones a reader of this file needs.
+
+- **`ui.act@v1` cannot run a published-only surface.** It resolves actions through the manifest
+  registry, so an app with no manifest has each action refused with `no_such_app`. The header draws
+  controls that are dead for exactly the apps this contract's publish path exists for.
+- **`shell_chrome` is parsed everywhere and honoured nowhere.** Gating the band on it is wrong until
+  the action-authority question above is settled, because the band also carries grants.
 - The relay polls every 2 s rather than subscribing: the bus session wire is request/reply.
 - A header binds to the first window of an app, on one output.
-- Published descriptors live in the controller's memory; a restart forgets them until the app
-  republishes.
+- Publications live in the controller's memory and are never removed: a restart forgets them, and an
+  app that quits leaves a stale descriptor behind.

@@ -30,9 +30,18 @@ Twelve were named; five already existed inside `ui.h`, the other seven are one f
 3. **A role better than `control`.** `aurora-uitree --check` fails if a component root still answers
    `control`.
 
+## How they reach the OS
+
+A widget's action label and the command it names have to stay in step, and today that link is a
+comment: nothing under `components/` emits an `act:` name — only apps do (`demo/atlas.cpp`). The
+twelve-component seam and the surface seam still meet in the app rather than in the component. See
+`docs/surface-seam.md` for what that costs and what it would take to move it.
+
 ## Seeing them
 
-`aurora-gallery` is a Photo Library that uses all twelve in one believable app — sidebar sections,
+`aurora-preview` renders a state set per component (20 states × 3 viewports = 60 goldens), and
+`aurora-uitree --check` fails if a component root answers only `control`. `aurora-gallery` is a
+Photo Library that uses all twelve in one believable app — sidebar sections,
 a toolbar with SplitButton and NumberBox, a list of photos, a Details Expander, InfoBars for empty
 scopes, a TeachingTip on first run, and a ContentDialog behind Copy path. It is the review surface;
 `aurora-preview` is the regression surface.
