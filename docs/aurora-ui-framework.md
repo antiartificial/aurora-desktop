@@ -26,7 +26,7 @@ Five disagreements with 0023, in order of weight.
    A kit that shares those and "no widgets" has `BView` leaves and `BLayout`
    containers, which is the Interface Kit with a different API on top. The
    alternative, a kit with its own view class, is the 13k-line rewrite of
-   `View/Window/Font.cpp` that `kits/interface/README.md` section 1.4(b)
+   `View/Window/Font.cpp` that `kits/compat/README.md` section 1.4(b)
    already costed and rejected. So: **one kit, two APIs.** The declarative
    layer builds real Haiku views and updates them in place. It may wrap any
    Haiku widget and it writes its own only where Haiku's behaviour is wrong
@@ -111,7 +111,7 @@ Take the shared list literally against the tree as it stands:
 | "shared" item | what it is in this tree | consequence for a "second kit" |
 |---|---|---|
 | drawing primitives | `BView::FillRect/StrokeLine/DrawString/...`, each an `AS_*` message on the window's link (`View.cpp`, 121 opcodes) | every leaf of the new kit is a `BView`, or the new kit re-implements the link |
-| layout | `BLayout`, `BLayoutItem`, `BGroupLayout`, `BGridLayout`, `BSplitLayout`, `BCardLayout`, `layouter/*` (all compiled in; `kits/interface/CMakeLists.txt`) | layout items are `BView`s or `BLayoutItem`s |
+| layout | `BLayout`, `BLayoutItem`, `BGroupLayout`, `BGridLayout`, `BSplitLayout`, `BCardLayout`, `layouter/*` (all compiled in; `kits/compat/CMakeLists.txt`) | layout items are `BView`s or `BLayoutItem`s |
 | theme tokens | `ui_color()` from `[theme.colors]`, `AuroraControlLook` | fine, shared by construction |
 | app_server | the per-window server thread, the dirty region, `BeginUpdate/EndUpdate`, the a11y tree built from `AS_VIEW_CREATE` and `AS_DRAW_STRING` (0017) | a view not sent to the server is invisible to accessibility |
 
@@ -135,7 +135,7 @@ existing first), the breadcrumb (no Haiku equivalent), and the window shell
 else is a Haiku widget reached through the new API.
 
 **Decision this document makes:** the declarative layer is `aurora::ui`, a
-library beside `kits/interface/` that produces and updates real Interface Kit
+library beside `kits/compat/` that produces and updates real Interface Kit
 views. "Kit" keeps the meaning 0013 gives it; this is not a third one.
 
 ### 1.2 Composition without diffing: the contradiction, and the resolution
@@ -248,7 +248,7 @@ experiment in section 5 says so) and the breadcrumb. The rest is wiring.
 - **Text input.** The breadcrumb is also an editable path field, which is
   `BTextControl`. Shared widget, again.
 - **Drag and drop.** Stage 4 wants file-drop-as-grant. `BView::DragMessage` is
-  not wired to Wayland (`kits/interface/README.md` 7). Not the layer's job,
+  not wired to Wayland (`kits/compat/README.md` 7). Not the layer's job,
   but a dependency the plan should list.
 - **Theme hot reload.** Apps read the theme once. If the layer resolves
   colours at draw time through `ui_color()` rather than caching bytes, a later
@@ -571,7 +571,7 @@ forced them; the principle survives the palette, the look does not.
 
 - **Contrast as a gate.** WCAG 2's ratios are a measurable floor the 1992
   text had no equivalent for; this tree already asserts them on pixels
-  (`kits/interface/tests/test_theme.cpp`, `tests/indicator.rs`).
+  (`kits/compat/tests/test_theme.cpp`, `tests/indicator.rs`).
 - **Type and spacing.** Modern HIGs' type scales and generous spacing are
   readability improvements; the 1992 Chicago-at-12-point era was constrained
   by the screen, not chosen.
@@ -821,7 +821,7 @@ enum class Backdrop { Opaque, Blur };   // Blur = a region request via ext-backg
 
 The `Blur` request is a region: the window's frame minus every view marked
 `.opaque()`, which the shell marks for the list and any text field. The
-presenter (`kits/interface/appserver/present_wl.c`) binds the manager and sets
+presenter (`kits/compat/appserver/present_wl.c`) binds the manager and sets
 the region on commit; the compositor applies it when its budget allows and
 eases the tint in over 200 ms with `enter-emphasised` (0010 section 5.3's
 window-open duration). The client cannot tell whether it was granted, which is
@@ -830,7 +830,7 @@ the point: text contrast is asserted for both states.
 ### 4.7 File layout
 
 ```
-kits/aurora-ui/                 new; does not touch kits/interface/
+kits/ui/                 new; does not touch kits/compat/
   CMakeLists.txt                target aurora_ui, links haiku_iface_real + aurora_appserver
   ui.h                          umbrella
   env.h                         Env
@@ -958,7 +958,7 @@ absence is "write the `BView` by hand".
   hundred cells per repaint at tens of microseconds each is a few
   milliseconds, which is most of the 8 ms budget at 1.45 scale. If stage 2b's
   p95 fails, the fix is a run cache keyed by (font, size, string) in the
-  server, which is in `kits/interface/`, held by another agent today.
+  server, which is in `kits/compat/`, held by another agent today.
 - **The a11y bound.** 512 runs per view is one tall screen of a five-column
   grid. The sidebar is its own view and the grid's columns are capped at what
   fits; a 6-column grid on a 4K display at scale 1 would truncate the tree.
@@ -1009,7 +1009,7 @@ nothing moves until the user asks to sort.
 
 **The watchdog might be the wrong boundary.** Timing `DispatchMessage` misses
 the server thread, where drawing actually happens, and the server is in
-`kits/interface/`. The kit-side timer is what can be built now; the real
+`kits/compat/`. The kit-side timer is what can be built now; the real
 number is the one from the server's `EndUpdate` to the presenter's commit,
 and it should be added when that directory is free.
 
@@ -1192,6 +1192,6 @@ carried from `docs/visual-system.md`, whose author verified it.
 - `contracts/decisions/0023-aurora-toolkit.md`, `0010-visual-system.md`,
   `0013-kits-are-services.md`, `0017-accessibility-tree.md`,
   `0020-drag-and-drop.md`; `docs/file-navigator-plan.md`;
-  `docs/visual-system.md` sections 3.9, 5, 11, 12; `kits/interface/README.md`
-  sections 1.3, 1.4, 7, 9, 10, 12, 13; `kits/interface/appserver/server.cpp`
+  `docs/visual-system.md` sections 3.9, 5, 11, 12; `kits/compat/README.md`
+  sections 1.3, 1.4, 7, 9, 10, 12, 13; `kits/compat/appserver/server.cpp`
   (`gMu`, `ApplyWindowResize`, `GlyphKey`); `contracts/theme/aurora-glass.toml`.

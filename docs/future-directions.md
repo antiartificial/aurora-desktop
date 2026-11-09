@@ -916,5 +916,5 @@ corrections below are to venues, missing DOIs, and one mislabelled document type
   7, 8.2, 9, 11; `docs/performance-architecture.md` sections 0.1, 3.1 to 3.5, 4.1, 5.1 to 5.4,
   7.4, 11; `docs/visual-system.md` sections 1, 2, 3.2, 3.6, 5, 9, 10; `gateway/README.md`;
   `controller/internal/invoke/invoke.go`, `approval.go`; `contracts/plumb/rules.go`;
-  `adapter/linux/internal/dom/btrfs.go`; `kits/aurora-ui/ui.h`, `au_draw.h`;
+  `adapter/linux/internal/dom/btrfs.go`; `kits/ui/ui.h`, `au_draw.h`;
   `compositor/src/shell/motion.rs`.

@@ -20,9 +20,9 @@
 name = "aurora-glass"
 version = 1
 
-# --- Toolkit: what Haiku apps (kits/interface) read ----------------------------------------------
+# --- Toolkit: what Haiku apps (kits/compat) read ----------------------------------------------
 # Added 2026-11-06. The compositor ignores these two tables (unknown keys are ignored); the Interface
-# Kit's colour table and AuroraControlLook (kits/interface/aurora_theme.cpp) read them. Nothing here is
+# Kit's colour table and AuroraControlLook (kits/compat/aurora_theme.cpp) read them. Nothing here is
 # drawn by the compositor, and a Haiku app reads the file once, at start: it is not hot-reloaded.
 #
 # One rule turns an Oklab token into the sRGB bytes of an rgb_color, and it is the compositor's own
@@ -35,7 +35,7 @@ version = 1
 # tint, L 0.80), and a client panel on it has to read as part of it. Contrast floors (WCAG 2, the same
 # ones docs/visual-system.md section 8.2 sets for the shell): text on its surface >= 4.5:1, the focus
 # accent on panel and document >= 3:1 (non-text), control border and scroll thumb on panel >= 3:1.
-# kits/interface/tests/test_theme.cpp checks them against whatever is written here, so a re-tint cannot
+# kits/compat/tests/test_theme.cpp checks them against whatever is written here, so a re-tint cannot
 # silently break legibility.
 [theme.colors]
 panel = [0.94, -0.002, -0.007]          # B_PANEL_BACKGROUND_COLOR

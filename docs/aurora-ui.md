@@ -359,7 +359,7 @@ reasons it earns its place:
 ## 11. What is actually built, as of 2026-11-07
 
 This document is the design, written before the code. The sections above still
-describe the intent; this one records what `kits/aurora-ui/ui.h` currently
+describe the intent; this one records what `kits/ui/ui.h` currently
 declares, so the two can be told apart without reading the header.
 
 **Built.** `Label` / `Bold` / `styled` (per-node `TextStyle`: size multiplier,

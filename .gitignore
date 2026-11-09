@@ -54,3 +54,7 @@ harness/atlas-demo-out/
 harness/aurora-up-out/
 harness/present-pool/out/
 harness/atlas-shots-out/
+
+# python caches from the rule scripts
+__pycache__/
+*.pyc

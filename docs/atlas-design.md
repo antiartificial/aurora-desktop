@@ -9,7 +9,7 @@ cannot yet express something the document says so (section 11) rather than assum
 What it is written against: the frame of Atlas as it runs today (a text-labelled toolbar, a
 second "Atlas" heading under the window's own title, a three-entry sidebar, a details list whose
 Modified column is cut off mid-value, `--` for every folder size, and the same blue folder on
-every row), `kits/aurora-ui/demo/atlas.cpp`, `kits/aurora-ui/filebrowse.h`, `kits/aurora-ui/ui.h`,
+every row), `kits/ui/demo/atlas.cpp`, `kits/ui/filebrowse.h`, `kits/ui/ui.h`,
 `contracts/theme/aurora-glass.toml`, `docs/aurora-ui.md`, `docs/visual-system.md` and
 `docs/file-navigator-plan.md`. Where this document and `docs/aurora-ui.md` disagree, this one is
 the later word for Atlas and says why at the point of disagreement.
@@ -405,7 +405,7 @@ Marks, drawn in the 0.6-luminance hue inside the page's lower 55%:
 
 <figure class="wide">
 <img src="images/specimen-icons.png" alt="The nine icon kinds, the eight special-folder marks and the two badges, drawn at 48 px in the icons view and at 16 px in the details rows.">
-<figcaption>Generated, not drawn: these are the pixels <code>kits/aurora-ui</code> produces today, at scale 1.0 (<a href="images/specimen-icons-1.45x.png">and at 1.45</a>), so this sheet stays honest as the toolkit changes. The one picture C4.2 asks for: eight files whose kind you can tell with the names covered.</figcaption>
+<figcaption>Generated, not drawn: these are the pixels <code>kits/ui</code> produces today, at scale 1.0 (<a href="images/specimen-icons-1.45x.png">and at 1.45</a>), so this sheet stays honest as the toolkit changes. The one picture C4.2 asks for: eight files whose kind you can tell with the names covered.</figcaption>
 </figure>
 
 
@@ -1531,7 +1531,7 @@ be run yet is recorded as "not yet".
 
 ## 11. What the toolkit and the platform must gain
 
-Things this design needs that `kits/aurora-ui/ui.h`, `present_wl` or the compositor cannot
+Things this design needs that `kits/ui/ui.h`, `present_wl` or the compositor cannot
 express today. Each is small on its own; the list is here so none of them is discovered during
 the build.
 
