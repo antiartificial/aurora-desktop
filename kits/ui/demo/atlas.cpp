@@ -333,7 +333,7 @@ int main() {
 
     place.bind(&w);
     sidebar.bind(&w);
-    tree = named(TreeView(&places, place), "places");
+    tree = (TreeView(&places, place)).name("places");
     // Selecting in the sidebar navigates. That is single-click-to-navigate, which is what a
     // sidebar is for and what every explorer does there -- unlike the main pane, where a single
     // click selects and only a double-click opens. The two panes mean different things by a
@@ -349,9 +349,9 @@ int main() {
     State<bool> preview_open(false);
     list_view.bind(&w);
     preview_open.bind(&w);
-    auto list = named(ListView(&rows, selected), "files");
+    auto list = (ListView(&rows, selected)).name("files");
     ListIcons(list);   // a folder should look like a folder, not like a name with a slash
-    auto icons = named(IconView(&rows, selected), "icons");
+    auto icons = (IconView(&rows, selected)).name("icons");
     State<std::string> last_action("");
     last_action.bind(&w);
 
@@ -968,8 +968,8 @@ int main() {
     // they are the whole body. Only one arm is ever measured, placed, drawn or walked for focus,
     // which is what makes sharing the subtree between them safe rather than clever.
     Desc body = HStack({
-                           weight(Either(list_view, list, icons), 2),
-                           named(Reveal(preview_open,
+                           (Either(list_view, list, icons)).weight(2),
+                           (Reveal(preview_open,
                                         // 280 wide, the design's default, and STATED: a pane
                                         // that answers "all of it" beside a weighted sibling
                                         // starves the sibling to zero, which is how the preview
@@ -977,18 +977,15 @@ int main() {
                                         // 16 px padding all round, and a hairline on its left
                                         // edge: the separator between content and preview.
                                         atlas::SideBand(VStack({
-                                                            styled(Label(preview_head),
-                                                                   TextStyle{Ratio(1.0f), true}),
-                                                            weight(named(TextView(preview_text),
-                                                                         "preview"), 1),
+                                                            (Label(preview_head)).style(TextStyle{Ratio(1.0f), true}),
+                                                            ((TextView(preview_text)).name("preview")).weight(1),
                                                         }, 0.5f),
                                                         280, atlas::BandFill::Content,
                                                         atlas::BandEdge::Left, Insets(16, 16)),
                                         // RevealX: a side pane reveals by WIDTH. A height
                                         // reveal here kept its full width while invisible and
                                         // swallowed the list's hit test.
-                                        Transition{Motion::RevealX, 160, Curve::EaseOut}),
-                                 "previewpane"),
+                                        Transition{Motion::RevealX, 160, Curve::EaseOut})).name("previewpane"),
                        },
                        0);
 
@@ -1026,8 +1023,8 @@ int main() {
                               },
                               0.5f),
                        // The location, taking everything the two clusters do not.
-                       weight(named(Either(path_edit,
-                                           named(TextField(path_text, nullptr,
+                       ((Either(path_edit,
+                                           (TextField(path_text, nullptr,
                                                            [&](const std::string& to) {
                                                                path_edit.set(false);
                                                                go(to, true);
@@ -1037,20 +1034,15 @@ int main() {
                                                                path_edit.set(false);
                                                                w.FocusNamed("files");
                                                            },
-                                                           FieldOpts{"go to…", false, 0, true}),
-                                                 "pathbar"),
-                                           named(Breadcrumb(path,
+                                                           FieldOpts{"go to…", false, 0, true})).name("pathbar"),
+                                           (Breadcrumb(path,
                                                             [&](const std::string& to) { go(to, true); },
-                                                            [&] { open_path_bar(); }),
-                                                 "crumbs")),
-                                    "location"),
-                              1),
+                                                            [&] { open_path_bar(); })).name("crumbs"))).name("location")).weight(1),
                        // Cluster two: the filter field at its stated 180, the view menu and the
                        // preview toggle.
                        HStack({
-                                  sized(named(TextField(filter, refilter, nullptr, close_filter,
-                                                        FieldOpts{"filter files", false, 0, false}),
-                                              "filter"),
+                                  sized((TextField(filter, refilter, nullptr, close_filter,
+                                                        FieldOpts{"filter files", false, 0, false})).name("filter"),
                                         180),
                                   MenuButton(Glyph::View, view_items),
                                   IconButton(Glyph::Preview,
@@ -1066,14 +1058,13 @@ int main() {
             44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom, Insets(8, 8)),
         // The sidebar and the rest. The preview stays a RevealX rather than becoming a second
         // split, and the difference is real: appearing is not resizing.
-        weight(Either(sidebar_open,
+        (Either(sidebar_open,
                       HSplit(tree, body, sidebar, SplitOpts{20, 40, 0.5f, 3}),
-                      body),
-               1),
+                      body)).weight(1),
         // The status bar, 26 tall with a hairline above: the count on the left and the last
         // action on the right, in one node, because two halves of one line are never drawn
         // without each knowing the other's width.
-        atlas::Band(named(atlas::StatusLine(&status, &last_action), "statusline"), 26,
+        atlas::Band((atlas::StatusLine(&status, &last_action)).name("statusline"), 26,
                     atlas::BandFill::Chrome, atlas::BandEdge::Top, Insets(8, 4)),
     }, 0));
 

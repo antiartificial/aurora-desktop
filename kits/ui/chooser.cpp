@@ -146,11 +146,11 @@ int main(int argc, char** argv) {
         w.Quit();
     };
 
-    tree = named(TreeView(&places, place), "places");
+    tree = (TreeView(&places, place)).name("places");
     OnTreeSelect(tree, [&](const std::string& id) { if (!revealing) go(id); });
     OnTreeActivate(tree, [&](const std::string& id) { if (!revealing) go(id); });
 
-    Desc list = named(ListView(&rows, selected), "files");
+    Desc list = (ListView(&rows, selected)).name("files");
     ListIcons(list);   // a folder should look like a folder, not like a name with a slash
     ListSingleSelect(list);
     OnListSelect(list, [&](int row) {
@@ -171,40 +171,34 @@ int main(int argc, char** argv) {
     const TextStyle grant_style = heavy(access) ? weighty : TextStyle{Ratio(1.0f), true};
 
     Desc headline_text = heavy(access)
-        ? styled(Bold(headline(args.app, args.mode, kind)), TextStyle{Ratio(1.3f), true, false, true, amber})
-        : styled(Bold(headline(args.app, args.mode, kind)), TextStyle{Ratio(1.3f), true});
-    Desc consequence_text = heavy(access) ? styled(Label(consequence(access)), weighty)
-                                          : styled(Label(consequence(access)), TextStyle{Ratio(0.95f)});
+        ? (Bold(headline(args.app, args.mode, kind))).style(TextStyle{Ratio(1.3f), true, false, true, amber})
+        : (Bold(headline(args.app, args.mode, kind))).style(TextStyle{Ratio(1.3f), true});
+    Desc consequence_text = heavy(access) ? (Label(consequence(access))).style(weighty)
+                                          : (Label(consequence(access))).style(TextStyle{Ratio(0.95f)});
 
     std::vector<Desc> column;
-    column.push_back(padding(VStack({headline_text, consequence_text,
-                                     styled(Label(action_line(args.verb)), TextStyle{Ratio(0.85f), false, true})}, 0.25f),
-                             Insets(1, 0.75f)));
-    column.push_back(padding(HStack({Button("Up", [&] { go(parent_path(path.get())); }),
-                                     padding(Checkbox("Hidden files", show_hidden, [&](bool on) {
+    column.push_back((VStack({headline_text, consequence_text,
+                                     (Label(action_line(args.verb))).style(TextStyle{Ratio(0.85f), false, true})}, 0.25f)).padding(Insets(1, 0.75f)));
+    column.push_back((HStack({Button("Up", [&] { go(parent_path(path.get())); }),
+                                     (Checkbox("Hidden files", show_hidden, [&](bool on) {
                                                  rows.SetShowHidden(on);
                                                  selected.set(-1);
                                                  refresh();
                                                  w.Invalidate();
-                                             }), 0.4f),
-                                     Spacer()}),
-                             Insets(1, 0.25f)));
-    column.push_back(padding(named(Breadcrumb(path, [&](const std::string& to) { go(to); }), "crumbs"), 0.25f));
-    column.push_back(weight(HSplit(tree, list, sidebar, SplitOpts{9, 16, 0.5f, 3}), 1));
+                                             })).padding(0.4f),
+                                     Spacer()})).padding(Insets(1, 0.25f)));
+    column.push_back(((Breadcrumb(path, [&](const std::string& to) { go(to); })).name("crumbs")).padding(0.25f));
+    column.push_back((HSplit(tree, list, sidebar, SplitOpts{9, 16, 0.5f, 3})).weight(1));
     if (takes_name(kind))
-        column.push_back(padding(HStack({Label("Name"),
-                                         weight(named(TextField(name, [&](const std::string&) { refresh(); },
+        column.push_back((HStack({Label("Name"),
+                                         ((TextField(name, [&](const std::string&) { refresh(); },
                                                                 [&](const std::string&) { try_grant(); }, cancel,
-                                                                FieldOpts{"file name", false, 0, true}),
-                                                      "name"), 1)}, 0.75f),
-                                 Insets(1, 0.35f)));
-    column.push_back(padding(styled(Label(message), TextStyle{Ratio(0.9f), false, true}), Insets(1, 0.35f)));
-    column.push_back(padding(HStack({styled(Label("Enter opens a folder or grants a file   Ctrl+Enter grants   Esc cancels"),
-                                            TextStyle{Ratio(0.8f)}),
+                                                                FieldOpts{"file name", false, 0, true})).name("name")).weight(1)}, 0.75f)).padding(Insets(1, 0.35f)));
+    column.push_back(((Label(message)).style(TextStyle{Ratio(0.9f), false, true})).padding(Insets(1, 0.35f)));
+    column.push_back((HStack({(Label("Enter opens a folder or grants a file   Ctrl+Enter grants   Esc cancels")).style(TextStyle{Ratio(0.8f)}),
                                      Spacer(),
-                                     named(Button("Cancel", cancel), "cancel"),
-                                     named(styled(Button("Grant", try_grant, can_grant), grant_style), "grant")}),
-                             Insets(1, 0.5f)));
+                                     (Button("Cancel", cancel)).name("cancel"),
+                                     ((Button("Grant", try_grant, can_grant)).style(grant_style)).name("grant")})).padding(Insets(1, 0.5f)));
     w.SetRoot(VStack(column, 0));
 
     revealing = true;

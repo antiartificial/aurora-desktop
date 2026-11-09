@@ -222,7 +222,7 @@ int main() {
         State<std::string> sl("13 items"), sr("");
         Desc foot = atlas::Band(atlas::StatusLine(&sl, &sr), 26, atlas::BandFill::Chrome,
                                 atlas::BandEdge::Top, Insets(8, 4));
-        Desc body = weight(Spacer(), 1);
+        Desc body = (Spacer()).weight(1);
         Desc root = VStack({bar, body, foot}, 0);
         lay(root, e, Rect{0, 0, 960, 640});
         CHECK(bar->frame.h == 44 && bar->frame.y == 0, "the toolbar is 44 tall at the top, got %g at %g",
@@ -242,7 +242,7 @@ int main() {
         // The preview pane beside the listing. A side band states its WIDTH and the weighted
         // sibling takes the rest; a band that answered "all of it" starved the list to zero and
         // the preview opened over the whole listing, which is how this check came to exist.
-        Desc listing = weight(Spacer(), 2);
+        Desc listing = (Spacer()).weight(2);
         Desc pane = atlas::SideBand(Label("preview"), 280, atlas::BandFill::Content,
                                     atlas::BandEdge::Left, Insets(16, 16));
         Desc beside = HStack({listing, pane}, 0);

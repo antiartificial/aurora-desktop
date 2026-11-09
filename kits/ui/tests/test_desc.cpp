@@ -27,9 +27,8 @@ int main() {
     check(chained != nullptr && chained->name == "n" && chained->weight == 2.0f,
           "a modifier chain lands on one node");
 
-    // The free-function spelling is the same operation (compatibility path).
-    Desc via_free = named(Label("z"), "f");
-    check(via_free != nullptr && via_free->name == "f", "the free-function spelling still works");
+    // The free spellings were removed once every call site was a method: one way to say it now.
+    check(Desc(Label("z")).name("f") != nullptr, "factory handles are Descs");
 
     std::printf(fails ? "desc: %d of %d FAILED\n" : "desc: ok (%d checks)\n", fails ? fails : checks);
     return fails ? 1 : 0;

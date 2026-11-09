@@ -237,7 +237,7 @@ int main() {
     // and swallowed the list below it.
     {
         Desc a = Spacer(), b = Spacer();
-        Desc v = VStack({weight(a, 1), weight(b, 3)}, 0);
+        Desc v = VStack({(a).weight(1), (b).weight(3)}, 0);
         lay(v, e, box);
         near("vstack weight 1 of 4", a->frame.h, 150);
         near("vstack weight 3 of 4", b->frame.h, 450);
@@ -427,7 +427,7 @@ int main() {
     {
         Desc list = std::make_shared<Box>(Size{0, 0});
         Desc pane = std::make_shared<Greedy>();
-        Desc row = HStack({weight(list, 1), pane}, 0);
+        Desc row = HStack({(list).weight(1), pane}, 0);
         lay(row, e, box);
         // Not a bug in the stack -- an unweighted child gets its natural size, and this child's
         // natural size really is "everything". It is a bug in asking for it. Recorded so the
@@ -436,7 +436,7 @@ int main() {
 
         Desc list2 = std::make_shared<Box>(Size{0, 0});
         Desc pane2 = sized(std::make_shared<Greedy>(), 260);
-        Desc row2 = HStack({weight(list2, 1), pane2}, 0);
+        Desc row2 = HStack({(list2).weight(1), pane2}, 0);
         lay(row2, e, box);
         near("sized() leaves the rest to the weighted child", list2->frame.w, 740);
         near("and the sized pane is the width it asked for", pane2->frame.w, 260);

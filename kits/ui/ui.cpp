@@ -4318,11 +4318,6 @@ Desc Desc::weight(float w) const { n_->weight = w; return *this; }
 Desc Desc::name(std::string nm) const { n_->name = std::move(nm); return *this; }
 Desc Desc::style(TextStyle st) const { n_->SetStyle(st); return *this; }
 
-Desc padding(Desc d, float units) { d->pad = Insets(units * 8); return d; }
-Desc padding(Desc d, Insets i) { d->pad = i; return d; }
-Desc weight(Desc d, float w) { d->weight = w; return d; }
-Desc named(Desc d, std::string n) { d->name = std::move(n); return d; }
-Desc styled(Desc d, TextStyle st) { d->SetStyle(st); return d; }
 
 // ---- primitives -------------------------------------------------------------------------------
 

@@ -585,18 +585,6 @@ SurfaceDescriptor Describe(const Desc& root, std::string app, std::string title)
 // and returns each name that occurs more than once (empty for a clean tree).
 std::vector<std::string> DuplicateNames(Desc root);
 
-// ---- modifiers: each takes a Desc and returns it, so they chain -------------------------------
-
-Desc padding(Desc d, float units);
-Desc padding(Desc d, Insets i);
-Desc weight(Desc d, float w);
-Desc named(Desc d, std::string n);
-
-// Text style, on any node that draws text. Chains like the others:
-//   styled(Label("Atlas"), TextStyle{Ratio(1.4f), true})          -- 40% larger and bold
-//   styled(Label(&note), TextStyle{Ratio(0.85f), false, true})    -- smaller and italic
-Desc styled(Desc d, TextStyle st);
-
 // ---- primitives -------------------------------------------------------------------------------
 
 Desc Label(std::string text);
