@@ -128,6 +128,11 @@ add_test(NAME thread_proof COMMAND test_thread_proof)
 add_executable(test_cxx23 tests/test_cxx23.cpp)
 add_test(NAME cxx23 COMMAND test_cxx23)
 
+# 8.6/P5: a Task closure must name its captures (no default [&] / [=]).
+add_test(NAME task_capture
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/task_capture_check.py
+                 ${CMAKE_CURRENT_SOURCE_DIR})
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.

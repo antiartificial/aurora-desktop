@@ -109,7 +109,7 @@ int main() {
     // rather than swallowing it, which is how Atlas's "rc != B_OK -> empty" would hide the reason.
     launch = [&](const std::string& id) {
         status.set("launching " + name_of(id));
-        Task(w, [&, id]() -> std::pair<bool, std::string> {
+        Task(w, [&bus_mu, &bus, id]() -> std::pair<bool, std::string> {
             std::lock_guard<std::mutex> g(bus_mu);
             Json p = Json::MakeObject();
             p.set("app", Json::MakeString(id));
@@ -121,7 +121,7 @@ int main() {
             BusEnvelope rep;
             const status_t rc = bus.Call(req, &rep, 3000000);
             return {rc == B_OK, rc == B_OK ? std::string() : rep.payload.Dump()};
-        }, [&, id](std::pair<bool, std::string> res) {
+        }, [&refresh, &status, &name_of, id](std::pair<bool, std::string> res) {
             if (res.first) {
                 // Refresh first (a grace-window failure becomes a launch_problem), then say it: the
                 // refresh clears the status, so the confirmation is set after it.
@@ -157,7 +157,7 @@ int main() {
             return;
         }
         status.set("loading\u2026");
-        Task(w, [&]() -> std::string {
+        Task(w, [&bus_mu, &bus]() -> std::string {
             std::lock_guard<std::mutex> g(bus_mu);
             BusEnvelope req;
             req.kind = "request";
@@ -167,7 +167,7 @@ int main() {
             BusEnvelope rep;
             const status_t rc = bus.Call(req, &rep, 2000000);
             return rc == B_OK ? rep.payload.Dump() : std::string();   // "" means the call failed
-        }, [&](std::string payload) {
+        }, [&status, &src, &tree, &w](std::string payload) {
             if (payload.empty()) {
                 status.set("the registry did not answer");
                 return;

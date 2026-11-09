@@ -20,7 +20,7 @@ int main() {
         // The worker outlives this scope by design; ~Window must join it and the token must stop
         // done() from running on a closed window.
         Task(w, [] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); return 42; },
-             [&](int v) { got.store(v); });
+             [&got](int v) { got.store(v); });
     }   // ~Window: lifetime_ = false, then join
 
     std::printf("task: after close got=%d (want -1, done must not run)\n", got.load());
