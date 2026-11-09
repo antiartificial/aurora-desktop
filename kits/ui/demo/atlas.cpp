@@ -86,6 +86,29 @@ int main() {
         Label("Move to trash").name("act:move-to-trash=Move to trash#write"),
     });
 
+    // ---- who draws the chrome -------------------------------------------------------------------
+    //
+    // Atlas has a header band of its own (the 44 px toolbar below) and the shell draws a header
+    // band from this descriptor, so a window that publishes AND draws its own chrome shows two.
+    // shell_chrome is the app saying "the shell's band is mine; I will not draw one", and it is a
+    // field of the descriptor rather than a command-line switch because it describes THIS window's
+    // surface -- the same app can publish a chrome-less full-bleed surface and a chromed one.
+    //
+    // What the shell's band carries is the descriptor: app, title and the five verbs. What is
+    // therefore LOST when Atlas stops drawing its toolbar is everything else that row held -- the
+    // filter field, the view menu (list/icons, sort, dotfiles), the preview toggle, the sidebar
+    // toggle, and the visible Back / Forward / Up buttons. Navigation is not lost, only its
+    // buttons: Alt+Left, Alt+Right, Alt+Up, Backspace, Ctrl+F and the folder list itself still
+    // work, because those are key hooks and list behaviour rather than toolbar widgets. The
+    // sidebar toggle and the view/sort controls have no key, so with the shell drawing the chrome
+    // they are genuinely gone until a header is built that can carry them as actions -- the
+    // contract cannot express a toggle with state today, which is why they are not verbs.
+    //
+    // ATLAS_LOCAL_CHROME=1 publishes the same surface with shell_chrome false and draws the full
+    // toolbar again, which is both the restore path and the way to compare the two frames.
+    SurfaceOpts surface_opts;
+    surface_opts.shell_chrome = getenv("ATLAS_LOCAL_CHROME") == nullptr;
+
     // AURORA_SURFACE_PATH says where the shell reads this window's surface. SurfaceJson owns the
     // bytes -- actions sorted by id, grants sorted, the escaping encoding/json uses -- so nothing
     // here reformats the result; a post-processing step would be a second encoder to keep in step.
@@ -100,7 +123,7 @@ int main() {
     // between them would only show up in a header nobody could explain.
     std::string surface_bytes, surface_why;
     const bool surface_ok =
-        SurfaceJson(surface_tree, kAppId, "Atlas", {}, &surface_bytes, &surface_why);
+        SurfaceJson(surface_tree, kAppId, "Atlas", {}, surface_opts, &surface_bytes, &surface_why);
     if (!surface_ok) fprintf(stderr, "atlas: surface: %s\n", surface_why.c_str());
 
     if (const char* path = getenv("AURORA_SURFACE_PATH"); surface_ok && path && *path) {
@@ -1118,73 +1141,97 @@ int main() {
                        },
                        0);
 
+    // The location, built once and drawn by both chrome owners. It is the one thing in the
+    // toolbar that has to survive: the contract publishes verbs, and navigation is deliberately
+    // not one of them (contracts/surface/README: Back and Forward change what you are looking
+    // at, not what the app does to anything), so a band built from the descriptor has nowhere to
+    // put "where am I" and the app must keep drawing it.
+    Desc location = (Either(path_edit,
+                            (TextField(path_text, nullptr,
+                                       [&](const std::string& to) {
+                                           path_edit.set(false);
+                                           go(to, true);
+                                           w.FocusNamed("files");
+                                       },
+                                       [&] {
+                                           path_edit.set(false);
+                                           w.FocusNamed("files");
+                                       },
+                                       FieldOpts{"go to…", false, 0, true})).name("pathbar"),
+                            (Breadcrumb(path,
+                                        [&](const std::string& to) { go(to, true); },
+                                        [&] { open_path_bar(); })).name("crumbs"))).name("location");
+
+    // The toolbar's two control clusters, as functions rather than as values: when the shell draws
+    // the chrome these nodes must not be built at all. A button that exists and is never placed is
+    // a second copy of an affordance the header already offers, and its closure would still hold
+    // the window for no reason.
+    auto nav_cluster = [&]() -> Desc {
+        // Cluster one: the sidebar toggle and the navigation triplet, 4 apart.
+        return HStack({
+                          IconButton(Glyph::Sidebar,
+                                     [&] {
+                                         const bool was = sidebar_open.get();
+                                         sidebar_open.set(!was);
+                                         // A toggle that fires more than once per
+                                         // gesture is a bug nobody can diagnose from
+                                         // "it flickers". ATLAS_TRACE makes each one
+                                         // say when it happened, so a loop reported
+                                         // from a live session arrives as a timestamped
+                                         // count rather than an impression.
+                                         if (getenv("ATLAS_TRACE")) {
+                                             static int n = 0;
+                                             static auto t0 = std::chrono::steady_clock::now();
+                                             const double ms = std::chrono::duration<double, std::milli>(
+                                                 std::chrono::steady_clock::now() - t0).count();
+                                             fprintf(stderr, "ATLAS sidebar toggle #%d at %.1f ms: %s -> %s\n",
+                                                     ++n, ms, was ? "open" : "closed",
+                                                     was ? "closed" : "open");
+                                             fflush(stderr);
+                                         }
+                                         w.Invalidate();
+                                     }),
+                          IconButton(Glyph::Back, [&] { go_back(); }, can_back),
+                          IconButton(Glyph::Forward, [&] { go_forward(); }, can_fwd),
+                          IconButton(Glyph::Up, [&] { go(parent_of(path.get()), true); },
+                                     can_up),
+                      },
+                      0.5f);
+    };
+
+    // Cluster two: the filter field at its stated 180, the view menu and the preview toggle.
+    auto tool_cluster = [&]() -> Desc {
+        return HStack({
+                          sized((TextField(filter, refilter, nullptr, close_filter,
+                                                FieldOpts{"filter files", false, 0, false})).name("filter"),
+                                180),
+                          MenuButton(Glyph::View, view_items),
+                          IconButton(Glyph::Preview,
+                                     [&] {
+                                         preview_open.set(!preview_open.get());
+                                         if (preview_open.get()) load_preview(selected.get());
+                                         w.Invalidate();
+                                     }),
+                      },
+                      0.5f);
+    };
+
+    // One row, two shapes. With the shell drawing the chrome the band is 36 and holds only the
+    // location: the header above it carries the app, the title and the verbs, so a 44 px row of
+    // Atlas's own buttons under it would be the doubling this whole path exists to stop. The
+    // location stays a row of its own because the alternative -- no path anywhere on screen -- is
+    // worse than a slimmer band.
+    Desc chrome_row = surface_opts.shell_chrome
+                          ? atlas::Band(HStack({location.weight(1)}, 1.5f), 36,
+                                        atlas::BandFill::Chrome, atlas::BandEdge::Bottom,
+                                        Insets(8, 8))
+                          : atlas::Band(HStack({nav_cluster(), location.weight(1), tool_cluster()},
+                                               1.5f),
+                                        44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom,
+                                        Insets(8, 8));
+
     w.SetRoot(VStack({
-        atlas::Band(
-            HStack({
-                       // Cluster one: the sidebar toggle and the navigation triplet, 4 apart.
-                       HStack({
-                                  IconButton(Glyph::Sidebar,
-                                             [&] {
-                                                 const bool was = sidebar_open.get();
-                                                 sidebar_open.set(!was);
-                                                 // A toggle that fires more than once per
-                                                 // gesture is a bug nobody can diagnose from
-                                                 // "it flickers". ATLAS_TRACE makes each one
-                                                 // say when it happened, so a loop reported
-                                                 // from a live session arrives as a timestamped
-                                                 // count rather than an impression.
-                                                 if (getenv("ATLAS_TRACE")) {
-                                                     static int n = 0;
-                                                     static auto t0 = std::chrono::steady_clock::now();
-                                                     const double ms = std::chrono::duration<double, std::milli>(
-                                                         std::chrono::steady_clock::now() - t0).count();
-                                                     fprintf(stderr, "ATLAS sidebar toggle #%d at %.1f ms: %s -> %s\n",
-                                                             ++n, ms, was ? "open" : "closed",
-                                                             was ? "closed" : "open");
-                                                     fflush(stderr);
-                                                 }
-                                                 w.Invalidate();
-                                             }),
-                                  IconButton(Glyph::Back, [&] { go_back(); }, can_back),
-                                  IconButton(Glyph::Forward, [&] { go_forward(); }, can_fwd),
-                                  IconButton(Glyph::Up, [&] { go(parent_of(path.get()), true); },
-                                             can_up),
-                              },
-                              0.5f),
-                       // The location, taking everything the two clusters do not.
-                       ((Either(path_edit,
-                                           (TextField(path_text, nullptr,
-                                                           [&](const std::string& to) {
-                                                               path_edit.set(false);
-                                                               go(to, true);
-                                                               w.FocusNamed("files");
-                                                           },
-                                                           [&] {
-                                                               path_edit.set(false);
-                                                               w.FocusNamed("files");
-                                                           },
-                                                           FieldOpts{"go to…", false, 0, true})).name("pathbar"),
-                                           (Breadcrumb(path,
-                                                            [&](const std::string& to) { go(to, true); },
-                                                            [&] { open_path_bar(); })).name("crumbs"))).name("location")).weight(1),
-                       // Cluster two: the filter field at its stated 180, the view menu and the
-                       // preview toggle.
-                       HStack({
-                                  sized((TextField(filter, refilter, nullptr, close_filter,
-                                                        FieldOpts{"filter files", false, 0, false})).name("filter"),
-                                        180),
-                                  MenuButton(Glyph::View, view_items),
-                                  IconButton(Glyph::Preview,
-                                             [&] {
-                                                 preview_open.set(!preview_open.get());
-                                                 if (preview_open.get()) load_preview(selected.get());
-                                                 w.Invalidate();
-                                             }),
-                              },
-                              0.5f),
-                   },
-                   1.5f),
-            44, atlas::BandFill::Chrome, atlas::BandEdge::Bottom, Insets(8, 8)),
+        chrome_row,
         // The sidebar and the rest. The preview stays a RevealX rather than becoming a second
         // split, and the difference is real: appearing is not resizing.
         (Either(sidebar_open,

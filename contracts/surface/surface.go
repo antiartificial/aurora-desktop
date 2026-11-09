@@ -44,6 +44,10 @@ type Descriptor struct {
 	Title   string   `json:"title"`
 	Actions []Action `json:"actions"`
 	Grants  []string `json:"grants,omitempty"`
+	// ShellChrome says the shell draws this surface's chrome, so the app should not draw its own.
+	// It belongs on the surface rather than in a process flag: it is a property of what is being
+	// presented, and the shell is the side that has to honour it.
+	ShellChrome bool `json:"shell_chrome,omitempty"`
 }
 
 // Validate rejects a descriptor the shell cannot draw or the controller cannot police. It is

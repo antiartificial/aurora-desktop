@@ -13,7 +13,7 @@ it and none of them may depend on another's code:
 ## Shape
 
 ```
-Descriptor { app, title, actions[Action], grants[] }
+Descriptor { app, title, actions[Action], grants[], shell_chrome? }
 Action     { id, label, effect, grants[] }
 Receipt    { action, artifact, effect, detail }
 effect     = "read" | "write" | "nominal"

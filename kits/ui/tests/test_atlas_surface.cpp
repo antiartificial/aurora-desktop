@@ -86,7 +86,8 @@ static bool find_action(const SurfaceDescriptor& d, const std::string& id, Actio
 // Run the real binary with the descriptor path set, and wait only for the FILE: the app publishes
 // before it opens a window, so a compositor-less run still leaves the claim behind, and a run with
 // a compositor is told to stop after one frame rather than waited on.
-static bool run_atlas(const std::string& bin, const std::string& dir, const std::string& out) {
+static bool run_atlas(const std::string& bin, const std::string& dir, const std::string& out,
+                      bool local_chrome = false) {
     unlink(out.c_str());
     const pid_t pid = fork();
     if (pid < 0) return false;
@@ -98,6 +99,10 @@ static bool run_atlas(const std::string& bin, const std::string& dir, const std:
         setenv("ATLAS_DIR", dir.c_str(), 1);
         setenv("ATLAS_FRAMES", "1", 1);
         setenv("ATLAS_SIZE", "480x320", 1);
+        // ATLAS_LOCAL_CHROME is the app's own opt-out: it publishes the same surface with
+        // shell_chrome false and draws its toolbar again.
+        if (local_chrome) setenv("ATLAS_LOCAL_CHROME", "1", 1);
+        else unsetenv("ATLAS_LOCAL_CHROME");
         // Deterministic failure of the window path: this test is about the document, not a frame.
         unsetenv("WAYLAND_DISPLAY");
         unsetenv("DISPLAY");
@@ -188,19 +193,43 @@ int main(int argc, char** argv) {
     Action f;
     CHECK(!find_action(d, "files", &f), "a node named without act: is not an action");
 
-    // Canonical bytes: sorted by id, one effect each, no grants key (empty is omitted). This is
-    // the document the shell and the controller compare against, so it is asserted exactly.
+    // Canonical bytes: sorted by id, one effect each, no grants key (empty is omitted), and
+    // shell_chrome because Atlas opts in -- the shell draws the band and Atlas drops its toolbar.
+    // This is the document the shell and the controller compare against, so it is asserted exactly.
     const std::string expected =
         R"({"app":"org.example.atlas","title":"Atlas","actions":[)"
         R"({"id":"copy-path","label":"Copy path","effect":"read"},)"
         R"({"id":"move-to-trash","label":"Move to trash","effect":"write"},)"
         R"({"id":"new-folder","label":"New folder","effect":"write"},)"
         R"({"id":"open","label":"Open","effect":"read"},)"
-        R"({"id":"rename","label":"Rename","effect":"write"}]})";
+        R"({"id":"rename","label":"Rename","effect":"write"}],)"
+        R"("shell_chrome":true})";
     std::string bytes;
-    CHECK(SurfaceJson(d, &bytes, &why), "the descriptor encodes: %s", why.c_str());
+    // Atlas publishes through the opt-in path, so the descriptor under test is encoded the way the
+    // app encodes it: the flag is the app's claim and the caller states it.
+    SurfaceOpts atlas_chrome;
+    atlas_chrome.shell_chrome = true;
+    CHECK(SurfaceJson(d, atlas_chrome, &bytes, &why), "the descriptor encodes: %s", why.c_str());
     CHECK(bytes == expected, "the canonical bytes are the contract's shape");
     if (bytes != expected) printf("      got: %s\n     want: %s\n", bytes.c_str(), expected.c_str());
+
+    // The flag is the app's claim and the default is false, so a caller that says nothing gets the
+    // old bytes. Asserted on the struct overload, which is the one that carries an option.
+    SurfaceOpts no_chrome;
+    std::string plain;
+    CHECK(SurfaceJson(d, no_chrome, &plain, &why), "the descriptor encodes without the flag");
+    CHECK(plain.find("shell_chrome") == std::string::npos,
+          "shell_chrome is absent unless the app asks for it");
+    // The same document without the flag: the default is false, so nothing else changes.
+    const std::string expected_plain =
+        R"({"app":"org.example.atlas","title":"Atlas","actions":[)"
+        R"({"id":"copy-path","label":"Copy path","effect":"read"},)"
+        R"({"id":"move-to-trash","label":"Move to trash","effect":"write"},)"
+        R"({"id":"new-folder","label":"New folder","effect":"write"},)"
+        R"({"id":"open","label":"Open","effect":"read"},)"
+        R"({"id":"rename","label":"Rename","effect":"write"}]})";
+    CHECK(plain == expected_plain,
+          "the unflagged bytes are the same document minus the one key");
 
     // A tree with no act: nodes has no actions at all -- the exclusion, stated on its own.
     SurfaceDescriptor empty;
@@ -223,13 +252,23 @@ int main(int argc, char** argv) {
             const std::string sub = dir + "/sub";
             mkdir(sub.c_str(), 0755);
             const std::string out_a = dir + "/surface.json", out_b = dir + "/surface-b.json";
+            const std::string out_c = dir + "/surface-local.json";
             const bool ran_a = run_atlas(bin, dir, out_a);
             const bool ran_b = run_atlas(bin, sub, out_b);
+            const bool ran_c = run_atlas(bin, dir, out_c, /*local_chrome=*/true);
             CHECK(ran_a, "%s published AURORA_SURFACE_PATH", bin.c_str());
             if (ran_a) {
                 const std::string got = read_file(out_a);
                 CHECK(got == expected, "the published bytes are exactly the canonical descriptor");
                 if (got != expected) printf("      got: %s\n", got.c_str());
+            }
+            // The opt-out publishes the same surface with the flag off, and the document is the
+            // old one: the flag is a claim the app states, not something the encoder infers.
+            if (ran_c) {
+                const std::string got = read_file(out_c);
+                CHECK(got.find("shell_chrome") == std::string::npos,
+                      "ATLAS_LOCAL_CHROME publishes no shell_chrome, so Atlas keeps its toolbar");
+                CHECK(got == plain, "the opt-out bytes are the same document minus the one key");
             }
             // The same descriptor in a different directory: nothing in the document depends on
             // where Atlas is looking, which is why navigation does not republish it.
@@ -242,6 +281,7 @@ int main(int argc, char** argv) {
             }
             unlink(out_a.c_str());
             unlink(out_b.c_str());
+            unlink(out_c.c_str());
             rmdir(sub.c_str());
             rmdir(dir.c_str());
         }

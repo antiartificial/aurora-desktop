@@ -29,8 +29,9 @@ namespace {
 // ---- a reader for the contract's shape only ------------------------------------------------
 
 struct J {
-    enum Kind { Str, Arr, Obj } kind = Str;
+    enum Kind { Str, Arr, Obj, Bool } kind = Str;
     std::string s;
+    bool b = false;
     std::vector<J> arr;
     std::vector<std::pair<std::string, J>> obj;
 
@@ -136,6 +137,10 @@ struct Parser {
             }
             return v;
         }
+        // true / false: the only two literals the contract's shape has, and only as the value of
+        // shell_chrome. Numbers and null stay outside the shape.
+        if (t.compare(i, 4, "true") == 0) { v.kind = J::Bool; v.b = true; i += 4; return v; }
+        if (t.compare(i, 5, "false") == 0) { v.kind = J::Bool; v.b = false; i += 5; return v; }
         if (t[i] == '{') {
             v.kind = J::Obj;
             ++i;
@@ -174,7 +179,7 @@ std::vector<std::string> strs(const J* v) {
 // Decode the contract's shape and reject anything it does not describe -- an unknown key, a
 // non-string where a string belongs, or trailing bytes. A reader this strict is what makes the
 // round-trip evidence about the encoder rather than about forgiveness.
-bool decode(const std::string& bytes, SurfaceDescriptor* d, std::string* why) {
+bool decode(const std::string& bytes, SurfaceDescriptor* d, SurfaceOpts* opts, std::string* why) {
     Parser p(bytes);
     J j = p.value();
     if (!p.ok || p.i != bytes.size()) { if (why) *why = "not one well-formed JSON value"; return false; }
@@ -182,7 +187,8 @@ bool decode(const std::string& bytes, SurfaceDescriptor* d, std::string* why) {
 
     for (const auto& kv : j.obj) {
         const std::string& k = kv.first;
-        if (k != "app" && k != "title" && k != "actions" && k != "grants") {
+        if (k != "app" && k != "title" && k != "actions" && k != "grants" &&
+            k != "shell_chrome") {
             if (why) *why = "unknown key \"" + k + "\"";
             return false;
         }
@@ -226,6 +232,12 @@ bool decode(const std::string& bytes, SurfaceDescriptor* d, std::string* why) {
         if (!is_str_array(grants)) { if (why) *why = "grants is not an array of strings"; return false; }
         o.grants = strs(grants);
     }
+    // Absent and false are one claim (omitempty), so the decoder may only raise the flag, never
+    // read a false as some third state.
+    if (const J* sc = j.field("shell_chrome")) {
+        if (sc->kind != J::Bool) { if (why) *why = "shell_chrome is not a boolean"; return false; }
+        if (opts) opts->shell_chrome = sc->b;
+    }
     *d = std::move(o);
     return true;
 }
@@ -237,14 +249,18 @@ bool ascending(const std::vector<std::string>& v) {
 }
 
 // Decode, check the three canonical properties, and re-encode: same value, same bytes.
-void round_trip(const std::string& bytes, SurfaceDescriptor* d, const char* what) {
+void round_trip(const std::string& bytes, SurfaceDescriptor* d, const SurfaceOpts& opts,
+                const char* what) {
     std::string why;
-    const bool decoded = decode(bytes, d, &why);
+    SurfaceOpts got;
+    const bool decoded = decode(bytes, d, &got, &why);
     check(decoded, what);
     if (!decoded) {
         std::printf("      why: %s\n      bytes: %s\n", why.c_str(), bytes.c_str());
         return;
     }
+    check(got.shell_chrome == opts.shell_chrome,
+          "shell_chrome decodes to what was encoded (absent and false are one claim)");
     std::vector<std::string> ids;
     for (const Action& a : d->actions) ids.push_back(a.id);
     check(ascending(ids), "actions arrive sorted by id");
@@ -252,7 +268,7 @@ void round_trip(const std::string& bytes, SurfaceDescriptor* d, const char* what
     for (const Action& a : d->actions) check(ascending(a.grants), "action grants arrive sorted");
 
     std::string again;
-    check(SurfaceJson(*d, &again), "the decoded descriptor re-encodes");
+    check(SurfaceJson(*d, opts, &again), "the decoded descriptor re-encodes");
     check(again == bytes, "re-encoding the decoded value is byte-identical (canonical)");
 }
 
@@ -305,7 +321,7 @@ int main() {
     if (bytes != expected) std::printf("      got: %s\n     want: %s\n", bytes.c_str(), expected.c_str());
 
     SurfaceDescriptor back;
-    round_trip(bytes, &back, "the canonical bytes decode");
+    round_trip(bytes, &back, SurfaceOpts{}, "the canonical bytes decode");
     check(back.actions.size() == 4 && back.actions[0].id == "delete", "decoding restores the actions");
     check(back.actions.size() == 4 && back.app == "org.example.atlas", "decoding restores app");
     check(back.actions.size() == 4 && back.actions[3].grants.size() == 2,
@@ -330,7 +346,7 @@ int main() {
                     R"({"id":"zulu","label":"zulu","effect":"nominal"})"
                     R"(],"grants":["g1","g2"]})",
           "actions and grants sort, so build order never reaches the wire");
-    round_trip(bytes, &back, "the sorted bytes decode");
+    round_trip(bytes, &back, SurfaceOpts{}, "the sorted bytes decode");
 
     // ---- escaping, including the HTML escapes Go's encoder emits -------------------------
     // q"b\s, a newline, a tab, < > &, SOH, and U+2028 (the line separator Go escapes for JS).
@@ -342,14 +358,45 @@ int main() {
                     R"(]})",
           "strings escape as encoding/json does, < > & included");
     if (bytes.find("\\u003c") == std::string::npos) std::printf("      escaped: %s\n", bytes.c_str());
-    check(decode(bytes, &back, &why) && back.actions.size() == 1 && back.actions[0].label == nasty,
+    check(decode(bytes, &back, nullptr, &why) && back.actions.size() == 1 && back.actions[0].label == nasty,
           "the escaped label round-trips to the original bytes");
 
     // ---- an empty tree: no actions, and no grants key at all (omitempty) ----------------
     check(SurfaceJson(Desc(), "x", "y", {}, &bytes, &why), "an empty tree encodes");
     check(bytes == R"({"app":"x","title":"y","actions":[]})",
           "an empty surface states an empty actions array and omits grants");
-    round_trip(bytes, &back, "the empty surface decodes");
+    round_trip(bytes, &back, SurfaceOpts{}, "the empty surface decodes");
+
+    // ---- shell_chrome: absent is false, and true survives the round trip --------------------
+    // The default is what keeps every app that never heard of this option on the same bytes it
+    // published before, so the absence is asserted, not just the false.
+    check(SurfaceJson(VStack({Label("a").name("act:open")}), "a", "t", {}, &bytes, &why),
+          "a surface with no options encodes");
+    check(bytes.find("shell_chrome") == std::string::npos,
+          "an app that does not opt in emits no shell_chrome key at all");
+
+    SurfaceOpts shell;
+    shell.shell_chrome = true;
+    check(SurfaceJson(tree, "org.example.atlas", "Atlas", {"ui:read"}, shell, &bytes, &why),
+          "a surface asking the shell to draw its chrome encodes");
+    check(bytes == R"({"app":"org.example.atlas","title":"Atlas","actions":[)"
+                    R"({"id":"delete","label":"Delete...","effect":"write"},)"
+                    R"({"id":"open","label":"open","effect":"nominal"},)"
+                    R"({"id":"peek","label":"peek","effect":"read"},)"
+                    R"({"id":"save","label":"Save all","effect":"nominal"}],)"
+                    R"("grants":["ui:read"],"shell_chrome":true})",
+          "shell_chrome is emitted last, where Go puts a field declared after Grants");
+    if (bytes.find("shell_chrome") == std::string::npos) std::printf("      got: %s\n", bytes.c_str());
+    round_trip(bytes, &back, shell, "the shell-chrome descriptor decodes with its claim intact");
+    check(back.app == "org.example.atlas" && back.actions.size() == 4,
+          "the flagged descriptor still decodes to the same surface");
+
+    // The same surface with the option off is byte-identical to the unflagged test above: the flag
+    // adds a key or nothing, never a different document.
+    SurfaceOpts off;
+    check(SurfaceJson(tree, "org.example.atlas", "Atlas", {"ui:read"}, off, &bytes, &why) &&
+              bytes.find("shell_chrome") == std::string::npos,
+          "shell_chrome=false encodes exactly as the default does");
 
     // ---- the refusals -------------------------------------------------------------------
     std::string bad;

@@ -216,7 +216,8 @@ bool SurfaceOf(const Desc& root, std::string app, std::string title,
     return true;
 }
 
-bool SurfaceJson(const SurfaceDescriptor& d, std::string* out, std::string* why) {
+bool SurfaceJson(const SurfaceDescriptor& d, const SurfaceOpts& opts, std::string* out,
+                 std::string* why) {
     std::string reason;
     if (!SurfaceOk(d, &reason)) {
         if (why) *why = reason;
@@ -271,17 +272,35 @@ bool SurfaceJson(const SurfaceDescriptor& d, std::string* out, std::string* why)
         o.append(",\"grants\":");
         put_strings(&o, grants);
     }
+
+    // Last, and only when true. The position is Go's: encoding/json marshals struct fields in
+    // declaration order, so once Descriptor gains `ShellChrome` after `Grants` the field lands
+    // exactly here. Omitted when false for the same reason grants are omitted when empty --
+    // omitempty on the Go side means absent and false are one claim, and emitting the false would
+    // make an app that never opted in produce new bytes for the same meaning.
+    if (opts.shell_chrome) o.append(",\"shell_chrome\":true");
     o.push_back('}');
 
     *out = std::move(o);
     return true;
 }
 
+bool SurfaceJson(const SurfaceDescriptor& d, std::string* out, std::string* why) {
+    return SurfaceJson(d, SurfaceOpts{}, out, why);
+}
+
 bool SurfaceJson(const Desc& root, std::string app, std::string title,
-                 std::vector<std::string> grants, std::string* out, std::string* why) {
+                 std::vector<std::string> grants, const SurfaceOpts& opts, std::string* out,
+                 std::string* why) {
     SurfaceDescriptor d;
     if (!SurfaceOf(root, std::move(app), std::move(title), std::move(grants), &d, why)) return false;
-    return SurfaceJson(d, out, why);
+    return SurfaceJson(d, opts, out, why);
+}
+
+bool SurfaceJson(const Desc& root, std::string app, std::string title,
+                 std::vector<std::string> grants, std::string* out, std::string* why) {
+    return SurfaceJson(root, std::move(app), std::move(title), std::move(grants), SurfaceOpts{},
+                       out, why);
 }
 
 

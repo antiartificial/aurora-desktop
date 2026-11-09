@@ -57,7 +57,7 @@ use smithay::{
     wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
 };
 
-use super::{layout::Rect, Res, Shell};
+use super::{apps::display_text, layout::Rect, Res, Shell};
 use crate::{
     text::{FontSpec, TextSystem},
     trusted::draw::{clean, Canvas},
@@ -83,6 +83,18 @@ const PAD_X: f32 = 14.0;
 const PAD_Y: f32 = 9.0;
 const GAP: f32 = 14.0;
 const RADIUS: f32 = 10.0;
+/// How far an action's hit region reaches past its ink, logical pixels. The
+/// labels are separated by `GAP`, so half of the gap on each side makes the
+/// whole row between two labels clickable without ever overlapping a
+/// neighbour: a control you have to aim at is a label pretending to be one.
+const HIT_PAD: f32 = 5.0;
+/// How long an action's answer stays on the band, seconds. A receipt is
+/// evidence about ONE click, not a standing claim about the window, so it is
+/// retired even if the person does nothing. Without this the band would
+/// accumulate history and stop being chrome.
+const NOTICE_TTL: Duration = Duration::from_secs(8);
+/// Between the title row and the answer beneath it, logical pixels.
+const NOTICE_GAP: f32 = 4.0;
 
 /// One thing a surface offers. `effect` is validated because an unknown effect
 /// is an unpoliced action (the contract says so, and this is the second reader).
@@ -194,6 +206,98 @@ pub struct WindowFrame {
     pub h: i32,
 }
 
+/// The band's last answer to a click: what the controller did, or why it would
+/// not. There is ONE slot, replaced by the next click and retired by
+/// `NOTICE_TTL`, because a band that accumulated lines would stop describing a
+/// window and start being a log.
+#[derive(Clone, Debug)]
+pub struct Notice {
+    /// Already cleaned and bounded; the band draws it, it never parses it.
+    pub text: String,
+    /// True only when the controller minted a receipt this header may present
+    /// as ordinary chrome. A refusal, a missing bus, and a receipt whose
+    /// effect the header must not depict as done all draw in the action
+    /// colour and log `receipt=false`.
+    pub receipt: bool,
+    /// The action id the answer is about, so the log line says which click it
+    /// answers rather than merely that something happened.
+    pub action: String,
+    at: Instant,
+}
+
+impl Notice {
+    fn new(action: &str, text: String, receipt: bool) -> Notice {
+        Notice {
+            text,
+            receipt,
+            action: action.to_string(),
+            at: Instant::now(),
+        }
+    }
+}
+
+/// One finished `ui.act@v1`, on its way from the bus thread back to the loop.
+pub struct ActDone {
+    app: String,
+    action: String,
+    /// The label the person clicked. The reply names an action id; the band
+    /// must say what was asked, not make the person map an id back to a word.
+    label: String,
+    result: Result<serde_json::Value, String>,
+}
+
+/// The band's action requests: a worker thread per click, and the channel its
+/// answer lands on.
+///
+/// The compositor is a single-threaded event loop and a `ui.act` runs the
+/// app's verb, which can take as long as the app likes; the same reason the
+/// surface relay has its own thread (see `SurfaceRelay`) applies here. The
+/// loop only ever calls `take`, which is `try_recv`.
+pub struct ActRelay {
+    tx: mpsc::Sender<ActDone>,
+    rx: mpsc::Receiver<ActDone>,
+}
+
+impl ActRelay {
+    pub fn new() -> ActRelay {
+        let (tx, rx) = mpsc::channel();
+        ActRelay { tx, rx }
+    }
+
+    /// Ask the controller to run `action` of `app`. Returns only when the
+    /// thread is running, never when the bus answered.
+    fn ask(&self, sock: PathBuf, app: String, action: String, label: String) -> Result<(), String> {
+        let tx = self.tx.clone();
+        std::thread::Builder::new()
+            .name("header-act".into())
+            .spawn(move || {
+                // The same call the relay uses, addressed to the service the
+                // controller registers (`registry`). It is the CONTROLLER that
+                // polices the action: this band never decides that a click is
+                // allowed, it only asks.
+                let result = crate::trusted::verify::call_to(
+                    &sock,
+                    "registry",
+                    "ui.act@v1",
+                    Some(serde_json::json!({ "app": app, "action": action })),
+                );
+                let _ = tx.send(ActDone {
+                    app,
+                    action,
+                    label,
+                    result,
+                });
+            })
+            .map(|_| ())
+            .map_err(|e| format!("cannot start a worker thread: {e}"))
+    }
+
+    /// A finished answer, if one has landed. Never blocks.
+    pub fn take(&self) -> Option<ActDone> {
+        self.rx.try_recv().ok()
+    }
+}
+
 /// A loaded header: its descriptor, and the texture the last prepare produced.
 pub struct Header {
     pub desc: Descriptor,
@@ -207,6 +311,12 @@ pub struct Header {
     /// What `render` placed, texture-relative device pixels, so a move can re-log
     /// a complete layout line without re-rasterising.
     placed: Vec<(String, i32, i32, i32)>,
+    /// The actions drawn this time, texture-relative device pixels: `(id, x, y,
+    /// w, h)`. A label that did not fit is NOT here, because a control that is
+    /// not on screen must not be clickable.
+    hits: Vec<(String, i32, i32, i32, i32)>,
+    /// The last answer drawn on the band, if any.
+    notice: Option<Notice>,
     /// Whether the band was drawn last frame, so disappearing is logged once
     /// instead of every frame, and is not logged before it ever appeared.
     shown: bool,
@@ -230,6 +340,8 @@ impl Header {
             w: 0,
             h: 0,
             placed: vec![],
+            hits: vec![],
+            notice: None,
             shown: false,
             logged: String::new(),
             live: false,
@@ -240,13 +352,22 @@ impl Header {
     /// the canvas and the returned placements are DEVICE pixels. The band is
     /// never wider than the output, so a long descriptor cannot push chrome off
     /// screen: the title ellipsises and actions that do not fit are dropped.
+    ///
+    /// The third return is the hit map of the actions actually drawn, so a
+    /// click and the pixels it lands on are produced by the same pass: a label
+    /// drawn but absent from the map, or a map entry with no label, could only
+    /// come from a second layout nobody kept in step.
     fn render(
         &self,
         text: &mut TextSystem,
         scale: f64,
         font: f32,
         avail: f32,
-    ) -> (Canvas, Vec<(String, i32, i32, i32)>) {
+    ) -> (
+        Canvas,
+        Vec<(String, i32, i32, i32)>,
+        Vec<(String, i32, i32, i32, i32)>,
+    ) {
         let s = scale;
         let dv = |v: f32| (v as f64 * s).round() as i32;
         let dlen = |v: f32| ((v as f64 * s).ceil() as i32).max(1);
@@ -270,7 +391,17 @@ impl Header {
         let aspec = FontSpec::new(font * 0.95);
         let (tm, am) = (text.metrics(&tspec), text.metrics(&aspec));
         let row = (tm.ascent + tm.descent).max(am.ascent + am.descent);
-        let h = row + PAD_Y * 2.0;
+        // The answer sits in a row of its own under the title: the band is the
+        // shape of the promise, and a receipt squeezed between two labels would
+        // read as one more thing the surface offers.
+        let notice = self.notice.as_ref().map(|n| (clean(&n.text), n.receipt));
+        let h = row
+            + PAD_Y * 2.0
+            + if notice.is_some() {
+                NOTICE_GAP + row
+            } else {
+                0.0
+            };
 
         let chip_pad = 7.0;
         let grant_w = text.string_width(&grant_label, &aspec, s);
@@ -284,14 +415,16 @@ impl Header {
             title = ellipsize(text, &title, &tspec, s, title_room);
         }
         let title_w = text.string_width(&title, &tspec, s);
-        let acts: Vec<(String, f32)> = self
+        // The id travels with the label: the hit map is keyed by what
+        // `ui.act@v1` names, not by the word drawn for it.
+        let acts: Vec<(String, String, f32)> = self
             .desc
             .actions
             .iter()
             .map(|a| {
                 let l = clean(if a.label.is_empty() { &a.id } else { &a.label });
                 let w = text.string_width(&l, &aspec, s);
-                (l, w)
+                (a.id.clone(), l, w)
             })
             .collect();
 
@@ -303,12 +436,22 @@ impl Header {
         let natural = PAD_X
             + title_w
             + GAP
-            + acts.iter().map(|(_, w)| *w).sum::<f32>()
+            + acts.iter().map(|(_, _, w)| *w).sum::<f32>()
             + gaps
             + GAP
             + chip_w
             + PAD_X;
-        let w = natural.min(avail).max(chip_w + PAD_X * 2.0 + GAP);
+        // The answer's own width is part of the band's: a receipt that named
+        // nothing but "…" would not be evidence of anything. It still cannot
+        // push the band past the window, so a long path ellipsises.
+        let notice_w = notice
+            .as_ref()
+            .map(|(t, _)| PAD_X * 2.0 + text.string_width(t, &aspec, s))
+            .unwrap_or(0.0);
+        let w = natural
+            .max(notice_w)
+            .min(avail)
+            .max(chip_w + PAD_X * 2.0 + GAP);
 
         let (pw, ph) = (dlen(w).max(1) as usize, dlen(h).max(1) as usize);
         let mut c = Canvas::new(pw, ph, [0, 0, 0, 0]);
@@ -329,18 +472,47 @@ impl Header {
         // The chip's left edge is the hard stop for actions: a label that
         // cannot fit is dropped, not allowed to run under the grants count.
         let limit = w - PAD_X - chip_w - GAP;
-        for (label, lw) in &acts {
+        let mut hits = vec![];
+        let ay = base(am.ascent + am.descent);
+        for (id, label, lw) in &acts {
             if x + *lw > limit {
                 break;
             }
-            let ay = base(am.ascent + am.descent);
             text.draw(&mut c, x, ay, label, &aspec, ACTION, s);
             placed.push(((*label).to_string(), dv(x), dv(ay), dlen(*lw)));
+            // The hit region is the label plus half the gap on each side: the
+            // row reads as three controls, not three words.
+            hits.push((
+                id.clone(),
+                dv(x - HIT_PAD),
+                dv(PAD_Y - 1.0),
+                dlen(*lw + HIT_PAD * 2.0),
+                dlen(row + 2.0),
+            ));
             x += *lw + GAP;
         }
 
+        // The answer, in the band and in the band's own vocabulary: the
+        // receipt blue of the grants chip for a receipt, the ordinary action
+        // grey otherwise. No red and no danger mark -- see the module doc.
+        if let Some((line, receipt)) = &notice {
+            let room = (w - PAD_X * 2.0).max(20.0);
+            let mut line = line.clone();
+            if text.string_width(&line, &aspec, s) > room {
+                line = ellipsize(text, &line, &aspec, s, room);
+            }
+            let ny = PAD_Y + row + NOTICE_GAP;
+            let colour = if *receipt { GRANT_TEXT } else { ACTION };
+            text.draw(&mut c, PAD_X, ny, &line, &aspec, colour, s);
+            let nw = text.string_width(&line, &aspec, s);
+            placed.push((line, dv(PAD_X), dv(ny), dlen(nw)));
+        }
+
         let chip_x = w - PAD_X - chip_w;
-        let chip_y = (h - chip_h) / 2.0;
+        // The chip keeps its place in the title row when the answer adds a row
+        // beneath: a grant count that slid down between the two would read as
+        // part of the receipt.
+        let chip_y = PAD_Y + (row - chip_h) / 2.0;
         c.round_rect(
             dv(chip_x),
             dv(chip_y),
@@ -354,7 +526,38 @@ impl Header {
         text.draw(&mut c, gx, gy, &grant_label, &aspec, GRANT_TEXT, s);
         placed.push((grant_label, dv(gx), dv(gy), dlen(grant_w)));
 
-        (c, placed)
+        (c, placed, hits)
+    }
+
+    /// Does `dp` (device pixels) land on this band?
+    pub fn contains(&self, dp: (f64, f64)) -> bool {
+        self.rect.is_some_and(|r| r.contains(dp.0, dp.1))
+    }
+
+    /// The action id a point hits, if any.
+    ///
+    /// The point is converted to texture coordinates rather than the hit map
+    /// being moved on every frame: `rect` is where the band is, the map is
+    /// what the texture says, and only a move between them could change.
+    pub fn action_at(&self, dp: (f64, f64)) -> Option<&str> {
+        let r = self.rect?;
+        let (x, y) = (dp.0 - r.x as f64, dp.1 - r.y as f64);
+        self.hits
+            .iter()
+            .find(|(_, hx, hy, hw, hh)| {
+                let (hx, hy, hw, hh) = (*hx as f64, *hy as f64, *hw as f64, *hh as f64);
+                x >= hx && y >= hy && x < hx + hw && y < hy + hh
+            })
+            .map(|(id, ..)| id.as_str())
+    }
+
+    /// The last answer, for the texture key: a receipt appearing, changing or
+    /// expiring must repaint the band, and nothing else may.
+    fn notice_key(&self) -> String {
+        match &self.notice {
+            Some(n) => format!("{}|{}", n.receipt, n.text),
+            None => String::new(),
+        }
     }
 }
 
@@ -769,9 +972,19 @@ impl Shell {
             // band wider than its window would float over its neighbour and
             // describe the wrong surface.
             let avail = (t.w as f64).min(output_avail).max(120.0) as f32;
-            let key = format!("{}|{}|{}|{}", h.key, scale, font, avail.round() as i32);
+            // The answer is part of the picture, so it is part of the key: a
+            // receipt that arrives or expires must repaint, and an unchanged
+            // one must not.
+            let key = format!(
+                "{}|{}|{}|{}|{}",
+                h.key,
+                scale,
+                font,
+                avail.round() as i32,
+                h.notice_key()
+            );
             if !h.tex.as_ref().is_some_and(|(k, _)| *k == key) {
-                let (c, placed) = h.render(text, scale, font, avail);
+                let (c, placed, hits) = h.render(text, scale, font, avail);
                 let tex = r.import_memory(
                     &c.rgba,
                     Fourcc::Abgr8888,
@@ -781,6 +994,7 @@ impl Shell {
                 h.w = c.w as i32;
                 h.h = c.h as i32;
                 h.placed = placed;
+                h.hits = hits;
                 h.tex = Some((key, tex));
             }
             // Left edge on the window's left edge, bottom edge `EDGE_GAP` above the
@@ -832,6 +1046,225 @@ impl Shell {
             }
         }
         Ok(())
+    }
+}
+
+impl Shell {
+    /// A left press at `dp` (device pixels). Returns whether the band took it.
+    ///
+    /// A band is chrome: the window under it must never see a click on it,
+    /// which is why a hit on the band's empty pixels is swallowed too and only
+    /// a hit on an action starts anything.
+    pub fn header_press(&mut self, dp: (f64, f64)) -> bool {
+        let Some(i) = self.surface_headers.iter().position(|h| h.contains(dp)) else {
+            return false;
+        };
+        // A label that was dropped for want of room is not in the hit map, so
+        // a click there lands on the band and does nothing, which is exactly
+        // what the person sees.
+        let Some(id) = self.surface_headers[i].action_at(dp).map(str::to_string) else {
+            return true;
+        };
+        self.start_act(i, &id);
+        true
+    }
+
+    /// Ask the controller to run action `id` of the header at `i`.
+    ///
+    /// Every way this can fail to even ask is SAID ON THE BAND: silence would
+    /// leave a person clicking a control that does nothing with no way to tell
+    /// a slow controller from a missing one.
+    fn start_act(&mut self, i: usize, id: &str) {
+        let resolved = self.surface_headers.get(i).map(|h| {
+            let action = h.desc.actions.iter().find(|a| a.id == id).map(|a| {
+                let label = clean(if a.label.is_empty() { &a.id } else { &a.label });
+                (a.id.clone(), label)
+            });
+            (h.desc.app.clone(), action)
+        });
+        let Some((app, action)) = resolved else {
+            return;
+        };
+        let Some((action, label)) = action else {
+            let text = format!("{id}: no action in this surface");
+            tracing::warn!("surface: header click {id:?} of {app}: {text}");
+            self.set_header_notice(i, Notice::new(id, text, false));
+            return;
+        };
+
+        let Some(sock) = self.registry.sock.clone() else {
+            let text = format!("{label}: no bus, nothing sent");
+            tracing::warn!(
+                "surface: header action {action:?} of {app}: no --bus-socket, so ui.act@v1 cannot be sent"
+            );
+            self.set_header_notice(i, Notice::new(&action, text, false));
+            return;
+        };
+        match self
+            .header_acts
+            .ask(sock, app.clone(), action.clone(), label.clone())
+        {
+            Ok(()) => {
+                // The band says what it is waiting for, so a slow invoke does
+                // not look like a dead control. It expires like any answer.
+                let text = format!("{label}: asking the controller\u{2026}");
+                self.set_header_notice(i, Notice::new(&action, text, false));
+            }
+            Err(e) => {
+                let text = format!("{label}: cannot ask the controller ({e})");
+                tracing::warn!("surface: header action {action:?} of {app}: {e}");
+                self.set_header_notice(i, Notice::new(&action, text, false));
+            }
+        }
+    }
+
+    /// Put `n` on header `i` and log it. The log line is the band's own
+    /// statement, so a test (or a person reading the log) can tell a receipt
+    /// from a refusal without decoding pixels.
+    fn set_header_notice(&mut self, i: usize, n: Notice) {
+        if let Some(h) = self.surface_headers.get_mut(i) {
+            tracing::info!(
+                "surface: header action app={} id={} receipt={} text={:?}",
+                h.desc.app,
+                n.action,
+                n.receipt,
+                n.text
+            );
+            h.notice = Some(n);
+        }
+    }
+
+    /// Per-frame: take finished answers, and retire old ones.
+    pub fn poll_header_acts(&mut self) {
+        while let Some(done) = self.header_acts.take() {
+            self.apply_act(done);
+        }
+        // A receipt is evidence about one click, not a badge. Left up it would
+        // become a standing claim about the window, and a stale refusal would
+        // look like the current state of the app.
+        for h in &mut self.surface_headers {
+            if h.notice
+                .as_ref()
+                .is_some_and(|n| n.at.elapsed() >= NOTICE_TTL)
+            {
+                h.notice = None;
+                tracing::info!("surface: header answer expired app={}", h.desc.app);
+            }
+        }
+    }
+
+    /// Show what the controller answered. A receipt is drawn as one only when
+    /// the header can honestly call it that (see `receipt_line`).
+    fn apply_act(&mut self, d: ActDone) {
+        let Some(i) = self
+            .surface_headers
+            .iter()
+            .position(|h| h.desc.app == d.app)
+        else {
+            tracing::info!(
+                "surface: action {}/{} finished after its band went",
+                d.app,
+                d.action
+            );
+            return;
+        };
+        let (text, receipt) = match &d.result {
+            Ok(v) if v["ok"].as_bool() == Some(true) && v["receipt"].is_object() => {
+                receipt_line(&d.label, v)
+            }
+            Ok(v) if v["ok"].as_bool() == Some(true) => {
+                // "ok" without a receipt is not evidence of anything: say so
+                // rather than invent a success.
+                (
+                    format!("{}: controller returned no receipt", d.label),
+                    false,
+                )
+            }
+            // The controller's own words. Its error payload carries the
+            // message; `call_to` renders the envelope, so the message is
+            // recovered from it rather than rephrased here.
+            Ok(v) => (
+                format!(
+                    "{}: {}",
+                    d.label,
+                    v["message"]
+                        .as_str()
+                        .filter(|m| !m.is_empty())
+                        .map(clean)
+                        .unwrap_or_else(|| "the controller gave no reason".into())
+                ),
+                false,
+            ),
+            Err(e) => (failure_text(&d.label, e), false),
+        };
+        // A message is untrusted text from another process: one line, bounded.
+        let text = display_text(&text, 160);
+        self.set_header_notice(
+            i,
+            Notice {
+                text,
+                receipt,
+                action: d.action,
+                at: Instant::now(),
+            },
+        );
+    }
+}
+
+/// The band line for a receipt the controller minted.
+///
+/// The effect is the MANIFEST's (the controller refuses a surface that
+/// relabels one), and the header has no danger vocabulary: a destructive
+/// action must never be drawn as if it were ordinary chrome that succeeded.
+/// So only read/write/nominal are presented as receipts; anything else says
+/// exactly what the controller reported and nothing about an outcome.
+fn receipt_line(label: &str, v: &serde_json::Value) -> (String, bool) {
+    let r = &v["receipt"];
+    let effect = r["effect"].as_str().unwrap_or("");
+    if !matches!(effect, "read" | "write" | "nominal") {
+        let what = if effect.is_empty() {
+            "an effect it did not name"
+        } else {
+            effect
+        };
+        return (format!("{label}: controller reported {what}"), false);
+    }
+    let artifact = r["artifact"].as_str().unwrap_or("");
+    if artifact.is_empty() {
+        // No file to name: the effect is the whole of what the receipt says.
+        (format!("{label}: {effect}"), true)
+    } else {
+        (format!("{label}: {artifact}"), true)
+    }
+}
+
+/// `call_to` renders a controller refusal as `bus refused <verb>: <payload>`,
+/// where the payload is the controller's `{code,message,detail}`. Recovering
+/// the message keeps the envelope parser in one place (`verify`) instead of
+/// growing a second one here; a payload that does not parse is shown as it
+/// arrived, which is still the truth.
+fn refusal_message(e: &str) -> Option<String> {
+    let rest = e.strip_prefix("bus refused ")?;
+    let (_, payload) = rest.split_once(": ")?;
+    Some(
+        match serde_json::from_str::<serde_json::Value>(payload.trim()) {
+            Ok(v) => v["message"]
+                .as_str()
+                .filter(|m| !m.is_empty())
+                .map(clean)
+                .unwrap_or_else(|| clean(payload)),
+            Err(_) => clean(payload),
+        },
+    )
+}
+
+/// A failed `ui.act`: the controller's refusal if the bus carried one,
+/// otherwise the transport error, which is not the same thing as a refusal and
+/// must not be described as one.
+fn failure_text(label: &str, e: &str) -> String {
+    match refusal_message(e) {
+        Some(m) => format!("{label} refused: {m}"),
+        None => format!("{label}: bus error: {e}"),
     }
 }
 

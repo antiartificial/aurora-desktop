@@ -189,6 +189,139 @@ fn write(dir: &Path, name: &str, body: &str) -> String {
     p.to_str().unwrap().to_string()
 }
 
+/// A registry that answers the shell's background polls with nothing, records
+/// every `ui.act@v1` it is asked, and answers each with `reply`.
+///
+/// `Ok` becomes a response envelope and `Err` an error one, the two shapes the
+/// controller actually sends, so a test can hold a refusal to the controller's
+/// own words: the band must show those, not a sentence it made up.
+fn fake_act_bus<F>(dir: &Path, reply: F) -> (String, Arc<Mutex<Vec<serde_json::Value>>>)
+where
+    F: Fn(&serde_json::Value) -> Result<serde_json::Value, serde_json::Value>
+        + Send
+        + Sync
+        + 'static,
+{
+    let path = dir.join("act.sock");
+    let l = UnixListener::bind(&path).unwrap();
+    let seen: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(vec![]));
+    let reply = Arc::new(reply);
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let (reply, log) = (reply.clone(), log.clone());
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                if BufReader::new(&s).read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    return;
+                };
+                if req["to"] != "registry" {
+                    return;
+                }
+                let verb = req["verb"].as_str().unwrap_or("");
+                let (kind, payload) = match verb {
+                    "ui.act@v1" => {
+                        let q = req["payload"].clone();
+                        log.lock().unwrap().push(q.clone());
+                        match reply(&q) {
+                            Ok(p) => ("response", p),
+                            Err(p) => ("error", p),
+                        }
+                    }
+                    // The shell's own polls: empty answers mean the only band
+                    // in the session is the one `--surface-header` gave it.
+                    "registry.apps@v1" => ("response", serde_json::json!({"apps": []})),
+                    "registry.verbs@v1" => ("response", serde_json::json!({"verbs": []})),
+                    "surface.list@v1" => ("response", serde_json::json!({"surfaces": []})),
+                    _ => return,
+                };
+                let out = serde_json::json!({
+                    "id": "s1", "kind": kind, "corr": req["id"], "verb": verb, "payload": payload,
+                });
+                let _ = writeln!(&s, "{out}");
+            });
+        }
+    });
+    (path.to_str().unwrap().to_string(), seen)
+}
+
+/// A compositor with the fixture band bound to a mapped window, and `bus` as
+/// its registry. The layout is returned only once the band sits at the moved
+/// window, because that is where the pointer coordinates come from.
+fn band_with_bus(dir: &Path, bus: &str) -> (Comp, Layout) {
+    let fixture = write(dir, "surface.json", FIXTURE);
+    let mut c = Comp::start(&[
+        "--surface-header",
+        &fixture,
+        "--bus-socket",
+        bus,
+        "--scale",
+        "1",
+        "--freeze-time",
+    ]);
+    window(&mut c, PHOTOS, "Holiday Photos", "640x360", (140, 260), 0);
+    wait_for("the band at its moved window", || {
+        layouts(&c.log())
+            .get(PHOTOS)
+            .is_some_and(|l| l.window == [140, 260, 640, 360])
+    });
+    let l = layouts(&c.log()).remove(PHOTOS).unwrap();
+    (c, l)
+}
+
+/// Click the label `name` of `l`. `pointer` and `click` are the same two
+/// commands a person's press arrives by, so this exercises the real hit-test.
+fn click_label(c: &Comp, l: &Layout, name: &str) {
+    let (text, x, y, w) = placed(l, name);
+    assert_eq!(
+        l.scale, 1.0,
+        "the pointer takes logical units; these tests run at scale 1"
+    );
+    let (px, py) = (x + w / 2, y + 4);
+    c.inject(&format!("pointer {px} {py}"));
+    c.inject("click");
+    println!("CLICK {text:?} at {px},{py} (band {:?})", l.panel);
+}
+
+/// The band's newest layout, after an answer has repainted it.
+fn relayout(c: &Comp) -> Layout {
+    layouts(&c.log()).remove(PHOTOS).unwrap()
+}
+
+fn band_text(l: &Layout, prefix: &str) -> (String, i32, i32, i32) {
+    l.text
+        .iter()
+        .find(|t| t.0.starts_with(prefix))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no band text starting {prefix:?} in {:?}",
+                l.text.iter().map(|t| &t.0).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// A line drawn on the band is really on the band: ink where the layout says.
+fn assert_drawn(img: &Img, l: &Layout, t: &(String, i32, i32, i32)) {
+    let (name, x, y, w) = t;
+    let h = (l.panel[1] + l.panel[3] - (y - 3)).max(1);
+    let b = ink(img, [x - 4, y - 3, w + 8, h])
+        .unwrap_or_else(|| panic!("no ink for {name:?} at {x},{y} on band {:?}", l.panel));
+    assert!(
+        (b.0 - *x).abs() <= 4,
+        "{name}: ink {b:?} vs x {x} on band {:?}",
+        l.panel
+    );
+    assert!(
+        *y >= l.panel[1] && *y <= l.panel[1] + l.panel[3],
+        "{name}: y {y} is inside the band {:?}",
+        l.panel
+    );
+}
+
 /// A window of `app` at `size`, moved to `(x, y)` LOGICAL once it is mapped.
 fn window(c: &mut Comp, app: &str, title: &str, size: &str, at: (i32, i32), index: usize) {
     c.client_args(&[
@@ -779,5 +912,140 @@ fn a_surface_named_only_by_the_published_list_draws_at_its_window_and_goes_when_
         count_in(&off, FILL, l.panel),
         0,
         "no header pixels left where the withdrawn list-only band was"
+    );
+}
+
+#[test]
+fn an_allowed_action_shows_a_receipt_line_naming_the_artifact() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bus, seen) = fake_act_bus(dir.path(), |_q| {
+        Ok(serde_json::json!({
+            "ok": true,
+            "receipt": {"action": "open", "effect": "read", "artifact": "/tmp/holiday-open.png"},
+        }))
+    });
+    let (c, l) = band_with_bus(dir.path(), &bus);
+
+    click_label(&c, &l, "Open");
+    wait_for("the receipt on the band", || {
+        c.log().contains("receipt=true")
+    });
+
+    // The click was one ui.act for ONE action, naming the app and the id the
+    // descriptor gave it -- not the word drawn for it.
+    let req = seen.lock().unwrap().clone();
+    assert_eq!(req.len(), 1, "one click, one ui.act@v1: {req:?}");
+    assert_eq!(req[0]["app"], PHOTOS);
+    assert_eq!(req[0]["action"], "open", "the click sent the action's id");
+
+    let l = relayout(&c);
+    let line = band_text(&l, "Open:_");
+    assert!(
+        line.0.contains("holiday-open.png"),
+        "the receipt names the artifact: {line:?}"
+    );
+    let img = dump(&c, "receipt-allowed.png");
+    assert_drawn(&img, &l, &line);
+
+    // A receipt is a row of its own: the band is taller than one row, and the
+    // receipt sits under the title rather than beside the actions.
+    let title = placed(&l, "Holiday_Photos");
+    assert!(line.2 > title.2, "the receipt is below the title row");
+    assert!(
+        l.panel[3] > 20,
+        "the band grew to hold the answer: {:?}",
+        l.panel
+    );
+}
+
+#[test]
+fn a_refused_action_shows_the_controllers_message_and_no_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    // The controller's own words, in the shape its error envelope carries.
+    const WHY: &str = "action rename needs grant path:/home/user/photos";
+    let (bus, seen) = fake_act_bus(dir.path(), |_q| {
+        Err(serde_json::json!({
+            "ok": false,
+            "code": "grant_not_held",
+            "message": WHY,
+            "detail": "grant not declared in the app's manifest capabilities, so nothing ran",
+        }))
+    });
+    let (c, l) = band_with_bus(dir.path(), &bus);
+
+    click_label(&c, &l, "Rename");
+    // Wait for the CONTROLLER's answer, not merely some non-receipt state:
+    // "asking the controller…" is also `receipt=false`, so waiting on that
+    // would let the test read the bus before the reply had landed.
+    wait_for("the refusal on the band", || {
+        c.log().contains("Rename refused:")
+    });
+
+    let req = seen.lock().unwrap().clone();
+    assert_eq!(req.len(), 1, "the click still asked: {req:?}");
+    assert_eq!(req[0]["action"], "rename");
+
+    let log = c.log();
+    assert!(
+        log.contains(WHY),
+        "the band shows the controller's message, not a paraphrase: {log}"
+    );
+    assert!(
+        !log.contains("receipt=true"),
+        "a refused action must never be drawn as a receipt: {log}"
+    );
+
+    // The refusal is on the band, in the action colour, and prefixed with the
+    // label so it is clear WHICH control was refused.
+    let l = relayout(&c);
+    let line = band_text(&l, "Rename_refused:_");
+    assert!(
+        line.0.contains("needs_grant_path:/home/user/photos"),
+        "the refusal keeps the message: {line:?}"
+    );
+    let img = dump(&c, "receipt-refused.png");
+    assert_drawn(&img, &l, &line);
+}
+
+#[test]
+fn the_band_hit_region_maps_each_click_to_the_action_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bus, seen) = fake_act_bus(dir.path(), |q| {
+        Ok(serde_json::json!({
+            "ok": true,
+            "receipt": {"action": q["action"], "effect": "nominal"},
+        }))
+    });
+    let (c, l) = band_with_bus(dir.path(), &bus);
+
+    // Every label in the fixture is a control: what a click sends is the id of
+    // the action under the pointer, and the fixture sorts by id (open, rename,
+    // zoom), so this also proves the hit map follows the DRAWN order.
+    click_label(&c, &l, "Open");
+    wait_for("the first ui.act", || seen.lock().unwrap().len() == 1);
+    assert_eq!(seen.lock().unwrap()[0]["action"], "open");
+
+    let l = relayout(&c);
+    click_label(&c, &l, "Zoom_In");
+    wait_for("the second ui.act", || seen.lock().unwrap().len() == 2);
+    assert_eq!(
+        seen.lock().unwrap()[1]["action"],
+        "zoom",
+        "the zoom label sends zoom, not the previous or the next action"
+    );
+
+    // The gap between two labels is band, not a control: no third request.
+    let (_, x, _, w) = placed(&l, "Rename");
+    c.inject(&format!(
+        "pointer {} {}",
+        x + w + 6,
+        placed(&l, "Rename").2 + 4
+    ));
+    c.inject("click");
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "a click between labels starts nothing"
     );
 }

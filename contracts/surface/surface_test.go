@@ -79,3 +79,32 @@ func TestUnmarshalValidates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestShellChromeSurvivesAndDefaultsOff(t *testing.T) {
+	// A claim the shell has to honour, so it must not be dropped in the round trip -- an app that
+	// opted out of drawing its own chrome would keep drawing it, and the user would see two headers.
+	on := Descriptor{App: "a", Title: "t", ShellChrome: true}
+	b, err := on.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"shell_chrome":true`)) {
+		t.Fatalf("the claim was dropped: %s", b)
+	}
+	got, err := Unmarshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ShellChrome {
+		t.Fatal("shell_chrome did not survive the round trip")
+	}
+
+	off := Descriptor{App: "a", Title: "t"}
+	b2, err := off.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b2, []byte("shell_chrome")) {
+		t.Fatalf("the default must not be emitted: %s", b2)
+	}
+}

@@ -349,7 +349,12 @@ impl Shell {
     }
 
     pub fn chrome_contains(&self, dp: (f64, f64), out: Out) -> bool {
-        self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1)) || self.settings_rect(out).is_some_and(|r| r.contains(dp.0, dp.1))
+        self.menu_rect().is_some_and(|r| r.contains(dp.0, dp.1))
+            || self.settings_rect(out).is_some_and(|r| r.contains(dp.0, dp.1))
+            // A surface band is chrome too: a press that lands on it belongs to
+            // the band (which either starts an action or swallows it), never to
+            // the window underneath.
+            || self.surface_headers.iter().any(|h| h.contains(dp))
     }
 
     /// A panel move is in progress, so the pointer belongs to chrome wherever
@@ -442,6 +447,12 @@ impl Shell {
                 };
             }
             st.focused = false;
+        }
+        // The surface header is checked LAST, so an open menu or settings panel
+        // (which float above it) keeps the press; otherwise a band is chrome and
+        // takes the click, starting its action when one is under the pointer.
+        if self.header_press(dp) {
+            return Press::Swallow;
         }
         Press::Pass
     }

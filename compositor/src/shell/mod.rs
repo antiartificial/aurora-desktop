@@ -196,6 +196,10 @@ pub struct Shell {
     /// Where the windows were on the last event-loop turn. The header binds to
     /// one of these by app id; `main` refreshes it (see `note_windows`).
     pub surface_targets: Vec<header::WindowFrame>,
+    /// Clicks on a band's action labels: the worker thread that asks the
+    /// controller (`ui.act@v1`) and the channel its answer lands on. Owned
+    /// here so a click never blocks the frame loop (src/shell/header.rs).
+    pub header_acts: header::ActRelay,
     pub settings: Option<SettingsState>,
     families: Vec<String>,
     // GPU side
@@ -254,6 +258,7 @@ impl Shell {
             surface_live: vec![],
             surface_relay: header::SurfaceRelay::new(),
             surface_targets: vec![],
+            header_acts: header::ActRelay::new(),
             settings: None,
             families: vec![],
             menu_tex: None,
@@ -535,6 +540,9 @@ impl Shell {
         // A window that mapped or closed since the last turn needs a band to
         // appear or go without waiting for the next poll.
         self.reconcile_surface_headers();
+        // Finished band answers, and receipts old enough to no longer be
+        // evidence about anything. Both are non-blocking.
+        self.poll_header_acts();
     }
 
     // ---- launching -------------------------------------------------------
