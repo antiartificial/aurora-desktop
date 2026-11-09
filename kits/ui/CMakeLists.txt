@@ -100,6 +100,18 @@ find_package(ZLIB QUIET)
 if(ZLIB_FOUND)
 	add_executable(ui_specimen tests/ui_specimen.cpp)
 	target_link_libraries(ui_specimen PRIVATE aurora_ui_tk ZLIB::ZLIB)
+
+	# P3: the preview loop -- registry, viewport loop and pixel differ.
+	add_executable(aurora-preview tools/preview.cpp)
+	target_link_libraries(aurora-preview PRIVATE aurora_ui_tk ZLIB::ZLIB)
+
+	# The preview loop as a test: a one-pixel regression in any registered state, at any viewport,
+	# fails the suite. Goldens are font- and machine-dependent; regenerate with
+	#   aurora-preview --states kits/ui/goldens
+	add_test(NAME preview
+	         COMMAND aurora-preview --check ${CMAKE_CURRENT_SOURCE_DIR}/goldens)
+	set_tests_properties(preview PROPERTIES TIMEOUT 120)
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.
