@@ -49,6 +49,14 @@ float baseline_in(const Env& e, Rect r, const TextStyle& st) {
     au_font_metrics_get(e.face(st), e.sized(st), &m);
     return r.y + (r.h + m.ascent - m.descent) / 2;
 }
+// One mapping from a widget's own flags to the six states, so every list-like widget asks the same
+// question (8.5). "Hover loses to the selection" and "a focused selection is a different picture
+// from an unfocused one" are properties of the table now, not of each Draw.
+static VState row_state(bool selected, bool focused, bool hovered) {
+    if (selected) return focused ? VState::SelectedFocused : VState::Selected;
+    return hovered ? VState::Hover : VState::Normal;
+}
+
 float baseline_in(const Env& e, Rect r) {
     au_font_metrics m;
     m.ascent = m.descent = m.leading = 0;
@@ -952,18 +960,13 @@ public:
             if (i & 1) au_fill_rect(s, band, e.content_alt);
             // The fill inset of docs/atlas-design.md 3.3: 4 horizontally, 1 vertically, radius 5.
             const au_rect in{band.l + 4, band.t + 1, band.r - 4, band.b - 1};
-            if (picked) {
-                // Focused and unfocused selection are DIFFERENT FILLS, not the same fill at two
-                // alphas: the states (selected-focused, selected-unfocused, cursor-only) have to
-                // be different pictures. Two of them drawn alike is the bug this codebase has
-                // shipped four times.
-                au_fill_round_rect(s, in, 5, 5, focused_ ? e.accent : e.sel_unfocused);
-            } else if (i == hover_row_ && !(cursor && focused_ && halo())) {
-                // Hover is instant on enter and on leave, and it loses to the selection: a
-                // hover fill over a selected row would say the pointer had changed what is
-                // chosen. Damage is this row plus the one the pointer left (DamageHint).
-                au_fill_round_rect(s, in, 5, 5, e.hover);
-            }
+            // Focused and unfocused selection are DIFFERENT FILLS, not the same fill at two alphas:
+            // the states (selected-focused, selected-unfocused, cursor-only) have to be different
+            // pictures, and two of them drawn alike is the bug this codebase has shipped four
+            // times. The table holds that now (8.5); this widget only reports its flags.
+            const ControlSkin skin = ResolveSkin(
+                e, row_state(picked, focused_, i == hover_row_ && !(cursor && focused_ && halo())));
+            if (skin.fill.a) au_fill_round_rect(s, in, 5, 5, skin.fill);
             float cx = frame.x;
             for (int col = 0; col < (int)colw_.size(); col++) {
                 const float cw = colw_[col];
@@ -972,9 +975,8 @@ public:
                 const CellValue v = r_->Cell(i, col);
                 std::string txt = v.state == CellState::Unknown ? "unknown" : v.text;
                 if (v.state == CellState::Pending) txt.clear();
-                const au_color c = picked && focused_
-                                       ? e.accent_ink
-                                       : (v.state == CellState::Ready ? e.fg : e.dim);
+                const au_color c = picked && focused_ ? skin.ink
+                                                      : (v.state == CellState::Ready ? e.fg : e.dim);
                 const float lpad = col == 0 ? e.unit * 1.5f : e.unit;
                 float tx = cx + lpad;
                 const float rgt = cx + cw - e.unit;
@@ -2625,11 +2627,9 @@ public:
             // pictures: the fill says selected, WHICH fill says whether this pane has the
             // keyboard, and a ring with no fill says the cursor is here and nothing is chosen.
             const au_rect in{t.x + 3, t.y + 3, t.x + t.w - 4, t.y + t.h - 4};
-            if (is_sel) {
-                au_fill_round_rect(s, in, 8, 8, focused_ ? e.accent : e.sel_unfocused);
-            } else if (i == hover_ && !(cursor && focused_ && halo())) {
-                au_fill_round_rect(s, in, 8, 8, e.hover);
-            }
+            const ControlSkin skin = ResolveSkin(
+                e, row_state(is_sel, focused_, i == hover_ && !(cursor && focused_ && halo())));
+            if (skin.fill.a) au_fill_round_rect(s, in, 8, 8, skin.fill);
 
             const CellValue v = r_->Cell(i, 0);
             std::string name = v.text;
@@ -2642,7 +2642,7 @@ public:
             // The halo, when the keyboard is what put the cursor here, and always for a tile
             // that is the cursor without being selected -- there is nothing else marking it.
             if (focused_ && cursor && (halo() || !is_sel))
-                draw_halo(s, in, 8, e.focus_ring, e.content);
+                draw_halo(s, in, 8, skin.ring, e.content);
             if (!no_icons)
                 draw_icon(s, Rect{t.x + t.w / 2 - 24, t.y + 10, 48, 48}, r_->Icon(i),
                           au_surface_scale(s), is_sel && focused_, e.content);
@@ -2653,7 +2653,7 @@ public:
             const std::string shown = elide_middle(e.font, e.size, name, t.w - 12);
             const float tw = au_text_width(e.font, e.size, shown.c_str(), -1);
             au_text_draw(s, e.font, e.size, shown.c_str(), -1, t.x + (t.w - tw) / 2,
-                         t.y + t.h - 16, is_sel && focused_ ? e.accent_ink : e.fg);
+                         t.y + t.h - 16, is_sel && focused_ ? skin.ink : e.fg);
         }
         if (band_) {
             const au_rect b{std::min(bx0_, bx1_), std::min(by0_, by1_),
