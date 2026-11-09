@@ -4766,6 +4766,14 @@ Window::~Window() {
     if (sf_) au_surface_free(sf_);
 }
 
+bool g_thread_audit = false;
+
+void note_read_slow(Window* w) { w->note_off_loop_read(); }
+
+void Window::note_off_loop_read() const {
+    if (!on_loop_thread()) off_loop_reads_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Window::adoptTask(std::thread t) {
     std::lock_guard<std::mutex> g(tasks_mu_);
     tasks_.push_back(std::move(t));

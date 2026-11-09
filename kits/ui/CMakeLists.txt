@@ -120,6 +120,14 @@ add_test(NAME ratio_guard
                  ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail_ratio.cpp)
 set_tests_properties(ratio_guard PROPERTIES WILL_FAIL TRUE)
 
+# 8.6/P5: an off-loop get() is counted; and the C++23 floor is asserted, not assumed.
+add_executable(test_thread_proof tests/test_thread_proof.cpp)
+target_link_libraries(test_thread_proof PRIVATE aurora_ui_tk)
+add_test(NAME thread_proof COMMAND test_thread_proof)
+
+add_executable(test_cxx23 tests/test_cxx23.cpp)
+add_test(NAME cxx23 COMMAND test_cxx23)
+
 endif()
 
 # Atlas stage 1, "the frame". Headless, every drawing claim checked at 1.0 and 1.45.

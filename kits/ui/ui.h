@@ -200,6 +200,14 @@ float default_base_size();
 // ---- state: a cell, bound at build, that invalidates what it feeds ---------------------------
 
 class Window;
+
+// 8.6/P5: proof-of-thread for get(). Reading a cell off the loop thread is the race the thread-safe
+// set() exists to avoid writing, so an audit build counts it. Off by default (one predictable branch
+// on a global) and switched on by a test, because the compile-time form the design asks for -- a
+// token every read must hold -- is a change to every read site, not a check.
+extern bool g_thread_audit;
+void note_read_slow(Window* w);   // counts a get() that did not happen on the loop thread
+inline void note_read(Window* w) { if (g_thread_audit && w) note_read_slow(w); }
 class Node;      // State holds Node* to invalidate what reads it; the class comes below
 class DerivedBase;                    // a derived value; defined after Node, used as a pointer before
 template <class T> class Derived;
@@ -250,7 +258,7 @@ template <class T>
 class State : public StateBase {
 public:
     explicit State(T v) : v_(std::move(v)) {}
-    const T& get() const { return v_; }
+    const T& get() const { note_read(win_); return v_; }
     void set(T n);
     void bind(Window* w) { win_ = w; }
     Window* window() const { return win_; }
@@ -1368,6 +1376,8 @@ public:
     // Task<F,G> bookkeeping: the token flips at teardown; the thread is joined then too.
     std::shared_ptr<std::atomic<bool>> lifetimeToken() const { return lifetime_; }
     void adoptTask(std::thread t);
+    void note_off_loop_read() const;
+    int off_loop_reads() const { return off_loop_reads_.load(std::memory_order_relaxed); }
 
     // Whether the last input was a KEY rather than a pointer press.
     //
@@ -1450,6 +1460,7 @@ private:
     std::vector<std::function<void()>> deferred_;
     std::mutex deferred_mu_;        // the event thread writes it, the loop drains it
     std::shared_ptr<std::atomic<bool>> lifetime_{std::make_shared<std::atomic<bool>>(true)};
+    mutable std::atomic<int> off_loop_reads_{0};
     std::vector<std::thread> tasks_;
     std::mutex tasks_mu_;            // guards tasks_ (Task may be called from the loop; teardown joins)
 
