@@ -1279,6 +1279,10 @@ public:
     // are safe, but the window's own node lists still named the freed nodes, so clear them and force
     // a fresh layout. Before this, a swap mid-run (preview, hot reload) let Run's tick scan and
     // event routing walk freed Node*; SetRoot was only safe before the first Run.
+    // The identity the shell sees. A surface descriptor is matched to a window by it, so an app that
+    // publishes a surface must set the same id here (default: the toolkit's own).
+    void SetAppId(const char* id) { if (win_) au_wl_win_set_app_id(win_, id); }
+
     void SetRoot(Desc root) {
         root_ = std::move(root);
         all_.clear();

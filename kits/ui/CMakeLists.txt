@@ -31,6 +31,11 @@ add_executable(test_surface tests/test_surface.cpp)
 target_link_libraries(test_surface PRIVATE aurora_ui_tk)
 add_test(NAME surface COMMAND test_surface)
 
+# P6 #5: Atlas names its commands as act: nodes and publishes the descriptor the shell reads.
+add_executable(test_atlas_surface tests/test_atlas_surface.cpp)
+target_link_libraries(test_atlas_surface PRIVATE aurora_ui_tk)
+add_test(NAME atlas_surface COMMAND test_atlas_surface)
+
 # Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
 # read back, which is why this is a test and the other aurora-ui demos are demos.
 add_executable(tk_layout demo/tk_layout.cpp)

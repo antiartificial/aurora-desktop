@@ -642,6 +642,16 @@ void au_wl_win_set_parent(au_wl_win* child, au_wl_win* parent)
 int au_wl_output_scale(au_wl* g) { return g->scale; }
 int au_wl_output_size(au_wl* g, int* w, int* h) { if (g->mode_w <= 0) return 0; *w = g->mode_w / g->scale; *h = g->mode_h / g->scale; return 1; }
 
+void au_wl_win_set_app_id(au_wl_win* w, const char* id)
+{
+	if (!w || !w->top) return;
+	pthread_mutex_lock(&w->g->mu);
+	xdg_toplevel_set_app_id(w->top, id && *id ? id : "org.aurora.interface-kit");
+	wl_surface_commit(w->surf);
+	wl_display_flush(w->g->dpy);
+	pthread_mutex_unlock(&w->g->mu);
+}
+
 au_wl_win* au_wl_win_create(au_wl* g, const char* title, int lw, int lh, au_event_fn fn, void* user)
 {
 	struct au_wl_win* w = calloc(1, sizeof(*w));

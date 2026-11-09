@@ -70,8 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.shell.atlas_bin = crate::shell::resolve_atlas(args.atlas_bin.as_deref());
     state.shell.inventory_bin = crate::shell::resolve_inventory(args.inventory_bin.as_deref());
     // A descriptor the header cannot draw is refused here, at startup: a guessed
-    // header would claim a surface the compositor did not understand.
-    if let Some(p) = &args.surface_header {
+    // header would claim a surface the compositor did not understand. One per
+    // app, because each band is bound to a window and `app` names it.
+    for p in &args.surface_header {
         if let Err(e) = state.shell.set_surface_header(p) {
             fail(&format!("--surface-header {}: {e}", p.display()));
         }
@@ -261,6 +262,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // occluded no Redraw arrives, and a client would block in its first
         // roundtrip.
         let _ = state.display_handle.flush_clients();
+        // The surface header hangs off the window it describes
+        // (src/shell/header.rs), so the shell needs this turn's window frames.
+        // This is the earliest point main can see the `Space`; widening
+        // `Shell::prepare` instead would touch the frame path
+        // (`fx::render_scene`), which is not this feature's to change. The cost
+        // is that a band can trail a move by one composed frame.
+        state.shell.note_windows(&state.space);
     })?;
 
     // The loop has stopped: a window close, a VT quit, or --quit-after.
@@ -325,9 +333,11 @@ struct Args {
     deny_cgroups: Vec<String>,
     test_input: Option<std::path::PathBuf>,
     dump_overlay: Option<std::path::PathBuf>,
-    /// `--surface-header PATH`: a surface descriptor (contracts/surface) to draw the header from.
-    /// A fixture path until descriptors arrive over the bus; parsing is the same either way.
-    surface_header: Option<std::path::PathBuf>,
+    /// `--surface-header PATH`: a surface descriptor (contracts/surface) to draw
+    /// a header from. Repeatable, one per app: each band is bound to the window
+    /// whose `app_id` its descriptor names. A fixture path until descriptors
+    /// arrive over the bus; parsing is the same either way.
+    surface_header: Vec<std::path::PathBuf>,
     theme: Option<std::path::PathBuf>,
     legacy_scene: bool,
     freeze_time: bool,
@@ -386,7 +396,7 @@ fn parse_args() -> Args {
         probe_drm: None,
         extra_outputs: vec![],
         headless: None, drm: None, quit_after: None, dump_frame: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
-        deny_cgroups: vec![], test_input: None, dump_overlay: None, surface_header: None, theme: None,
+        deny_cgroups: vec![], test_input: None, dump_overlay: None, surface_header: vec![], theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, atlas_bin: None, inventory_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
     };
     let mut it = std::env::args().skip(1);
@@ -403,7 +413,10 @@ fn parse_args() -> Args {
             "--test-input" => args.test_input = it.next().map(Into::into),
             "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
-            "--surface-header" => args.surface_header = it.next().map(Into::into),
+            "--surface-header" => {
+                let p = it.next().map(Into::into).expect("--surface-header wants a path");
+                args.surface_header.push(p);
+            }
             "--xwayland" => args.xwayland = true,
             "--no-host-clipboard" => args.no_host_clipboard = true,
             "--host-clipboard-display" => args.host_clipboard_display = it.next().map(Into::into),

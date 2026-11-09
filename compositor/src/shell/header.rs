@@ -13,6 +13,13 @@
 //!
 //! Parsing is `serde_json`, already a dependency: the contract is JSON, and a
 //! hand-rolled reader would be a second parser to keep in step with it.
+//!
+//! A header belongs to ONE window. A descriptor names its app (`app` is the
+//! toplevel's `app_id`), and the band is placed against that window's own top
+//! edge, not at the output's corner: chrome that floated in the corner would
+//! describe a surface the person is not looking at. When no window of that app
+//! is mapped the band is not drawn at all -- there is nothing for it to describe
+//! -- and it comes back, at the window's new place, if the app maps again.
 
 use std::path::Path;
 
@@ -25,13 +32,16 @@ use smithay::{
             gles::{GlesRenderer, GlesTexture},
         },
     },
+    desktop::{Space, Window},
     utils::{Buffer as BufferCoords, Physical, Size},
+    wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
 };
 
 use super::{Res, Shell, layout::Rect};
 use crate::{
     text::{FontSpec, TextSystem},
     trusted::draw::{Canvas, clean},
+    windeco::win_key,
 };
 
 /// The band's fill. Opaque, so the header reads the same over any wallpaper and
@@ -46,6 +56,9 @@ const GRANT_TEXT: [u8; 4] = [150, 200, 245, 255];
 const CHIP: [u8; 4] = [30, 36, 48, 255];
 /// Empty margin from the usable area's edge, logical pixels.
 const MARGIN: f32 = 18.0;
+/// Between the band's bottom edge and the window's top edge, logical pixels: a
+/// gap, so the band reads as a label on the window rather than part of its frame.
+const EDGE_GAP: f32 = 8.0;
 const PAD_X: f32 = 14.0;
 const PAD_Y: f32 = 9.0;
 const GAP: f32 = 14.0;
@@ -121,12 +134,48 @@ impl Descriptor {
     }
 }
 
+/// Where a window is, as the shell last saw it.
+///
+/// The shell prepares the header itself and cannot reach the `Space` (its
+/// `prepare` signature is the frame path's, and only `main` can hand it a
+/// snapshot without widening that path). So `main` calls `note_windows` once per
+/// event-loop turn and the placement below is a lookup in that snapshot. The
+/// cost is that a band is at most one composed frame behind a move; the gain is
+/// that binding lives entirely in this file.
+#[derive(Clone, Debug)]
+pub struct WindowFrame {
+    /// The surface id (`windeco::win_key`). Not drawn: it is what keeps two
+    /// windows of one app distinguishable in a log.
+    pub id: String,
+    /// The toplevel's `app_id` (X11: the class), which is what a descriptor's
+    /// `app` names.
+    pub app: String,
+    pub title: String,
+    /// Client geometry, LOGICAL pixels in the Space's global coordinates.
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
 /// A loaded header: its descriptor, and the texture the last prepare produced.
 pub struct Header {
     pub desc: Descriptor,
     key: String,
     pub(crate) tex: Option<(String, GlesTexture)>,
     pub(crate) rect: Option<Rect>,
+    /// Texture size, device pixels: kept so a placement can be recomputed when
+    /// the window moves without rasterising the band again.
+    w: i32,
+    h: i32,
+    /// What `render` placed, texture-relative device pixels, so a move can re-log
+    /// a complete layout line without re-rasterising.
+    placed: Vec<(String, i32, i32, i32)>,
+    /// Whether the band was drawn last frame, so disappearing is logged once
+    /// instead of every frame, and is not logged before it ever appeared.
+    shown: bool,
+    /// The line last logged for this header, so a settled layout logs once.
+    logged: String,
 }
 
 impl Header {
@@ -137,6 +186,11 @@ impl Header {
             key,
             tex: None,
             rect: None,
+            w: 0,
+            h: 0,
+            placed: vec![],
+            shown: false,
+            logged: String::new(),
         }
     }
 
@@ -283,10 +337,14 @@ fn ellipsize(text: &mut TextSystem, s: &str, spec: &FontSpec, scale: f64, max: f
 }
 
 impl Shell {
-    /// Load the fixture descriptor for `--surface-header`, or report why not.
-    /// A descriptor the header cannot draw is refused: drawing a guessed header
-    /// would be worse than drawing none, because it would claim a surface the
-    /// compositor did not understand.
+    /// Load a descriptor for `--surface-header`, or report why not. A descriptor
+    /// the header cannot draw is refused: drawing a guessed header would be worse
+    /// than drawing none, because it would claim a surface the compositor did not
+    /// understand.
+    ///
+    /// Repeatable: one descriptor per app, because the band is bound to a window
+    /// and the descriptor's `app` is what names it. A second descriptor for the
+    /// same app replaces the first rather than stacking two bands on one window.
     pub fn set_surface_header(&mut self, path: &Path) -> Result<(), String> {
         let d = Descriptor::load(path)?;
         tracing::info!(
@@ -296,69 +354,184 @@ impl Shell {
             d.actions.len(),
             d.grants.len()
         );
-        self.surface_header = Some(Header::new(d));
+        // Replacing is the shape a later descriptor-over-the-bus would have too:
+        // the newest statement about an app wins.
+        self.clear_surface_header(&d.app);
+        self.surface_headers.push(Header::new(d));
         Ok(())
     }
 
-    /// Upload the header's texture when what it depends on changed.
+    /// Forget an app's descriptor, so its band goes away even while the window
+    /// stays mapped. `--surface-header` is the only loader today; this is the
+    /// path a cleared descriptor will take.
+    pub fn clear_surface_header(&mut self, app: &str) {
+        let before = self.surface_headers.len();
+        self.surface_headers.retain(|h| h.desc.app != app);
+        if self.surface_headers.len() != before {
+            tracing::info!("surface: header cleared for {app}");
+        }
+    }
+
+    /// A snapshot of every mapped window, for the header to bind to. Called once
+    /// per event-loop turn from `main`, after dispatched events and before the
+    /// next frame is composed.
+    pub fn note_windows(&mut self, space: &Space<Window>) {
+        // Most sessions run no descriptors at all; do not walk the Space for them.
+        if self.surface_headers.is_empty() {
+            self.surface_targets.clear();
+            return;
+        }
+        self.surface_targets.clear();
+        for w in space.elements() {
+            let Some(id) = win_key(w) else { continue };
+            let Some(geo) = space.element_geometry(w) else { continue };
+            let (app, title) = window_identity(w);
+            self.surface_targets.push(WindowFrame {
+                id,
+                app,
+                title,
+                x: geo.loc.x,
+                y: geo.loc.y,
+                w: geo.size.w,
+                h: geo.size.h,
+            });
+        }
+    }
+
+    /// Upload every header's texture when what it depends on changed, and place
+    /// it against the window its descriptor names.
     pub(crate) fn prepare_surface_header(
         &mut self,
         r: &mut GlesRenderer,
         size: Size<i32, Physical>,
     ) -> Res<()> {
-        if self.surface_header.is_none() {
+        if self.surface_headers.is_empty() {
             return Ok(());
         }
         let u = self.usable(size.w, size.h);
         let scale = self.scale;
         let font = self.font.size;
-        let margin = (MARGIN as f64 * scale).round() as i32;
-        let avail = (u.w as f64 / scale) - 2.0 * MARGIN as f64;
-        let Some(h) = self.surface_header.as_mut() else {
-            return Ok(());
-        };
-        let key = format!("{}|{}|{}|{}x{}", h.key, scale, font, u.w, u.h);
-        if h.tex.as_ref().is_some_and(|(k, _)| *k == key) {
-            return Ok(());
-        }
-        let (c, placed) = h.render(&mut self.text, scale, font, avail.max(120.0) as f32);
-        let tex = r.import_memory(
-            &c.rgba,
-            Fourcc::Abgr8888,
-            Size::<i32, BufferCoords>::from((c.w as i32, c.h as i32)),
-            false,
-        )?;
-        let rect = Rect {
-            x: u.x + margin,
-            y: u.y + margin,
-            w: c.w as i32,
-            h: c.h as i32,
-        };
-        // One line per settled layout. Tests read the geometry and the exact
-        // strings from it, the same contract menu/settings layout lines give.
-        tracing::info!(
-            "surface: header layout scale={scale} panel={},{},{},{} grants={} text={}",
-            rect.x,
-            rect.y,
-            rect.w,
-            rect.h,
-            h.desc.grants.len(),
-            placed
+        let output_avail = (u.w as f64 / scale) - 2.0 * MARGIN as f64;
+        // The window's "top" for this purpose is the top of its title bar when the
+        // compositor draws one: the bar is chrome above the client, and a band
+        // level with the client's first pixel would be drawn over by the bar.
+        let bar = if self.deco_on() { self.deco_height() } else { 0 };
+        let edge = (EDGE_GAP as f64 * scale).round() as i32;
+        // `prepare` only has `&mut self`, and the renderer borrows nothing of it:
+        // split the fields the loop needs so a header can render into the text
+        // system while it is itself borrowed from the list.
+        let targets = self.surface_targets.clone();
+        let text = &mut self.text;
+        for h in self.surface_headers.iter_mut() {
+            let target = targets
                 .iter()
-                .map(|(t, x, y, w)| format!(
-                    "{}@{},{},{}",
-                    t.replace(' ', "_"),
-                    rect.x + x,
-                    rect.y + y,
-                    w
-                ))
-                .collect::<Vec<_>>()
-                .join("\u{1f}")
-        );
-        h.tex = Some((key, tex));
-        h.rect = Some(rect);
+                .find(|t| !h.desc.app.is_empty() && t.app == h.desc.app);
+            let Some(t) = target else {
+                if h.shown {
+                    tracing::info!(
+                        "surface: header hidden app={} (no window)",
+                        h.desc.app
+                    );
+                }
+                h.shown = false;
+                h.rect = None;
+                // So a window that comes back logs its placement again.
+                h.logged.clear();
+                continue;
+            };
+            // Never wider than the window it describes (nor than the output): a
+            // band wider than its window would float over its neighbour and
+            // describe the wrong surface.
+            let avail = (t.w as f64).min(output_avail).max(120.0) as f32;
+            let key = format!("{}|{}|{}|{}", h.key, scale, font, avail.round() as i32);
+            if !h.tex.as_ref().is_some_and(|(k, _)| *k == key) {
+                let (c, placed) = h.render(text, scale, font, avail);
+                let tex = r.import_memory(
+                    &c.rgba,
+                    Fourcc::Abgr8888,
+                    Size::<i32, BufferCoords>::from((c.w as i32, c.h as i32)),
+                    false,
+                )?;
+                h.w = c.w as i32;
+                h.h = c.h as i32;
+                h.placed = placed;
+                h.tex = Some((key, tex));
+            }
+            // Left edge on the window's left edge, bottom edge `EDGE_GAP` above the
+            // window (or its bar). Clamped to the output so a window pushed against
+            // an edge does not hang its band off screen.
+            let left = (t.x as f64 * scale).round() as i32;
+            let top = ((t.y - bar) as f64 * scale).round() as i32;
+            let x = left.clamp(0, (size.w - h.w).max(0));
+            let y = (top - h.h - edge).max(0);
+            let rect = Rect {
+                x,
+                y,
+                w: h.w,
+                h: h.h,
+            };
+            h.rect = Some(rect);
+            h.shown = true;
+            // One line per settled layout. Tests read the geometry and the exact
+            // strings from it, and `app`/`window` say WHICH surface this band is
+            // for, which is the whole point of the binding.
+            let line = format!(
+                "app={} surface={} scale={scale} panel={},{},{},{} window={},{},{},{} grants={} text={}",
+                h.desc.app,
+                t.id,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                t.x,
+                t.y,
+                t.w,
+                t.h,
+                h.desc.grants.len(),
+                h.placed
+                    .iter()
+                    .map(|(s, x, y, w)| format!(
+                        "{}@{},{},{}",
+                        s.replace(' ', "_"),
+                        rect.x + x,
+                        rect.y + y,
+                        w
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\u{1f}")
+            );
+            if h.logged != line {
+                tracing::info!("surface: header layout {line}");
+                h.logged = line;
+            }
+        }
         Ok(())
     }
+}
+
+/// What a window says it is: `(app_id, title)`. Read from the toplevel's data
+/// map, the same fact the Deskbar and the title bar show, never anything the
+/// compositor inferred. An X11 window has no `app_id`, so its class stands in --
+/// which is what a descriptor's `app` would have to name for it either way.
+fn window_identity(w: &Window) -> (String, String) {
+    if let Some(x) = w.x11_surface() {
+        return (x.class(), x.title());
+    }
+    let Some(t) = w.toplevel() else {
+        return (String::new(), String::new());
+    };
+    with_states(t.wl_surface(), |s| {
+        s.data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|d| d.lock().ok())
+            .map(|d| {
+                (
+                    d.app_id.clone().unwrap_or_default(),
+                    d.title.clone().unwrap_or_default(),
+                )
+            })
+            .unwrap_or_default()
+    })
 }
 
 #[cfg(test)]

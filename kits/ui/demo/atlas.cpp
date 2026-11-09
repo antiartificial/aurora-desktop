@@ -11,9 +11,11 @@
 // ATLAS_SIZE=WxH     the window size (default 960x640, the design's first-run size)
 // ATLAS_FRAMES=n     stop after n frames, for scripted runs
 // ATLAS_REPORT=1     print the first-frame timing and what the list drew
+// AURORA_SURFACE_PATH=file   write this window's surface descriptor (contracts/surface) there
 
 #include "../ui.h"
 #include "../filebrowse.h"
+#include "../surface.h"
 #include "atlas_chrome.h"
 
 #include <BusClient.h>
@@ -42,7 +44,76 @@
 using namespace aurora::ui;
 using namespace aurora::ui::browse;
 
+// One identity for the window and the surface: a descriptor is matched to a window by app id, and
+// before this existed every aurora::ui window called itself org.aurora.interface-kit.
+static constexpr const char* kAppId = "org.example.atlas";
+
 int main() {
+    // ---- the surface Atlas publishes -------------------------------------------------------------
+    //
+    // A descriptor is a claim about what the window OFFERS, not a map of where the pixels are.
+    // Most of Atlas's verbs have no widget of their own -- open is Enter on the list, rename is F2
+    // or a menu item, new folder is Ctrl+Shift+N, move to trash is Delete -- so the toolkit's
+    // naming rule ("a node named act:<verb> is an action") is applied to a declaration tree of
+    // the command set rather than to the layout tree. These are the verbs the context menu builds
+    // and the key hook runs; a name here that no command implements, or a command added without
+    // a name here, is the drift this tree must not have, so the two lists are edited together.
+    //
+    // What is deliberately NOT named: the toolbar's Back / Forward / Up are navigation, and
+    // navigation is a location affordance rather than an action on the user's files -- naming
+    // them would put three "verbs" in the shell header that only move Atlas's own history. The
+    // sidebar, view-mode, sort, hidden-files and preview controls are presentation preferences in
+    // the same class: they change what Atlas draws, not what it does to anything a person owns,
+    // and the contract has no way to say "this action is a toggle with state".
+    //
+    // Effects are Atlas's own classification, the one its context menu already uses (decision
+    // 0009): open and copy-path observe (read); rename, new-folder and move-to-trash change the
+    // filesystem (write). Trash is destructive in the menu's words, and the contract has three
+    // effects with destructive mapping onto write -- which is the word published.
+    //
+    // Grants are the caller's claim and Atlas makes none: it is the session's own file manager,
+    // not a manifest-composed app, and declaring "path:/" would be an access claim the controller
+    // cannot police. The contract allows an empty list, and empty is the honest claim.
+    Desc surface_tree = VStack({
+        Label("Open").name("act:open=Open#read"),
+        Label("Copy path").name("act:copy-path=Copy path#read"),
+        Label("Rename").name("act:rename=Rename#write"),
+        Label("New folder").name("act:new-folder=New folder#write"),
+        Label("Move to trash").name("act:move-to-trash=Move to trash#write"),
+    });
+
+    // AURORA_SURFACE_PATH says where the shell reads this window's surface. SurfaceJson owns the
+    // bytes -- actions sorted by id, grants sorted, the escaping encoding/json uses -- so nothing
+    // here reformats the result; a post-processing step would be a second encoder to keep in step.
+    //
+    // Published once, before the window exists and before anything is read, because every field is
+    // about the app and its command set and none about the directory being shown: navigating does
+    // not change the descriptor and must not rewrite it. The write is temp + rename, so a shell
+    // watching the path sees one whole document and never half of one.
+    auto publish_surface = [&surface_tree] {
+        const char* path = getenv("AURORA_SURFACE_PATH");
+        if (!path || !*path) return;
+        std::string bytes, why;
+        if (!SurfaceJson(surface_tree, kAppId, "Atlas", {}, &bytes, &why)) {
+            fprintf(stderr, "atlas: surface: %s\n", why.c_str());
+            return;
+        }
+        const std::string tmp = std::string(path) + ".tmp";
+        FILE* f = fopen(tmp.c_str(), "wb");
+        if (!f) {
+            fprintf(stderr, "atlas: cannot publish the surface: %s: %s\n", tmp.c_str(),
+                    strerror(errno));
+            return;
+        }
+        const size_t n = fwrite(bytes.data(), 1, bytes.size(), f);
+        const bool closed = fclose(f) == 0;
+        if (n != bytes.size() || !closed || rename(tmp.c_str(), path) != 0) {
+            fprintf(stderr, "atlas: cannot publish the surface: %s: %s\n", path, strerror(errno));
+            unlink(tmp.c_str());
+        }
+    };
+    publish_surface();
+
     const char* d = getenv("ATLAS_DIR");
     std::string dir = d && *d ? d : (getenv("HOME") ? getenv("HOME") : "/");
 
@@ -59,6 +130,7 @@ int main() {
         if (sscanf(sz, "%dx%d", &a, &b) == 2 && a >= 480 && b >= 320) { win_w = a; win_h = b; }
     }
     Window w("Atlas", win_w, win_h);
+    w.SetAppId(kAppId);   // the shell matches this app's surface descriptor by it
     if (!w.ok()) {
         fprintf(stderr, "atlas: no Wayland compositor reachable\n");
         return 2;

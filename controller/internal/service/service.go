@@ -131,6 +131,10 @@ func (s *Service) dispatch(req proto.Envelope) (out any, e *invoke.Error) {
 				}
 			}
 		}
+	case "ui.act@v1":
+		// One surface action, run only when the app holds every grant it
+		// declares. The gate and its reasoning are in act.go.
+		return s.act(req)
 	case "registry.invoke@v1":
 		var q invoke.Request
 		if e = decode(req, &q); e == nil {

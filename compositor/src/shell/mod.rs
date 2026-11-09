@@ -181,9 +181,14 @@ pub struct Shell {
     snap: Theme,
     pub menu: Option<Menu>,
     menu_seq: u64,
-    /// The surface header for the descriptor loaded by `--surface-header`
-    /// (src/shell/header.rs). Drawn in the scene, so captures see it.
-    pub surface_header: Option<header::Header>,
+    /// The surface headers, one per app descriptor from `--surface-header`
+    /// (src/shell/header.rs). Each is bound to the window whose `app_id` its
+    /// descriptor names, and bound headers are drawn in the scene, so captures
+    /// see them.
+    pub surface_headers: Vec<header::Header>,
+    /// Where the windows were on the last event-loop turn. The header binds to
+    /// one of these by app id; `main` refreshes it (see `note_windows`).
+    pub surface_targets: Vec<header::WindowFrame>,
     pub settings: Option<SettingsState>,
     families: Vec<String>,
     // GPU side
@@ -238,7 +243,8 @@ impl Shell {
             snap: Theme::default(),
             menu: None,
             menu_seq: 0,
-            surface_header: None,
+            surface_headers: vec![],
+            surface_targets: vec![],
             settings: None,
             families: vec![],
             menu_tex: None,
@@ -257,7 +263,7 @@ impl Shell {
 
     /// Whether the shell draws anything of its own (background, dock).
     pub fn wants_pipeline(&self) -> bool {
-        self.dock.enabled || !(self.legacy_scene) || self.menu.is_some() || self.settings.is_some() || self.surface_header.is_some()
+        self.dock.enabled || !(self.legacy_scene) || self.menu.is_some() || self.settings.is_some() || !self.surface_headers.is_empty()
     }
 
     /// Take over the theme (cheap when nothing changed) and recompute text-dependent state.
@@ -920,7 +926,7 @@ impl Shell {
         if let Some((_, tex, rect)) = &self.clock_tex {
             draw_tex(f, tex, *rect)?;
         }
-        if let Some(h) = &self.surface_header {
+        for h in &self.surface_headers {
             if let (Some((_, tex)), Some(rect)) = (&h.tex, h.rect) {
                 draw_tex(f, tex, rect)?;
             }
