@@ -69,6 +69,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.shell.aurora_bin = crate::shell::resolve_launcher(args.aurora_bin.as_deref());
     state.shell.atlas_bin = crate::shell::resolve_atlas(args.atlas_bin.as_deref());
     state.shell.inventory_bin = crate::shell::resolve_inventory(args.inventory_bin.as_deref());
+    // A descriptor the header cannot draw is refused here, at startup: a guessed
+    // header would claim a surface the compositor did not understand.
+    if let Some(p) = &args.surface_header {
+        if let Err(e) = state.shell.set_surface_header(p) {
+            fail(&format!("--surface-header {}: {e}", p.display()));
+        }
+    }
     state.apply_input_config();
     state.trusted.dump_path = args.dump_overlay.clone();
     if let Some(uids) = args.trusted_uids.clone() {
@@ -318,6 +325,9 @@ struct Args {
     deny_cgroups: Vec<String>,
     test_input: Option<std::path::PathBuf>,
     dump_overlay: Option<std::path::PathBuf>,
+    /// `--surface-header PATH`: a surface descriptor (contracts/surface) to draw the header from.
+    /// A fixture path until descriptors arrive over the bus; parsing is the same either way.
+    surface_header: Option<std::path::PathBuf>,
     theme: Option<std::path::PathBuf>,
     legacy_scene: bool,
     freeze_time: bool,
@@ -376,7 +386,7 @@ fn parse_args() -> Args {
         probe_drm: None,
         extra_outputs: vec![],
         headless: None, drm: None, quit_after: None, dump_frame: None, command: None, trusted_socket: None, trusted_uids: None, bus_socket: std::env::var_os("AURORA_BUS_SOCK").filter(|v| !v.is_empty()).map(Into::into),
-        deny_cgroups: vec![], test_input: None, dump_overlay: None, theme: None,
+        deny_cgroups: vec![], test_input: None, dump_overlay: None, surface_header: None, theme: None,
         legacy_scene: false, freeze_time: false, scale: None, aurora_bin: None, atlas_bin: None, inventory_bin: None, frame_stats: None, xwayland: false, state_file: None, display_file: None, no_host_clipboard: false, host_clipboard_display: None, no_host_dnd: false, host_dnd_display: None, drop_socket: None,
     };
     let mut it = std::env::args().skip(1);
@@ -393,6 +403,7 @@ fn parse_args() -> Args {
             "--test-input" => args.test_input = it.next().map(Into::into),
             "--theme" => args.theme = it.next().map(Into::into),
             "--dump-overlay" => args.dump_overlay = it.next().map(Into::into),
+            "--surface-header" => args.surface_header = it.next().map(Into::into),
             "--xwayland" => args.xwayland = true,
             "--no-host-clipboard" => args.no_host_clipboard = true,
             "--host-clipboard-display" => args.host_clipboard_display = it.next().map(Into::into),

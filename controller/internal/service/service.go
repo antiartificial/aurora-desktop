@@ -281,9 +281,21 @@ func (s *Service) describe(appID, verb string) (any, *invoke.Error) {
 	if caps == nil {
 		caps = []string{}
 	}
+	// The surface contract's descriptor travels alongside the per-verb fields,
+	// under its own key, so a reader that knows only the old shape keeps
+	// working: this verb stays @v1 and old clients decode into a struct that
+	// simply has no field for "surface". Marshal (not json.Marshal) is what
+	// makes the bytes canonical, and it validates first: a descriptor the shell
+	// could not draw or the controller could not police is refused here, as a
+	// structured error, rather than sent on for the shell to choke on.
+	sb, err := windowSurface(appID, a.Manifest.App.Name, a.Manifest.Verbs).Marshal()
+	if err != nil {
+		return nil, &invoke.Error{Code: "bad_surface", Msg: "app " + appID + " has no drawable surface", Detail: err.Error()}
+	}
 	return map[string]any{
 		"app": appID, "verb": v.Name, "effect": v.Effect, "summary": v.Summary,
 		"accepts": acc, "input": nz(v.Input), "output": nz(v.Output), "capabilities": caps,
+		"surface": json.RawMessage(sb),
 	}, nil
 }
 

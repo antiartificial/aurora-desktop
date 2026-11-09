@@ -12,6 +12,7 @@
 pub mod apps;
 mod chrome;
 pub mod deco;
+pub mod header;
 pub mod layout;
 pub mod menu;
 pub mod motion;
@@ -180,6 +181,9 @@ pub struct Shell {
     snap: Theme,
     pub menu: Option<Menu>,
     menu_seq: u64,
+    /// The surface header for the descriptor loaded by `--surface-header`
+    /// (src/shell/header.rs). Drawn in the scene, so captures see it.
+    pub surface_header: Option<header::Header>,
     pub settings: Option<SettingsState>,
     families: Vec<String>,
     // GPU side
@@ -234,6 +238,7 @@ impl Shell {
             snap: Theme::default(),
             menu: None,
             menu_seq: 0,
+            surface_header: None,
             settings: None,
             families: vec![],
             menu_tex: None,
@@ -252,7 +257,7 @@ impl Shell {
 
     /// Whether the shell draws anything of its own (background, dock).
     pub fn wants_pipeline(&self) -> bool {
-        self.dock.enabled || !(self.legacy_scene) || self.menu.is_some() || self.settings.is_some()
+        self.dock.enabled || !(self.legacy_scene) || self.menu.is_some() || self.settings.is_some() || self.surface_header.is_some()
     }
 
     /// Take over the theme (cheap when nothing changed) and recompute text-dependent state.
@@ -636,6 +641,7 @@ impl Shell {
         self.prepare_background(r, size)?;
         self.prepare_clock(r, size)?;
         self.prepare_dock(r, size)?;
+        self.prepare_surface_header(r, size)?;
         self.prepare_decos(r)?;
         self.prepare_deskbar(r, size)?;
         self.prepare_chrome(r, size)
@@ -913,6 +919,11 @@ impl Shell {
         }
         if let Some((_, tex, rect)) = &self.clock_tex {
             draw_tex(f, tex, *rect)?;
+        }
+        if let Some(h) = &self.surface_header {
+            if let (Some((_, tex)), Some(rect)) = (&h.tex, h.rect) {
+                draw_tex(f, tex, rect)?;
+            }
         }
         Ok(())
     }

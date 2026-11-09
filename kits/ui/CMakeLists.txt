@@ -17,7 +17,7 @@ target_link_libraries(aurora_ui_spike PRIVATE aurora_ui)
 # one-file change, which is what lets the twelve be written in parallel.
 add_subdirectory(components)
 
-add_library(aurora_ui_tk STATIC ui.cpp ${AURORA_UI_COMPONENT_SOURCES})
+add_library(aurora_ui_tk STATIC ui.cpp surface.cpp ${AURORA_UI_COMPONENT_SOURCES})
 target_include_directories(aurora_ui_tk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 
@@ -25,6 +25,11 @@ target_link_libraries(aurora_ui_tk PUBLIC aurora_ui)
 add_executable(aurora-uitree tools/uitree.cpp)
 target_link_libraries(aurora-uitree PRIVATE aurora_ui_tk)
 add_test(NAME uitree COMMAND aurora-uitree --check)
+
+# P6 item 2: the toolkit emits the frozen contracts/surface shape (canonical bytes).
+add_executable(test_surface tests/test_surface.cpp)
+target_link_libraries(test_surface PRIVATE aurora_ui_tk)
+add_test(NAME surface COMMAND test_surface)
 
 # Layout, headless. No window and no fonts: Measure/Place are called directly and the frames are
 # read back, which is why this is a test and the other aurora-ui demos are demos.
